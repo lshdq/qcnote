@@ -1,0 +1,18 @@
+# 构建目录
+build/
+build-*/
+
+# CMake / Qt Creator
+CMakeLists.txt.user*
+*.user
+.qtc_clangd/
+compile_commands.json
+CMakeUserPresets.json
+
+# IDE
+.vscode/
+.idea/
+
+# 临时文件
+*.tmp
+*~
