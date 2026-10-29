@@ -27,6 +27,7 @@ private slots:
     void saveClearsModifiedAndWritesDisk();
     void saveAsUpdatesUrlAndDisplayName();
     void saveAsOverwritesExistingFile();
+    void saveAsLeavesOriginalFileUntouched();
     void saveAsToInvalidPathFailsAndKeepsContent();
     void closeDocumentActivatesNeighbor();
     void closingInactiveDocumentKeepsActive();
@@ -238,6 +239,25 @@ void TestDocumentManager::saveAsOverwritesExistingFile()
 
     QCOMPARE(mgr.saveAs(doc, QUrl::fromLocalFile(target)), true);
     QCOMPARE(readRawBytes(target), QByteArrayLiteral("NEW")); // 旧内容被替换
+}
+
+// 另存为后原文件不被修改：打开 A → 修改 → 另存为 B，A 磁盘内容保持原样（TC-005 预期）
+void TestDocumentManager::saveAsLeavesOriginalFileUntouched()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString original = dir.filePath(QStringLiteral("original.txt"));
+    writeRawBytes(original, QByteArrayLiteral("ORIGINAL"));
+
+    mgr.openUrls({ QUrl::fromLocalFile(original) });
+    Document *doc = mgr.activeDocument();
+    doc->setContent(QStringLiteral("CHANGED"));
+
+    const QUrl target = QUrl::fromLocalFile(dir.filePath(QStringLiteral("copy.txt")));
+    QCOMPARE(mgr.saveAs(doc, target), true);
+    QCOMPARE(readRawBytes(target.toLocalFile()), QByteArrayLiteral("CHANGED"));
+    QCOMPARE(readRawBytes(original), QByteArrayLiteral("ORIGINAL")); // 原文件不动
 }
 
 // 另存为到非法路径：返回 false、发 saveFailed、内容与修改标记不丢（TC-016 核心行为）
