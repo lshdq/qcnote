@@ -62,6 +62,7 @@ void TestLocalStorage::lfRoundTrip()
 
     const DocumentStorage::LoadResult loaded = storage.read(url, &error);
     QCOMPARE(error, QString());
+    QCOMPARE(loaded.ok, true);
     QCOMPARE(loaded.content, QStringLiteral("a\nb\nc"));
     QCOMPARE(loaded.lineEnding, Document::LineEnding::Lf);
 }
@@ -78,6 +79,7 @@ void TestLocalStorage::crlfReadNormalizedToLf()
     QString error;
     const DocumentStorage::LoadResult loaded = storage.read(QUrl::fromLocalFile(path), &error);
     QCOMPARE(error, QString());
+    QCOMPARE(loaded.ok, true);
     QCOMPARE(loaded.content, QStringLiteral("a\nb\nc\n"));
     QCOMPARE(loaded.lineEnding, Document::LineEnding::Crlf);
 }
@@ -112,6 +114,7 @@ void TestLocalStorage::crOnlyReadNormalizedToLf()
     QString error;
     const DocumentStorage::LoadResult loaded = storage.read(QUrl::fromLocalFile(path), &error);
     QCOMPARE(error, QString());
+    QCOMPARE(loaded.ok, true);
     QCOMPARE(loaded.content, QStringLiteral("a\nb\nc"));
     QCOMPARE(loaded.lineEnding, Document::LineEnding::Lf);
 }
@@ -129,6 +132,7 @@ void TestLocalStorage::mixedLineEndingsReadNormalizedToLf()
     const DocumentStorage::LoadResult loaded = storage.read(QUrl::fromLocalFile(path), &error);
     QCOMPARE(error, QString());
     QCOMPARE(loaded.content, QStringLiteral("a\nb\nc\nd"));
+    QCOMPARE(loaded.ok, true);
     QCOMPARE(loaded.lineEnding, Document::LineEnding::Crlf); // 含 "\r\n" 即按 CRLF 记录
 }
 
@@ -144,6 +148,7 @@ void TestLocalStorage::bomStrippedOnRead()
     QString error;
     const DocumentStorage::LoadResult loaded = storage.read(QUrl::fromLocalFile(path), &error);
     QCOMPARE(error, QString());
+    QCOMPARE(loaded.ok, true);
     QCOMPARE(loaded.content, QStringLiteral("hello"));
 }
 
@@ -175,6 +180,7 @@ void TestLocalStorage::readMissingFileReportsError()
     const DocumentStorage::LoadResult loaded =
         storage.read(QUrl::fromLocalFile(dir.filePath(QStringLiteral("missing.txt"))), &error);
     QVERIFY(!error.isEmpty());
+    QVERIFY(!loaded.ok);
     QVERIFY(loaded.content.isEmpty());
 }
 
@@ -202,6 +208,7 @@ void TestLocalStorage::readDirectoryReportsError()
     const DocumentStorage::LoadResult loaded =
         storage.read(QUrl::fromLocalFile(dir.path()), &error);
     QVERIFY(!error.isEmpty());
+    QVERIFY(!loaded.ok);
     QVERIFY(loaded.content.isEmpty());
 }
 

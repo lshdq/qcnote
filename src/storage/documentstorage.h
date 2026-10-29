@@ -21,6 +21,7 @@ public:
     {
         QString content;
         Document::LineEnding lineEnding = Document::LineEnding::Lf;
+        bool ok = false; ///< 成功标志：成功路径必须置 true；默认 false，防止实现漏设 error 时被误判为成功
     };
 
     explicit DocumentStorage(QObject *parent = nullptr)

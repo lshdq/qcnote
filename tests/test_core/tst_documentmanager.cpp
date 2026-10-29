@@ -10,6 +10,20 @@
 #include "format/plaintextformat.h"
 #include "storage/localstorage.h"
 
+// 测试用格式扩展点：仅匹配 *.tst（验证注册的具体格式优先于兜底格式生效）
+class FakeFormat : public DocumentFormat
+{
+    Q_OBJECT
+
+public:
+    QString id() const override { return QStringLiteral("fake"); }
+    QString displayName() const override { return QStringLiteral("测试格式"); }
+    QStringList nameFilters() const override
+    {
+        return { QStringLiteral("测试 (*.tst)") };
+    }
+};
+
 // TC-015：DocumentManager 行为
 class TestDocumentManager : public QObject
 {
@@ -21,13 +35,16 @@ private slots:
     void openUrlsDeduplicatesSameUrl();
     void openMissingFileEmitsOpenFailedAndContinues();
     void openUrlWithoutStorageEmitsOpenFailed();
+    void openUrlsSkipsEmptyUrl();
     void formatForUrlFallsBackToPlainText();
+    void formatForUrlPrefersRegisteredFormatOverFallback();
     void storageForUrlMatchesScheme();
     void saveRequiresUrl();
     void saveClearsModifiedAndWritesDisk();
     void saveAsUpdatesUrlAndDisplayName();
     void saveAsOverwritesExistingFile();
     void saveAsLeavesOriginalFileUntouched();
+    void saveAsToOpenedUrlReloadsOtherDocument();
     void saveAsToInvalidPathFailsAndKeepsContent();
     void closeDocumentActivatesNeighbor();
     void closingInactiveDocumentKeepsActive();
@@ -144,6 +161,31 @@ void TestDocumentManager::openUrlWithoutStorageEmitsOpenFailed()
     QCOMPARE(mgr.documents().size(), 0);
 }
 
+// 空 URL 防御：openUrls({空 URL}) 跳过处理——不误激活未命名文档、不发 openFailed
+void TestDocumentManager::openUrlsSkipsEmptyUrl()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("real.txt"));
+    writeRawBytes(path, QByteArrayLiteral("real"));
+
+    mgr.openUrls({ QUrl::fromLocalFile(path) }); // 打开真实文件
+    mgr.newDocument();                            // 未命名文档（url 为空）
+    Document *fileDoc = mgr.documents().at(0);
+    Document *untitled = mgr.documents().at(1);
+    mgr.setActiveDocument(fileDoc); // 活动文档切回文件文档
+
+    QSignalSpy failSpy(&mgr, &DocumentManager::openFailed);
+    mgr.openUrls({ QUrl() }); // 空 URL：跳过
+
+    QCOMPARE(failSpy.count(), 0);                       // 不报错
+    QCOMPARE(mgr.documents().size(), 2);                // 不新建
+    QCOMPARE(mgr.activeDocument(), fileDoc);            // 不误激活未命名文档
+    QCOMPARE(mgr.documentForUrl(QUrl()), nullptr);      // 空 URL 检索不到任何文档
+    QVERIFY(untitled != nullptr);
+}
+
 // 格式匹配：未知扩展（.md）与已知扩展（.txt）均兜底为 PlainTextFormat
 void TestDocumentManager::formatForUrlFallsBackToPlainText()
 {
@@ -158,6 +200,26 @@ void TestDocumentManager::formatForUrlFallsBackToPlainText()
         mgr.formatForUrl(QUrl::fromLocalFile(QStringLiteral("C:/notes/a.txt")));
     QVERIFY(txtFormat != nullptr);
     QCOMPARE(txtFormat->id(), QStringLiteral("plaintext"));
+}
+
+// 注册的具体格式优先于兜底格式：*.tst 命中 FakeFormat（扩展点契约），未匹配扩展仍兜底 plaintext
+void TestDocumentManager::formatForUrlPrefersRegisteredFormatOverFallback()
+{
+    DocumentManager mgr;
+    FakeFormat fake;
+    mgr.registerFormat(&fake);
+
+    DocumentFormat *tstFormat =
+        mgr.formatForUrl(QUrl::fromLocalFile(QStringLiteral("C:/notes/data.tst")));
+    QVERIFY(tstFormat != nullptr);
+    QCOMPARE(tstFormat->id(), QStringLiteral("fake"));
+    QVERIFY(qobject_cast<FakeFormat *>(tstFormat) != nullptr);
+
+    // 未匹配的扩展名仍兜底为 plaintext（兜底格式最后生效）
+    DocumentFormat *mdFormat =
+        mgr.formatForUrl(QUrl::fromLocalFile(QStringLiteral("C:/notes/readme.md")));
+    QVERIFY(mdFormat != nullptr);
+    QCOMPARE(mdFormat->id(), QStringLiteral("plaintext"));
 }
 
 // 存储分发：file:// 命中 LocalStorage，http:// 返回 nullptr
@@ -258,6 +320,38 @@ void TestDocumentManager::saveAsLeavesOriginalFileUntouched()
     QCOMPARE(mgr.saveAs(doc, target), true);
     QCOMPARE(readRawBytes(target.toLocalFile()), QByteArrayLiteral("CHANGED"));
     QCOMPARE(readRawBytes(original), QByteArrayLiteral("ORIGINAL")); // 原文件不动
+}
+
+// 另存为到其他已打开文档的 URL：写盘覆盖后重载对方文档，防止其旧内存内容后续保存时静默覆盖新内容
+void TestDocumentManager::saveAsToOpenedUrlReloadsOtherDocument()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pathA = dir.filePath(QStringLiteral("a.txt"));
+    const QString pathB = dir.filePath(QStringLiteral("b.txt"));
+    writeRawBytes(pathA, QByteArrayLiteral("A-original\r\nsecond")); // A 原文件为 CRLF
+    writeRawBytes(pathB, QByteArrayLiteral("B-original"));
+
+    mgr.openUrls({ QUrl::fromLocalFile(pathA), QUrl::fromLocalFile(pathB) });
+    Document *docA = mgr.documents().at(0);
+    Document *docB = mgr.documents().at(1);
+    QCOMPARE(docA->lineEnding(), Document::LineEnding::Crlf);
+    QCOMPARE(docB->content(), QStringLiteral("B-original"));
+
+    docA->setContent(QStringLiteral("A-new\ncontent")); // 修改 A（置脏）
+    const QUrl target = QUrl::fromLocalFile(pathB);
+    QCOMPARE(mgr.saveAs(docA, target), true);
+
+    // B 被重载：内容等于 A 的新内容（内存 LF 归一化），干净，换行风格按磁盘新内容记录
+    QCOMPARE(docB->content(), QStringLiteral("A-new\ncontent"));
+    QCOMPARE(docB->modified(), false);
+    QCOMPARE(docB->lineEnding(), Document::LineEnding::Crlf); // A 的风格写回，重载按磁盘记录
+    // 磁盘确已写入新内容（CRLF 按记录风格写回）
+    QCOMPARE(readRawBytes(pathB), QByteArrayLiteral("A-new\r\ncontent"));
+    // A 另存成功：url 更新、干净
+    QCOMPARE(docA->url(), target);
+    QCOMPARE(docA->modified(), false);
 }
 
 // 另存为到非法路径：返回 false、发 saveFailed、内容与修改标记不丢（TC-016 核心行为）

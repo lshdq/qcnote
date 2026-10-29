@@ -60,6 +60,7 @@ DocumentStorage::LoadResult LocalStorage::read(const QUrl &url, QString *error)
     text.replace(QChar(u'\r'), QChar(u'\n'));
 
     result.content = text;
+    result.ok = true; // 成功路径显式置位（LoadResult::ok 默认 false）
     return result;
 }
 

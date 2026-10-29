@@ -17,7 +17,8 @@ class QJSEngine;
  *
  * 可脱离 QML 引擎在 C++ 测试中直接 new 使用；QML 侧通过
  * create(QQmlEngine*, QJSEngine*) 复用同一实例。
- * 构造函数中注册 PlainTextFormat（兜底格式）与 LocalStorage。
+ * 构造函数中注册 PlainTextFormat（兜底格式）与 LocalStorage；
+ * 其他格式经 registerFormat() 注册（兜底格式最后生效）。
  */
 class DocumentManager : public QObject
 {
@@ -41,13 +42,14 @@ public:
     /// 新建"未命名-N"文档（N 从 1 递增）并激活
     Q_INVOKABLE void newDocument();
 
-    /// 批量打开 URL；同 url 已存在则激活已有文档；失败发 openFailed 并继续处理后续 URL
+    /// 批量打开 URL；同 url 已存在则激活已有文档；空 URL 跳过；失败发 openFailed 并继续处理后续 URL
     Q_INVOKABLE void openUrls(const QList<QUrl> &urls);
 
     /// 保存；url 为空返回 false（UI 应转另存为）；失败发 saveFailed
     Q_INVOKABLE bool save(Document *doc);
 
-    /// 另存为；成功后更新 doc 的 url（displayName 随之）并清除修改标记
+    /// 另存为；成功后更新 doc 的 url（displayName 随之）并清除修改标记。
+    /// 若目标 url 同时是其他已打开文档的 URL，写盘成功后会从磁盘重载该文档内容（防止旧内存态再次覆盖磁盘）
     Q_INVOKABLE bool saveAs(Document *doc, const QUrl &url);
 
     /// 关闭文档；激活邻近文档（优先前一个，其次后一个，无则 nullptr）
@@ -61,7 +63,12 @@ public:
     /// 聚合所有已注册格式的文件名过滤器（去重，供 FileDialog 使用）
     Q_INVOKABLE QStringList nameFilters() const;
 
-    /// 按注册顺序找 matchesFileName 的格式；兜底 PlainTextFormat
+    /// 注册文档格式扩展点（格式扩展入口，如 Markdown/JSON）。
+    /// 不取得所有权：调用方保证格式对象生命周期覆盖管理器使用期（如以管理器为 QObject 父）。
+    /// 重复注册（同指针）与空指针被忽略。
+    void registerFormat(DocumentFormat *format);
+
+    /// 按注册顺序找 matchesFileName 的格式；兜底 PlainTextFormat 恒真、最后生效（具体格式优先）
     DocumentFormat *formatForUrl(const QUrl &url) const;
 
     /// 按 supports() 匹配 scheme；无匹配返回 nullptr
