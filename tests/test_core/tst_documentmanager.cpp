@@ -20,11 +20,14 @@ private slots:
     void openUrlsCreatesDocumentWithContent();
     void openUrlsDeduplicatesSameUrl();
     void openMissingFileEmitsOpenFailedAndContinues();
+    void openUrlWithoutStorageEmitsOpenFailed();
     void formatForUrlFallsBackToPlainText();
     void storageForUrlMatchesScheme();
     void saveRequiresUrl();
     void saveClearsModifiedAndWritesDisk();
     void saveAsUpdatesUrlAndDisplayName();
+    void saveAsOverwritesExistingFile();
+    void saveAsToInvalidPathFailsAndKeepsContent();
     void closeDocumentActivatesNeighbor();
     void closingInactiveDocumentKeepsActive();
     void hasUnsavedChangesToggles();
@@ -129,6 +132,17 @@ void TestDocumentManager::openMissingFileEmitsOpenFailedAndContinues()
     QCOMPARE(mgr.documents().constFirst()->content(), QStringLiteral("ok"));
 }
 
+// 打开无可用存储的 URL（无 scheme）：发 openFailed，不新建文档（openUrls 的 storage 空分支）
+void TestDocumentManager::openUrlWithoutStorageEmitsOpenFailed()
+{
+    DocumentManager mgr;
+    QSignalSpy spy(&mgr, &DocumentManager::openFailed);
+    mgr.openUrls({ QUrl(QStringLiteral("noscheme.txt")) });
+
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(mgr.documents().size(), 0);
+}
+
 // 格式匹配：未知扩展（.md）与已知扩展（.txt）均兜底为 PlainTextFormat
 void TestDocumentManager::formatForUrlFallsBackToPlainText()
 {
@@ -207,6 +221,42 @@ void TestDocumentManager::saveAsUpdatesUrlAndDisplayName()
     QCOMPARE(doc->displayName(), QStringLiteral("saved.txt"));
     QCOMPARE(doc->modified(), false);
     QCOMPARE(readRawBytes(target.toLocalFile()), QByteArrayLiteral("abc"));
+}
+
+// 另存为到已存在文件：目标旧内容被完全替换（TC-005 覆盖场景）
+void TestDocumentManager::saveAsOverwritesExistingFile()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString target = dir.filePath(QStringLiteral("exists.txt"));
+    writeRawBytes(target, QByteArrayLiteral("OLD-CONTENT"));
+
+    mgr.newDocument();
+    Document *doc = mgr.activeDocument();
+    doc->setContent(QStringLiteral("NEW"));
+
+    QCOMPARE(mgr.saveAs(doc, QUrl::fromLocalFile(target)), true);
+    QCOMPARE(readRawBytes(target), QByteArrayLiteral("NEW")); // 旧内容被替换
+}
+
+// 另存为到非法路径：返回 false、发 saveFailed、内容与修改标记不丢（TC-016 核心行为）
+void TestDocumentManager::saveAsToInvalidPathFailsAndKeepsContent()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    mgr.newDocument();
+    Document *doc = mgr.activeDocument();
+    doc->setContent(QStringLiteral("keep me"));
+
+    QSignalSpy spy(&mgr, &DocumentManager::saveFailed);
+    const QUrl bad = QUrl::fromLocalFile(dir.filePath(QStringLiteral("no/such/dir/x.txt")));
+    QCOMPARE(mgr.saveAs(doc, bad), false);
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(doc->content(), QStringLiteral("keep me")); // 内容不丢
+    QCOMPARE(doc->modified(), true);                     // 仍标记未保存
 }
 
 // 关闭文档：关闭活动文档时激活邻近（优先前一个，其次后一个，无则 nullptr）

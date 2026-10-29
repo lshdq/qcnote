@@ -16,10 +16,13 @@ private slots:
     void crlfReadNormalizedToLf();
     void crlfWritePreservesCrlf();
     void crOnlyReadNormalizedToLf();
+    void mixedLineEndingsReadNormalizedToLf();
     void bomStrippedOnRead();
     void writtenFileHasNoBom();
     void readMissingFileReportsError();
     void writeInvalidPathReportsError();
+    void readDirectoryReportsError();
+    void writeTruncatesExistingLongerFile();
 
 private:
     static void writeRawBytes(const QString &path, const QByteArray &bytes)
@@ -113,6 +116,22 @@ void TestLocalStorage::crOnlyReadNormalizedToLf()
     QCOMPARE(loaded.lineEnding, Document::LineEnding::Lf);
 }
 
+// 混合换行（CRLF/LF/CR 同一文件，需求"输入"明确支持）：全部归一化为 LF，风格按含 CRLF 记录为 Crlf
+void TestLocalStorage::mixedLineEndingsReadNormalizedToLf()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("mixed.txt"));
+    writeRawBytes(path, QByteArrayLiteral("a\r\nb\nc\rd"));
+
+    LocalStorage storage;
+    QString error;
+    const DocumentStorage::LoadResult loaded = storage.read(QUrl::fromLocalFile(path), &error);
+    QCOMPARE(error, QString());
+    QCOMPARE(loaded.content, QStringLiteral("a\nb\nc\nd"));
+    QCOMPARE(loaded.lineEnding, Document::LineEnding::Crlf); // 含 "\r\n" 即按 CRLF 记录
+}
+
 // 带 BOM 的 UTF-8 文件读取：BOM 被剥离，不进入内容
 void TestLocalStorage::bomStrippedOnRead()
 {
@@ -171,6 +190,36 @@ void TestLocalStorage::writeInvalidPathReportsError()
     QString error;
     QVERIFY(!storage.write(url, QStringLiteral("x"), Document::LineEnding::Lf, &error));
     QVERIFY(!error.isEmpty());
+}
+
+// 读目录路径：返回错误而不是把目录当文件读（TC-016 核心层近缘）
+void TestLocalStorage::readDirectoryReportsError()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    LocalStorage storage;
+    QString error;
+    const DocumentStorage::LoadResult loaded =
+        storage.read(QUrl::fromLocalFile(dir.path()), &error);
+    QVERIFY(!error.isEmpty());
+    QVERIFY(loaded.content.isEmpty());
+}
+
+// 覆盖写：目标文件原内容更长时写入后截断，无旧字节残留（TC-014 往返一致补充）
+void TestLocalStorage::writeTruncatesExistingLongerFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("truncate.txt"));
+    writeRawBytes(path, QByteArrayLiteral("0123456789ABCDEF")); // 16 字节旧内容
+
+    LocalStorage storage;
+    QString error;
+    QVERIFY(storage.write(QUrl::fromLocalFile(path), QStringLiteral("ab"),
+                          Document::LineEnding::Lf, &error));
+    QCOMPARE(error, QString());
+
+    QCOMPARE(readRawBytes(path), QByteArrayLiteral("ab")); // 截断，无残留
 }
 
 int runLocalStorageTests(int argc, char *argv[])
