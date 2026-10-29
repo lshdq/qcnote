@@ -6,6 +6,7 @@
 #include <QUrl>
 
 #include "document/document.h"
+#include "document/documentlistmodel.h"
 
 class DocumentFormat;
 class DocumentStorage;
@@ -26,6 +27,9 @@ class DocumentManager : public QObject
     QML_ELEMENT
     QML_SINGLETON
     Q_PROPERTY(QList<Document *> documents READ documents NOTIFY documentsChanged)
+    /// QML 视图专用：行级增量模型（增删只通知对应行，delegate 不全量重建）。
+    /// C++ 侧请继续使用 documents()（QList 直读）。
+    Q_PROPERTY(DocumentListModel *documentsModel READ documentsModel CONSTANT)
     Q_PROPERTY(Document *activeDocument READ activeDocument WRITE setActiveDocument NOTIFY activeDocumentChanged)
 
 public:
@@ -36,6 +40,8 @@ public:
     static DocumentManager *create(QQmlEngine *qmlEngine, QJSEngine *jsEngine);
 
     QList<Document *> documents() const;
+    /// 返回内部模型的同一实例（构造时创建、以本管理器为父，CONSTANT 不变）
+    DocumentListModel *documentsModel() const;
     Document *activeDocument() const;
     void setActiveDocument(Document *document);
 
@@ -86,6 +92,7 @@ private:
     static DocumentManager *s_instance;
 
     QList<Document *> m_documents;
+    DocumentListModel *m_documentsModel = nullptr;
     Document *m_activeDocument = nullptr;
     int m_untitledCounter = 0;
     QList<DocumentFormat *> m_formats;

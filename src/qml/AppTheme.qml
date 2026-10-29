@@ -47,6 +47,8 @@ QtObject {
     /// 窗口关闭按钮悬停 / 按下（红）
     readonly property color closeHover:   "#c42b1c"
     readonly property color closePressed: "#a12316"
+    /// 强调底色（关闭按钮悬停/按下红底）上的前景字形；两主题同值（红底上均取白）
+    readonly property color closeGlyphForeground: "#ffffff"
     /// 边框 / 分隔线
     readonly property color border: dark ? "#3a4150" : "#c3cad6"
     /// 未保存 ● 标记（形状本身即线索，颜色仅辅助）

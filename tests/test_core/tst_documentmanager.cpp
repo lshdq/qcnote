@@ -5,7 +5,9 @@
 #include <QUrl>
 
 #include "document/document.h"
+#include "document/documentlistmodel.h"
 #include "document/documentmanager.h"
+#include "document/documentlistmodel.h"
 #include "format/documentformat.h"
 #include "format/plaintextformat.h"
 #include "storage/localstorage.h"
@@ -50,6 +52,9 @@ private slots:
     void closingInactiveDocumentKeepsActive();
     void hasUnsavedChangesToggles();
     void nameFiltersAggregatesRegisteredFormats();
+    void documentsModelEmitsInsertOnNewDocument();
+    void documentsModelRemovesOnlyClosedRow();
+    void documentsModelExposesDocumentRole();
 
 private:
     static void writeRawBytes(const QString &path, const QByteArray &bytes)
@@ -449,6 +454,100 @@ void TestDocumentManager::nameFiltersAggregatesRegisteredFormats()
     QVERIFY(filters.contains(QStringLiteral("所有文件 (*)")));
     QCOMPARE(filters.count(QStringLiteral("所有文件 (*)")), 1); // 去重
 }
+
+// B1 增量模型：newDocument 触发 rowsInserted（只插入对应行）、count 属性同步、at/indexOf 一致
+void TestDocumentManager::documentsModelEmitsInsertOnNewDocument()
+{
+    DocumentManager mgr;
+    DocumentListModel *model = mgr.documentsModel();
+    QCOMPARE(model->count(), 0);
+
+    QSignalSpy insertedSpy(model, &QAbstractItemModel::rowsInserted);
+    QSignalSpy removedSpy(model, &QAbstractItemModel::rowsRemoved);
+
+    mgr.newDocument();
+    QCOMPARE(insertedSpy.count(), 1);              // 只一次插入通知
+    QCOMPARE(insertedSpy.at(0).at(1).toInt(), 0);  // first = 0
+    QCOMPARE(insertedSpy.at(0).at(2).toInt(), 0);  // last = 0
+    QCOMPARE(removedSpy.count(), 0);
+    QCOMPARE(model->count(), 1);
+    QCOMPARE(model->property("count").toInt(), 1); // Q_PROPERTY 与实际行数同步
+    QCOMPARE(model->at(0), mgr.activeDocument());
+    QCOMPARE(model->indexOf(mgr.activeDocument()), 0);
+    QCOMPARE(model->indexOf(nullptr), -1);         // 空指针不入列表
+
+    mgr.newDocument();
+    QCOMPARE(insertedSpy.count(), 2);
+    QCOMPARE(insertedSpy.at(1).at(1).toInt(), 1);  // 第二次插入到第 1 行
+    QCOMPARE(insertedSpy.at(1).at(2).toInt(), 1);
+    QCOMPARE(model->count(), 2);
+    QCOMPARE(model->at(1), mgr.activeDocument());
+    QCOMPARE(model->indexOf(model->at(0)), 0);
+    QCOMPARE(model->indexOf(model->at(1)), 1);
+    QCOMPARE(mgr.documents().size(), 2);           // C++ 列表与模型同步
+}
+
+// B1 增量模型核心场景：打开 A、B → 关 A → count=1 且 B 仍在 index 0（只移除对应行）
+void TestDocumentManager::documentsModelRemovesOnlyClosedRow()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pathA = dir.filePath(QStringLiteral("a.txt"));
+    const QString pathB = dir.filePath(QStringLiteral("b.txt"));
+    writeRawBytes(pathA, QByteArrayLiteral("A"));
+    writeRawBytes(pathB, QByteArrayLiteral("B"));
+
+    QSignalSpy insertedSpy(mgr.documentsModel(), &QAbstractItemModel::rowsInserted);
+    mgr.openUrls({ QUrl::fromLocalFile(pathA), QUrl::fromLocalFile(pathB) });
+    QCOMPARE(insertedSpy.count(), 2); // A、B 各一次行插入
+    QCOMPARE(mgr.documentsModel()->count(), 2);
+    Document *docA = mgr.documents().at(0);
+    Document *docB = mgr.documents().at(1);
+    QCOMPARE(mgr.documentsModel()->at(0), docA);
+    QCOMPARE(mgr.documentsModel()->at(1), docB);
+    QCOMPARE(mgr.documentsModel()->indexOf(docA), 0);
+    QCOMPARE(mgr.documentsModel()->indexOf(docB), 1);
+
+    QSignalSpy removedSpy(mgr.documentsModel(), &QAbstractItemModel::rowsRemoved);
+    mgr.closeDocument(docA); // 关 A
+    QCOMPARE(removedSpy.count(), 1);               // 只一次移除通知
+    QCOMPARE(removedSpy.at(0).at(1).toInt(), 0);   // 移除的是第 0 行（A）
+    QCOMPARE(removedSpy.at(0).at(2).toInt(), 0);
+    QCOMPARE(mgr.documentsModel()->count(), 1);    // count=1
+    QCOMPARE(mgr.documentsModel()->at(0), docB);   // B 仍在 index 0
+    QCOMPARE(mgr.documentsModel()->indexOf(docB), 0);
+    QCOMPARE(mgr.documents().size(), 1);           // C++ 列表同步
+    QCOMPARE(mgr.documents().constFirst(), docB);
+
+    mgr.closeDocument(docB); // 全部关闭：count 归零
+    QCOMPARE(removedSpy.count(), 2);
+    QCOMPARE(mgr.documentsModel()->count(), 0);
+    QCOMPARE(mgr.documentsModel()->at(0), nullptr); // 越界防御
+}
+
+// B1 增量模型：document 角色返回行对应 Document*（供 QML delegate 的 required property 注入）
+void TestDocumentManager::documentsModelExposesDocumentRole()
+{
+    DocumentManager mgr;
+    DocumentListModel *model = mgr.documentsModel();
+    mgr.newDocument();
+    mgr.newDocument();
+    Document *first = mgr.documents().at(0);
+    Document *second = mgr.documents().at(1);
+
+    QCOMPARE(model->roleNames().value(DocumentListModel::DocumentRole),
+             QByteArrayLiteral("document"));
+    QCOMPARE(model->index(0, 0).data(DocumentListModel::DocumentRole).value<Document *>(), first);
+    QCOMPARE(model->index(1, 0).data(DocumentListModel::DocumentRole).value<Document *>(), second);
+    // 无效行与未实现角色返回无效值
+    QVERIFY(!model->index(2, 0).isValid());
+    QVERIFY(!model->index(0, 0).data(Qt::DisplayRole).isValid());
+}
+
+// 模型行信号：newDocument 只触发一次 rowsInserted 且 count 同步（不触发 rowsRemoved）
+// 模型增量维护与 at/indexOf 一致性已由上方 B1 用例（documentsModelEmitsInsertOnNewDocument、
+// documentsModelRemovesOnlyClosedRow、documentsModelExposesDocumentRole）完整覆盖。
 
 int runDocumentManagerTests(int argc, char *argv[])
 {

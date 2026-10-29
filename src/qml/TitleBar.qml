@@ -167,11 +167,13 @@ Rectangle {
         CaptionButton {
             glyph: "minimize"
             accessibleName: "最小化"
+            activeFocusOnTab: true
             onClicked: root.window.showMinimized()
         }
         CaptionButton {
             glyph: root.window.visibility === Window.Maximized ? "restore" : "maximize"
             accessibleName: root.window.visibility === Window.Maximized ? "还原" : "最大化"
+            activeFocusOnTab: true
             onClicked: {
                 if (root.window.visibility === Window.Maximized)
                     root.window.showNormal()
@@ -182,6 +184,7 @@ Rectangle {
         CaptionButton {
             glyph: "close"
             accessibleName: "关闭"
+            activeFocusOnTab: true
             onClicked: root.window.close()
         }
     }

@@ -60,7 +60,7 @@ Item {
         height: 10
 
         property color paintColor: root.isClose && mouseArea.containsMouse
-                                    ? "#ffffff" : AppTheme.textPrimary
+                                    ? AppTheme.closeGlyphForeground : AppTheme.textPrimary
         onPaintColorChanged: requestPaint()
 
         onPaint: {

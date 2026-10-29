@@ -52,10 +52,10 @@ ApplicationWindow {
     }
 
     function firstModifiedDoc() {
-        const docs = DocumentManager.documents
-        for (let i = 0; i < docs.length; ++i) {
-            if (docs[i].modified)
-                return docs[i]
+        const m = DocumentManager.documentsModel
+        for (let i = 0; i < m.count; ++i) {
+            if (m.at(i).modified)
+                return m.at(i)
         }
         return null
     }
@@ -115,12 +115,12 @@ ApplicationWindow {
     function cycleTab(delta) {
         if (uiLocked())
             return
-        const docs = DocumentManager.documents
-        if (!docs || docs.length === 0)
+        const m = DocumentManager.documentsModel
+        if (m.count === 0)
             return
-        const i = docs.indexOf(DocumentManager.activeDocument)
-        const n = docs.length
-        DocumentManager.activeDocument = docs[((i + delta) % n + n) % n]
+        const i = m.indexOf(DocumentManager.activeDocument)
+        const n = m.count
+        DocumentManager.activeDocument = m.at(((i + delta) % n + n) % n)
     }
 
     // ---- 关闭 / 退出流程 ----

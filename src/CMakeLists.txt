@@ -5,6 +5,10 @@
 qt_add_library(qcnote_core STATIC
     document/document.h
     document/document.cpp
+    document/documentlistmodel.h
+    document/documentlistmodel.cpp
+    document/documentlistmodel.h
+    document/documentlistmodel.cpp
     document/documentmanager.h
     document/documentmanager.cpp
     format/documentformat.h

@@ -15,8 +15,13 @@ Item {
 
     signal closeRequested(var doc)
 
-    readonly property var documents: DocumentManager.documents
-    readonly property int activeIndex: root.documents ? root.documents.indexOf(DocumentManager.activeDocument) : -1
+    readonly property var documentsModel: DocumentManager.documentsModel
+    // 双依赖重算：activeDocument 变化（NOTIFY activeDocumentChanged）或行增删
+    // （count NOTIFY countChanged）时重求 indexOf —— Q_INVOKABLE 调用本身不产生绑定依赖
+    readonly property int activeIndex: {
+        root.documentsModel.count
+        return root.documentsModel.indexOf(DocumentManager.activeDocument)
+    }
 
     /// 键盘焦点所在的 Tab 索引（仅焦点指示，不代表活动文档）
     property int focusIndex: activeIndex
@@ -26,7 +31,11 @@ Item {
             focusIndex = activeIndex
         root.clampFocus()
     }
-    onDocumentsChanged: root.clampFocus()
+
+    Connections {
+        target: root.documentsModel
+        function onCountChanged() { root.clampFocus() }
+    }
 
     onActiveFocusChanged: {
         if (activeFocus)
@@ -36,33 +45,33 @@ Item {
     Accessible.role: Accessible.PageTabList
     Accessible.name: "文档标签页"
 
-    activeFocusOnTab: root.documents && root.documents.length > 0
+    activeFocusOnTab: root.documentsModel.count > 0
 
     function clampFocus() {
-        if (!root.documents || root.documents.length === 0) {
+        if (root.documentsModel.count === 0) {
             focusIndex = -1
             return
         }
         if (focusIndex < 0)
             focusIndex = 0
-        else if (focusIndex >= root.documents.length)
-            focusIndex = root.documents.length - 1
+        else if (focusIndex >= root.documentsModel.count)
+            focusIndex = root.documentsModel.count - 1
     }
 
     function moveFocus(delta) {
-        if (!root.documents || root.documents.length === 0)
+        if (root.documentsModel.count === 0)
             return
-        const n = root.documents.length
+        const n = root.documentsModel.count
         focusIndex = ((focusIndex + delta) % n + n) % n
         tabList.currentIndex = focusIndex
         tabList.positionViewAtIndex(focusIndex, ListView.Contain)
     }
 
     function activateIndex(index) {
-        if (!root.documents || index < 0 || index >= root.documents.length)
+        if (index < 0 || index >= root.documentsModel.count)
             return
         focusIndex = index
-        DocumentManager.activeDocument = root.documents[index]
+        DocumentManager.activeDocument = root.documentsModel.at(index)
         tabList.currentIndex = index
         tabList.positionViewAtIndex(index, ListView.Contain)
     }
@@ -80,7 +89,7 @@ Item {
         clip: true
         spacing: 2
         boundsBehavior: Flickable.StopAtBounds
-        model: root.documents
+        model: root.documentsModel
 
         ScrollBar.horizontal: ScrollBar {
             policy: ScrollBar.AsNeeded
@@ -90,10 +99,10 @@ Item {
         delegate: Item {
             id: tab
 
-            required property var modelData
+            required property Document document
             required property int index
 
-            readonly property Document doc: modelData
+            readonly property Document doc: tab.document
             readonly property bool isActive: doc === DocumentManager.activeDocument
             readonly property bool isFocused: root.activeFocus && root.focusIndex === tab.index
 

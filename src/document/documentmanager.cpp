@@ -14,6 +14,8 @@ DocumentManager *DocumentManager::s_instance = nullptr;
 DocumentManager::DocumentManager(QObject *parent)
     : QObject(parent)
 {
+    // QML 增量列表模型（与 m_documents 同步维护，见 newDocument/openUrls/closeDocument）
+    m_documentsModel = new DocumentListModel(this);
     // 注册默认扩展点：纯文本兜底格式 + 本地文件存储
     m_plainTextFormat = new PlainTextFormat(this);
     m_formats.append(m_plainTextFormat);
@@ -44,6 +46,11 @@ QList<Document *> DocumentManager::documents() const
     return m_documents;
 }
 
+DocumentListModel *DocumentManager::documentsModel() const
+{
+    return m_documentsModel;
+}
+
 Document *DocumentManager::activeDocument() const
 {
     return m_activeDocument;
@@ -62,6 +69,8 @@ void DocumentManager::newDocument()
     ++m_untitledCounter;
     auto *doc = new Document(QStringLiteral("未命名-%1").arg(m_untitledCounter), this);
     m_documents.append(doc);
+    // 先建 model 行（rowsInserted，视图只新增对应 delegate），再发 documentsChanged
+    m_documentsModel->insert(m_documents.size() - 1, doc);
     emit documentsChanged();
     setActiveDocument(doc);
 }
@@ -95,6 +104,8 @@ void DocumentManager::openUrls(const QList<QUrl> &urls)
         auto *doc = new Document(QString(), this);
         doc->applyLoadedState(url, loaded.content, loaded.lineEnding);
         m_documents.append(doc);
+        // 先建 model 行（rowsInserted，视图只新增对应 delegate），再发 documentsChanged
+        m_documentsModel->insert(m_documents.size() - 1, doc);
         emit documentsChanged();
         emit documentOpened(doc);
         setActiveDocument(doc);
@@ -174,6 +185,8 @@ void DocumentManager::closeDocument(Document *doc)
     Document *prev = index > 0 ? m_documents.at(index - 1) : nullptr;
     Document *next = index + 1 < m_documents.size() ? m_documents.at(index + 1) : nullptr;
 
+    // 先删 model 行（rowsRemoved，视图只销毁对应 delegate），再同步 C++ 列表
+    m_documentsModel->removeAt(index);
     m_documents.removeAt(index);
     emit documentClosed(doc);
     emit documentsChanged();

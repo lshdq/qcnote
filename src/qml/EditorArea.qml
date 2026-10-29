@@ -21,7 +21,7 @@ Item {
     signal newRequested()
     signal openRequested()
 
-    readonly property var documents: DocumentManager.documents
+    readonly property var documentsModel: DocumentManager.documentsModel
 
     FontMetrics {
         id: monoMetrics
@@ -30,12 +30,13 @@ Item {
     }
 
     Repeater {
-        model: root.documents
+        model: root.documentsModel
 
         delegate: Item {
             id: editorHolder
 
-            readonly property Document doc: modelData
+            required property Document document
+            readonly property Document doc: editorHolder.document
             readonly property bool isActive: doc === DocumentManager.activeDocument
 
             visible: isActive
@@ -116,7 +117,7 @@ Item {
 
     WelcomePage {
         anchors.fill: parent
-        visible: !root.documents || root.documents.length === 0
+        visible: root.documentsModel.count === 0
         onNewRequested: root.newRequested()
         onOpenRequested: root.openRequested()
     }
