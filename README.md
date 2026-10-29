@@ -50,6 +50,7 @@ docs/                   # 需求 / 测试用例 / 决策 / 审查记录
 
 ## 已知限制（MVP）
 
-- Win11 悬停最大化按钮不弹出 Snap Layouts（自绘按钮限制；Win+方向贴靠可用）
-- Frameless 窗口无系统阴影
+- Win11 悬停最大化按钮不弹出 Snap Layouts（自绘按钮限制；Win+方向贴靠可用）；Frameless 窗口无系统阴影；标题栏顶缘 6px 缩放区内双击不触发最大化
 - 仅 UTF-8（暂无 GBK 探测）；\>10MB 大文件无性能优化
+- 状态栏字符数按 UTF-16 码元统计（BMP 外字符如 emoji 计 2）；行列计算为线性扫描（大文档高频输入可能有开销）
+- `registerFormat` 不要注册恒匹配格式（如 id "plaintext" 的其他实例），会遮蔽其后注册的具体格式（详见 `DocumentManager::registerFormat` 注释）

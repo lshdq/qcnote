@@ -7,7 +7,6 @@
 #include "document/document.h"
 #include "document/documentlistmodel.h"
 #include "document/documentmanager.h"
-#include "document/documentlistmodel.h"
 #include "format/documentformat.h"
 #include "format/plaintextformat.h"
 #include "storage/localstorage.h"

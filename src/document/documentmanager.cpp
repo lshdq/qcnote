@@ -225,6 +225,8 @@ QStringList DocumentManager::nameFilters() const
 
 void DocumentManager::registerFormat(DocumentFormat *format)
 {
+    // 警告：注册恒匹配格式（如 id 为 "plaintext" 的其他实例）会遮蔽其后注册的
+    // 具体格式；formatForUrl 仅跳过内置兜底实例，无法跳过这些外部实例。
     if (!format || m_formats.contains(format))
         return; // 空指针与重复注册忽略
     m_formats.append(format);
