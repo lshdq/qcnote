@@ -464,14 +464,17 @@ void TestDocumentManager::documentsModelEmitsInsertOnNewDocument()
 
     QSignalSpy insertedSpy(model, &QAbstractItemModel::rowsInserted);
     QSignalSpy removedSpy(model, &QAbstractItemModel::rowsRemoved);
+    QSignalSpy countSpy(model, &DocumentListModel::countChanged); // QML 绑定依赖该 NOTIFY
 
     mgr.newDocument();
     QCOMPARE(insertedSpy.count(), 1);              // 只一次插入通知
     QCOMPARE(insertedSpy.at(0).at(1).toInt(), 0);  // first = 0
     QCOMPARE(insertedSpy.at(0).at(2).toInt(), 0);  // last = 0
     QCOMPARE(removedSpy.count(), 0);
+    QCOMPARE(countSpy.count(), 1);
     QCOMPARE(model->count(), 1);
     QCOMPARE(model->property("count").toInt(), 1); // Q_PROPERTY 与实际行数同步
+    QCOMPARE(model->rowCount(), 1);
     QCOMPARE(model->at(0), mgr.activeDocument());
     QCOMPARE(model->indexOf(mgr.activeDocument()), 0);
     QCOMPARE(model->indexOf(nullptr), -1);         // 空指针不入列表
@@ -480,6 +483,7 @@ void TestDocumentManager::documentsModelEmitsInsertOnNewDocument()
     QCOMPARE(insertedSpy.count(), 2);
     QCOMPARE(insertedSpy.at(1).at(1).toInt(), 1);  // 第二次插入到第 1 行
     QCOMPARE(insertedSpy.at(1).at(2).toInt(), 1);
+    QCOMPARE(countSpy.count(), 2);
     QCOMPARE(model->count(), 2);
     QCOMPARE(model->at(1), mgr.activeDocument());
     QCOMPARE(model->indexOf(model->at(0)), 0);
@@ -540,9 +544,11 @@ void TestDocumentManager::documentsModelExposesDocumentRole()
              QByteArrayLiteral("document"));
     QCOMPARE(model->index(0, 0).data(DocumentListModel::DocumentRole).value<Document *>(), first);
     QCOMPARE(model->index(1, 0).data(DocumentListModel::DocumentRole).value<Document *>(), second);
-    // 无效行与未实现角色返回无效值
+    // 无效行与未实现角色返回无效值；at 越界（负数/超界）返回 nullptr 不崩溃
     QVERIFY(!model->index(2, 0).isValid());
     QVERIFY(!model->index(0, 0).data(Qt::DisplayRole).isValid());
+    QCOMPARE(model->at(-1), nullptr);
+    QCOMPARE(model->at(2), nullptr);
 }
 
 // 模型行信号：newDocument 只触发一次 rowsInserted 且 count 同步（不触发 rowsRemoved）
