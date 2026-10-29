@@ -15,16 +15,13 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-运行（自动化验证优先 offscreen 无窗口；需真实窗口时必须最小化启动，禁止前台抢占焦点）：
+运行（自动化验证**仅用 offscreen**，不产生任何可见窗口、不抢占焦点；**禁止**在自动化验证/冒烟中启动真实窗口——即使最小化也会在任务栏闪现并可能干扰用户；仅当用户明确要求肉眼验证界面时，经用户同意后再最小化启动并尽快关闭）：
 
 ```powershell
 $env:PATH = "D:\Program\Qt\6.11.2\mingw_64\bin;D:\Program\Qt\Tools\mingw1310_64\bin;" + $env:PATH
-# offscreen（无可见窗口，冒烟首选）
 $env:QT_QPA_PLATFORM = "offscreen"
 Start-Process -FilePath "E:\works\qcnote\build\qcnote.exe"
-# 真实窗口（最小化）
-$env:QT_QPA_PLATFORM = ""
-Start-Process -FilePath "E:\works\qcnote\build\qcnote.exe" -WindowStyle Minimized
+# 用后结束进程：Get-Process qcnote | Stop-Process -Force
 ```
 
 ## 目录结构与职责
