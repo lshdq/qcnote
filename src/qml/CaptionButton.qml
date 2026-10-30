@@ -18,6 +18,9 @@ Item {
 
     readonly property bool isClose: glyph === "close"
 
+    /// glyph 变化时触发 Canvas 重绘（信号属于根 Item，需在根部处理）
+    onGlyphChanged: canvas.requestPaint()
+
     signal clicked()
 
     width: 44
@@ -71,8 +74,8 @@ Item {
             ctx.beginPath()
             switch (root.glyph) {
             case "minimize":
-                ctx.moveTo(0, 8.5)
-                ctx.lineTo(10, 8.5)
+                ctx.moveTo(0, 5)
+                ctx.lineTo(10, 5)
                 break
             case "maximize":
                 ctx.rect(0.5, 0.5, 9, 9)

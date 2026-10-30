@@ -1,0 +1,2 @@
+// Windows executable icon (embedded by windres)
+IDI_ICON1 ICON "icons/qcnote.ico"

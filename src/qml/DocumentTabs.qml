@@ -23,6 +23,11 @@ Item {
         return root.documentsModel.indexOf(DocumentManager.activeDocument)
     }
 
+    /// Tab 是否溢出（需滚动）；ListView 与附着 ScrollBar 的 interactive 均由它联动：
+    /// 未溢出时空白区按压事件不被 Flickable/ScrollBar 吞掉，向下传播给
+    /// TitleBar.dragArea（窗口拖拽/双击最大化）；溢出时恢复滚动交互
+    readonly property bool tabsOverflow: tabList.contentWidth > tabList.width
+
     /// 键盘焦点所在的 Tab 索引（仅焦点指示，不代表活动文档）
     property int focusIndex: activeIndex
 
@@ -89,11 +94,14 @@ Item {
         clip: true
         spacing: 2
         boundsBehavior: Flickable.StopAtBounds
+        // 见 root.tabsOverflow 说明：未溢出时空白区事件穿透
+        interactive: root.tabsOverflow
         model: root.documentsModel
 
         ScrollBar.horizontal: ScrollBar {
             policy: ScrollBar.AsNeeded
-            interactive: true
+            // 见 root.tabsOverflow 说明：未溢出时空白区事件穿透
+            interactive: root.tabsOverflow
         }
 
         delegate: Item {

@@ -9,7 +9,7 @@ import QtQuick.Layouts
  * - 窗口控制按钮固定在最右（独立 Row，锚定右缘），永不被 Tab 挤压；
  * - Tab 区独立组件横向滚动（见 DocumentTabs）；
  * - 空白区拖拽移动窗口（阈值触发 startSystemMove，保证双击仍可最大化/还原）、
- *   双击最大化/还原；最大化时禁用拖拽；
+ *   双击最大化/还原；最大化时拖拽先还原窗口（标题栏吸附光标下）再继续系统拖拽；
  * - 菜单项快捷键通过自绘右对齐文本显示（Qt Quick Controls 2 的 MenuItem
  *   无 shortcut 属性，按键由窗口级 Shortcut 统一处理）。
  */
@@ -33,7 +33,8 @@ Rectangle {
     color: AppTheme.titleBarBackground
     implicitHeight: barHeight
 
-    // 空白区：拖拽移动 + 双击最大化/还原（先于按钮声明，置于下层）
+    // 空白区：拖拽移动 + 双击最大化/还原（先于按钮声明，置于下层）；
+    // 最大化时拖拽：先还原并让标题栏吸附到光标下，再继续系统拖拽
     MouseArea {
         id: dragArea
         anchors.fill: parent
@@ -46,12 +47,21 @@ Rectangle {
             mouse.accepted = true
             pressPos = Qt.point(mouse.x, mouse.y)
         }
-        // 移动超过阈值才启动系统拖拽：纯点击不启动，双击手势不受影响
+        // 移动超过阈值才启动系统拖拽：纯点击不启动，双击手势不受影响；
+        // 最大化时拖拽：先还原并让标题栏吸附到光标下（水平按按下点比例），再继续系统拖拽
         onPositionChanged: (mouse) => {
-            if (!pressed || maximized)
+            if (!pressed)
                 return
-            if (Math.abs(mouse.x - pressPos.x) > 4 || Math.abs(mouse.y - pressPos.y) > 4)
-                root.window.startSystemMove()
+            if (Math.abs(mouse.x - pressPos.x) <= 4 && Math.abs(mouse.y - pressPos.y) <= 4)
+                return
+            if (maximized) {
+                const globalPos = mapToGlobal(mouse.x, mouse.y)
+                const ratio = pressPos.x / root.width
+                root.window.showNormal()
+                root.window.x = Math.round(globalPos.x - ratio * root.window.width)
+                root.window.y = Math.round(globalPos.y - pressPos.y)
+            }
+            root.window.startSystemMove()
         }
         onDoubleClicked: {
             if (root.window.visibility === Window.Maximized)

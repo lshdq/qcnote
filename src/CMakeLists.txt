@@ -59,6 +59,8 @@ qt_add_qml_module(qcnote_core
         qml/icons/new.svg
         qml/icons/open.svg
         qml/icons/save.svg
+        # 应用图标 SVG，嵌入资源供运行时窗口图标使用（:/qt/qml/qcnote/icons/qcnote.svg）
+        icons/qcnote.svg
 )
 
 # ------------------------------------------------------------------
@@ -67,11 +69,15 @@ qt_add_qml_module(qcnote_core
 # ------------------------------------------------------------------
 qt_add_executable(qcnote WIN32
     main.cpp
+    # Windows 平台 .rc 资源：内嵌 exe 图标
+    qcnote.rc
 )
 
 target_link_libraries(qcnote PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
+    # Svg 用于加载 SVG 格式的窗口图标
+    Qt6::Svg
     qcnote_coreplugin
 )
 
