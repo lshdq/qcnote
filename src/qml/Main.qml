@@ -134,17 +134,6 @@ ApplicationWindow {
         }
     }
 
-    function beginExitCheck() {
-        if (!DocumentManager.hasUnsavedChanges()) {
-            exiting = true
-            root.close()
-            return
-        }
-        closeFlowDoc = firstModifiedDoc()
-        closeFlowIsExit = true
-        unsavedDialog.open()
-    }
-
     function continueExit() {
         const next = firstModifiedDoc()
         if (!next) {
@@ -178,13 +167,27 @@ ApplicationWindow {
     }
 
     onClosing: (close) => {
+        // 退出已确认（未保存流程走完）→ 放行
         if (root.exiting) {
             close.accepted = true
             return
         }
+        // 有模态 UI 打开时拒绝关闭
+        if (uiLocked()) {
+            close.accepted = false
+            return
+        }
+        // 无未保存修改 → 直接放行关闭；
+        // 不可嵌套调用 close()：QWindow::close() 在 close 事件派发期间有重入保护（inClose），会被静默忽略
+        if (!DocumentManager.hasUnsavedChanges()) {
+            close.accepted = true
+            return
+        }
+        // 有未保存修改 → 拒绝本次关闭，弹确认框逐个处理
         close.accepted = false
-        if (!uiLocked())
-            beginExitCheck()
+        closeFlowDoc = firstModifiedDoc()
+        closeFlowIsExit = true
+        unsavedDialog.open()
     }
 
     // ---- 布局（四层结构） ----
