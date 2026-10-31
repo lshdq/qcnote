@@ -15,6 +15,10 @@ qt_add_library(qcnote_core STATIC
     storage/documentstorage.h
     storage/localstorage.h
     storage/localstorage.cpp
+    editor/multicursorengine.h
+    editor/multicursorengine.cpp
+    editor/multicursorcontroller.h
+    editor/multicursorcontroller.cpp
 )
 
 target_include_directories(qcnote_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -26,6 +30,7 @@ target_include_directories(qcnote_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/document
     ${CMAKE_CURRENT_SOURCE_DIR}/format
     ${CMAKE_CURRENT_SOURCE_DIR}/storage
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor
 )
 
 target_link_libraries(qcnote_core PUBLIC Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2)
@@ -51,6 +56,7 @@ qt_add_qml_module(qcnote_core
         qml/DocumentTabs.qml
         qml/EditorArea.qml
         qml/Main.qml
+        qml/MultiCursorLayer.qml
         qml/StatusBar.qml
         qml/TitleBar.qml
         qml/Toolbar.qml

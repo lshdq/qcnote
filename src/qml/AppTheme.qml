@@ -54,6 +54,12 @@ QtObject {
     /// 未保存 ● 标记（形状本身即线索，颜色仅辅助）
     readonly property color unsavedMark: dark ? "#ffb454" : "#b37700"
 
+    // ---- 多光标（列式编辑） ----
+    /// 额外光标：与原生光标一致取强调色
+    readonly property color multiCursor: accent
+    /// 多光标选区高亮（带透明度，叠于文本之上）
+    readonly property color multiSelection: dark ? "#336f9bff" : "#293564d4"
+
     // ---- 字体 ----
     /// 编辑区等宽字体（Windows 自带；缺字时 Qt 自动回退系统字体）
     readonly property string fontFamilyMono: "Consolas"

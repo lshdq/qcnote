@@ -3,7 +3,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 /**
- * 底部状态栏：光标行/列、选中字符数/总字符数、编码、换行风格、文件路径。
+ * 底部状态栏：光标行/列、选中字符数、光标数（多光标时）、总字符数、
+ * 编码、换行风格、文件路径。
  * 路径超长省略显示，悬停 tooltip 显示完整路径。
  */
 Rectangle {
@@ -13,6 +14,8 @@ Rectangle {
     property int cursorLine: 1
     property int cursorColumn: 1
     property int selectionLength: 0
+    /// 光标数（多光标激活时 > 1）
+    property int cursorCount: 1
 
     color: AppTheme.statusBarBackground
     implicitHeight: 28
@@ -42,6 +45,13 @@ Rectangle {
             font.pointSize: 9
             color: AppTheme.textSecondary
             text: "已选 " + root.selectionLength + " 字符"
+        }
+
+        Label {
+            visible: root.doc && root.cursorCount > 1
+            font.pointSize: 9
+            color: AppTheme.textSecondary
+            text: "光标 ×" + root.cursorCount
         }
 
         Label {

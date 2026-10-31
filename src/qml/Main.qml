@@ -228,6 +228,7 @@ ApplicationWindow {
             cursorLine: editorArea.cursorLine
             cursorColumn: editorArea.cursorColumn
             selectionLength: editorArea.selectionLength
+            cursorCount: editorArea.cursorCount
         }
     }
 

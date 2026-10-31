@@ -5,6 +5,7 @@ qt_add_executable(test_core
     tst_document.cpp
     tst_documentmanager.cpp
     tst_localstorage.cpp
+    tst_multicursorengine.cpp
 )
 
 target_link_libraries(test_core PRIVATE
