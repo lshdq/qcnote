@@ -10,6 +10,12 @@ import QtQuick.Controls
  * - 初始与外部变化（doc.contentChanged）→ 写入 TextArea；
  * - 用户输入 → 写回 doc.content（值相等判断防回写环）。
  *
+ * 光标同步（会话恢复数据源，与内容同步同模式）：
+ * - delegate 创建与外部变化（doc.cursorPositionChanged）→ 应用到 TextArea
+ *   并滚动可见（selfCursorSync 防环，防止下行应用被误判为用户输入回写）；
+ * - 用户移动光标 → 回写 doc.cursorPosition（Document 同值设置不发信号，
+ *   环自然终止）。
+ *
  * 多光标（列式编辑）集成：
  * - 每编辑器一个 MultiCursorController（状态按文档独立保留）；
  * - Keys.onPressed 拦截控制器消费的按键；覆盖 MouseArea 拦截
@@ -53,9 +59,25 @@ Item {
             /// 自同步标志：onTextChanged 回写 doc.content 期间为真，
             /// 用于 contentChanged 处理器区分“自身回写”与“外部重置”
             property bool selfContentSync: false
+            /// 光标自同步标志：doc.cursorPositionChanged → editor 应用期间为真，
+            /// 用于 editor.onCursorPositionChanged 区分“下行应用”与“用户输入回写”
+            property bool selfCursorSync: false
 
             visible: isActive
             anchors.fill: parent
+
+            // 初始光标：delegate 创建时 doc.cursorPosition 可能已非 0
+            // （如会话恢复路径 restoreDocuments 先 openUrls 后写光标，
+            // 创建早于写光标时由下方 Connections 兜底，两路径互补）；
+            // 钳制到内容长度，防止越界
+            Component.onCompleted: {
+                editor.cursorPosition = Math.min(editorHolder.doc.cursorPosition, editor.length)
+                // 延迟一拍再滚动：创建期 cursorRectangle / 视口高度尚未经首次
+                // polish / 布局最终化（height=0 时 scrollCursorIntoView 的分支
+                // 计算失真），Qt.callLater 等布局稳定后执行；Qt 原生 attach
+                // 滚动为兜底，此处消除对兜底的时序依赖
+                Qt.callLater(editor.scrollCursorIntoView)
+            }
 
             onIsActiveChanged: {
                 if (isActive) {
@@ -208,7 +230,26 @@ Item {
                             syncStatus()
                     }
 
-                    onCursorPositionChanged: syncStatus()
+                    onCursorPositionChanged: {
+                        // 用户移动光标（键盘/鼠标）→ 回写 doc.cursorPosition，
+                        // 作为会话恢复的光标数据源。selfCursorSync 期间是
+                        // doc→editor 的下行应用而非用户输入，跳过；
+                        // Document 同值设置不发信号，环自然终止
+                        if (editorHolder.doc && !editorHolder.selfCursorSync
+                                && editor.cursorPosition !== editorHolder.doc.cursorPosition) {
+                            // 回写期间置 selfCursorSync：doc 信号同步回落到下行
+                            // 处理器时跳过——对 editor.cursorPosition 的同值赋值
+                            // 仍会按 MoveAnchor 语义重置锚点、清空用户选区
+                            //（与 onContentChanged 回写的 selfContentSync 同模式）
+                            editorHolder.selfCursorSync = true
+                            try {
+                                editorHolder.doc.cursorPosition = editor.cursorPosition
+                            } finally {
+                                editorHolder.selfCursorSync = false
+                            }
+                        }
+                        syncStatus()
+                    }
                     onSelectionStartChanged: syncStatus()
                     onSelectionEndChanged: syncStatus()
 
@@ -255,6 +296,25 @@ Item {
                             }
                             editor.syncStatus()
                         }
+                        function onCursorPositionChanged() {
+                            // C++（会话恢复等）设置 doc 光标 → 应用到编辑器
+                            // 并滚动到可见；置 selfCursorSync 防止上方
+                            // editor.onCursorPositionChanged 把本次下行应用
+                            // 误判为用户输入而回写 doc（与 onContentChanged 的
+                            // selfContentSync 防环同一模式）；值相等的下行
+                            // 应用不触发 editor 信号，无环
+                            if (!editorHolder.doc || editorHolder.selfCursorSync)
+                                return
+                            editorHolder.selfCursorSync = true
+                            try {
+                                editor.cursorPosition = Math.min(editorHolder.doc.cursorPosition, editor.length)
+                                editor.scrollCursorIntoView()
+                            } finally {
+                                // 复位放 finally：应用/滚动任何一步抛异常也不得卡死标志，
+                                // 否则用户光标回写链路永久失效（本缺陷的教训）
+                                editorHolder.selfCursorSync = false
+                            }
+                        }
                     }
 
                     // 状态栏“已选 N 字符”数据源：
@@ -265,6 +325,28 @@ Item {
                     // selectionRanges 经 QML 引擎边界可能呈嵌套 [[s,e],...]
                     // 或展平 [s,e,s,e,...] 两种形态（同 MultiCursorLayer
                     // .selectionPairs 的兼容解析）
+                    // 滚动到光标可见：TextArea 的 ensureCursorVisible 为私有方法不可从 QML
+                    // 调用（Qt 6.11.2 实测抛 TypeError），按光标矩形手动调整 ScrollView
+                    // 滚动位。滚动载体取 contentItem：ScrollView 无 flickable 属性
+                    // （运行时取值为 undefined——flickable 实为 TextArea 的附加属性，
+                    // 旧实现取它恒早退、恢复光标后不滚动），其 contentItem 即内部
+                    // Flickable，contentX/contentY 可直接读写
+                    function scrollCursorIntoView() {
+                        const flick = editorScroll.contentItem
+                        if (!flick)
+                            return
+                        const rect = editor.cursorRectangle
+                        if (rect.y < flick.contentY)
+                            flick.contentY = rect.y
+                        else if (rect.y + rect.height > flick.contentY + editorScroll.height)
+                            flick.contentY = rect.y + rect.height - editorScroll.height
+                        // 横向（NoWrap 长行）：光标列超出可视区时同样滚动到位
+                        if (rect.x < flick.contentX)
+                            flick.contentX = rect.x
+                        else if (rect.x + rect.width > flick.contentX + editorScroll.width)
+                            flick.contentX = rect.x + rect.width - editorScroll.width
+                    }
+
                     function syncSelectionLength() {
                         if (mc.active || mc.columnSelecting) {
                             let total = 0

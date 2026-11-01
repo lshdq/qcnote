@@ -54,6 +54,7 @@ private slots:
     void documentsModelEmitsInsertOnNewDocument();
     void documentsModelRemovesOnlyClosedRow();
     void documentsModelExposesDocumentRole();
+    void instanceTracksLatestInstance();
 
 private:
     static void writeRawBytes(const QString &path, const QByteArray &bytes)
@@ -548,6 +549,23 @@ void TestDocumentManager::documentsModelExposesDocumentRole()
     QVERIFY(!model->index(0, 0).data(Qt::DisplayRole).isValid());
     QCOMPARE(model->at(-1), nullptr);
     QCOMPARE(model->at(2), nullptr);
+}
+
+// instance() 静态访问器：返回最新构造的实例，析构后置空。
+// s_instance 是静态的，本用例自建自毁完成断言，避免与其他用例（栈实例先后构造）互相干扰。
+void TestDocumentManager::instanceTracksLatestInstance()
+{
+    QCOMPARE(DocumentManager::instance(), nullptr); // 前置：无存活实例
+
+    {
+        DocumentManager mgr;
+        QCOMPARE(DocumentManager::instance(), &mgr);
+
+        DocumentManager mgr2; // 后构造者覆盖登记
+        QCOMPARE(DocumentManager::instance(), &mgr2);
+    } // 两个实例均析构：析构时置空
+
+    QCOMPARE(DocumentManager::instance(), nullptr);
 }
 
 // 模型行信号：newDocument 只触发一次 rowsInserted 且 count 同步（不触发 rowsRemoved）

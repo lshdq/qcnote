@@ -23,6 +23,7 @@ class Document : public QObject
     Q_PROPERTY(QString displayName READ displayName NOTIFY displayNameChanged)
     Q_PROPERTY(QString filePath READ filePath NOTIFY filePathChanged)
     Q_PROPERTY(LineEnding lineEnding READ lineEnding WRITE setLineEnding NOTIFY lineEndingChanged)
+    Q_PROPERTY(int cursorPosition READ cursorPosition WRITE setCursorPosition NOTIFY cursorPositionChanged)
 
 public:
     enum class LineEnding
@@ -44,17 +45,20 @@ public:
     QString displayName() const;
     QString filePath() const;
     LineEnding lineEnding() const;
+    int cursorPosition() const;
 
     void setUrl(const QUrl &url);
     void setContent(const QString &content);
     void setModified(bool modified);
     void setLineEnding(LineEnding ending);
+    void setCursorPosition(int position);
 
     /**
      * @brief 加载路径专用：写入 url/内容/换行风格且不置脏。
      *
      * 与 setContent 不同（不同值会置 modified=true），供 DocumentManager
      * 在从存储读取文件后初始化文档状态。
+     * 不改动 cursorPosition：另存覆盖重载场景只同步内容等状态，不动光标。
      */
     void applyLoadedState(const QUrl &url, const QString &content, LineEnding ending);
 
@@ -65,6 +69,7 @@ signals:
     void displayNameChanged();
     void filePathChanged();
     void lineEndingChanged();
+    void cursorPositionChanged();
 
 private:
     void updateDisplayName();
@@ -75,4 +80,5 @@ private:
     QString m_displayName;
     QString m_untitledName;
     LineEnding m_lineEnding = LineEnding::Lf;
+    int m_cursorPosition = 0;
 };

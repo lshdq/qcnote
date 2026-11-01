@@ -8,6 +8,9 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("qcnote"));
     QGuiApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    // 组织名与 SessionManager 会话文件定位一致（QSettings IniFormat + UserScope
+    // 组织名/应用名均为 qcnote），保证应用属性与会话路径互不漂移
+    QGuiApplication::setOrganizationName(QStringLiteral("qcnote"));
 
     QQuickStyle::setStyle(QStringLiteral("Material"));
 

@@ -10,7 +10,10 @@ import QtQuick.Layouts
  * - 快捷键统一为窗口级 Shortcut；菜单仅展示快捷键文本；
  * - 未保存关闭/退出流程：三选（保存 / 放弃 / 取消），取消中止；
  * - 打开/保存失败统一错误对话框（排队展示），内容不丢失；
- * - 边缘 + 四角隐形命中区触发系统缩放，保留 Win+方向贴靠等原生行为。
+ * - 边缘 + 四角隐形命中区触发系统缩放，保留 Win+方向贴靠等原生行为；
+ * - 会话恢复：启动时先恢复文档集（含光标/活动标签）再应用窗口几何、
+ *   最后显示窗口（几何先就位再显示，避免默认几何闪跳）；运行期窗口
+ *   几何与最大化标志变化经 SessionManager 防抖写盘。
  */
 ApplicationWindow {
     id: root
@@ -22,7 +25,9 @@ ApplicationWindow {
 
     flags: Qt.Window | Qt.FramelessWindowHint
 
-    visible: true
+    // 初始不可见：Component.onCompleted 完成会话恢复与几何应用后再显示
+    // （见下方"会话恢复"块），避免先按默认几何闪跳再跳到恢复几何
+    visible: false
 
     color: AppTheme.contentBackground
     Material.theme: AppTheme.dark ? Material.Dark : Material.Light
@@ -188,6 +193,94 @@ ApplicationWindow {
         closeFlowDoc = firstModifiedDoc()
         closeFlowIsExit = true
         unsavedDialog.open()
+    }
+
+    // ---- 会话恢复 ----
+    // 最近一次 Windowed（普通）状态的窗口几何。仅在 Windowed 时更新，
+    // 最大化期间几何变化不落入缓存——保证"还原"回到最大化前的几何。
+    // 初始值为当前默认几何（x/y 未显式设置，QQuickWindow 默认 0）
+    property int lastNormalX: 0
+    property int lastNormalY: 0
+    property int lastNormalWidth: 1000
+    property int lastNormalHeight: 640
+    // 最近一次非最小化状态是否最大化。QML 的 visibility 在最小化时报
+    // Minimized（丢失"此前最大化"信息），上报时若实时取
+    // visibility === Window.Maximized 会把缓存覆盖为 false，故以本标志
+    // 为准：仅在 Maximized / Windowed 迁移时更新，Minimized 保持不变
+    property bool lastMaximized: false
+
+    /// 统一上报窗口状态（500ms 防抖写盘；maximized 取 lastMaximized，
+    /// lastNormal* 保持上次 Windowed 几何）
+    function syncWindowState() {
+        SessionManager.saveWindowState(lastNormalX, lastNormalY, lastNormalWidth,
+                                       lastNormalHeight, lastMaximized)
+    }
+
+    Component.onCompleted: {
+        // 时序：先恢复文档（各 doc 光标随 openUrls 后写入，EditorArea
+        // delegate 经 Connections 同步到 TextArea），再应用窗口几何，
+        // 最后显示窗口；无会话/几何离屏时 windowState() 返回空 map，
+        // 不设置任何几何，保持默认 1000×640 行为与现状一致
+        SessionManager.restoreDocuments()
+        const g = SessionManager.windowState()
+        if (Object.keys(g).length > 0) {
+            // 数据源先行：此时窗口未显示，visibility 仍为 Hidden，下方几何
+            // 赋值触发的 onXChanged 走不进 Windowed 分支，恢复几何永远不会
+            // 写入 lastNormal*；而 visible = true 会同步发出 visibilityChanged，
+            // 若不在此直接更新数据源，首次上报将以初始默认值 (0,0,1000,640)
+            // 覆盖会话缓存（P0 缺陷根因：恢复后不动窗口的会话丢失几何）
+            lastNormalX = g.x
+            lastNormalY = g.y
+            lastNormalWidth = g.width
+            lastNormalHeight = g.height
+            lastMaximized = g.maximized === true
+            x = g.x
+            y = g.y
+            width = g.width
+            height = g.height
+            if (g.maximized === true)
+                visibility = Window.Maximized
+        }
+        visible = true
+        // 首次上报：保证首启也写入 [window] 节（此后窗口创建会话文件窗口项）
+        syncWindowState()
+    }
+
+    // 几何变化仅在普通窗口状态记录并上报（最大化/还原过程的中间几何
+    // 不是 normal 几何，跳过）；每处变化均触发防抖上报
+    onXChanged: {
+        if (visibility === Window.Windowed) {
+            lastNormalX = x
+            syncWindowState()
+        }
+    }
+    onYChanged: {
+        if (visibility === Window.Windowed) {
+            lastNormalY = y
+            syncWindowState()
+        }
+    }
+    onWidthChanged: {
+        if (visibility === Window.Windowed) {
+            lastNormalWidth = width
+            syncWindowState()
+        }
+    }
+    onHeightChanged: {
+        if (visibility === Window.Windowed) {
+            lastNormalHeight = height
+            syncWindowState()
+        }
+    }
+    // 可见性变化：lastNormal* 保持上次 Windowed 几何；lastMaximized 仅在
+    // Maximized / Windowed 迁移时更新（Minimized 报告丢失"此前最大化"
+    // 信息，直接取 visibility 会误写 false），随后统一上报
+    onVisibilityChanged: {
+        if (visibility === Window.Maximized)
+            lastMaximized = true
+        else if (visibility === Window.Windowed)
+            lastMaximized = false
+        syncWindowState()
     }
 
     // ---- 布局（四层结构） ----

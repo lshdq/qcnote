@@ -36,6 +36,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSettings>
 #include <QString>
 #include <QStringLiteral>
 #include <QTemporaryDir>
@@ -48,6 +49,14 @@
 // ==================== 测试台辅助 ====================
 
 namespace {
+
+// 进程级会话重定向目录：main 中 setPath 前创建，进程退出时随 QTemporaryDir 清理
+// （与 tst_sessionrestore.cpp 的 sessionRedirectDir 同一模式）
+QTemporaryDir &sessionRedirectDir()
+{
+    static QTemporaryDir dir;
+    return dir;
+}
 
 /**
  * @brief QML 类型短名精确匹配。
@@ -505,6 +514,15 @@ int main(int argc, char *argv[])
     if (QDir(QString::fromLatin1(kWinFonts)).exists())
         qputenv("QT_QPA_FONTDIR", kWinFonts);
     QGuiApplication app(argc, argv);
+    // 会话重定向：Main.qml 接入会话恢复后，各用例的 Bench 实例化 Main.qml
+    // 即创建 SessionManager 单例并在构造期读写 QSettings；必须在任何
+    // QSettings 实例创建之前把 IniFormat+UserScope 重定向到临时目录，
+    // 否则单例将读写真实用户配置 %APPDATA%/qcnote/qcnote.ini
+    //（[documents] 被清零、[window] 写成测试几何），污染跑 ctest 机器
+    // 的用户配置。QTemporaryDir 为进程级静态，退出时清理
+    sessionRedirectDir();
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                       sessionRedirectDir().path());
     // 窗口关闭（visible = false）不得触发 QGuiApplication 自动退出，
     // 否则退出标志会干扰 QTest 内部事件循环
     app.setQuitOnLastWindowClosed(false);

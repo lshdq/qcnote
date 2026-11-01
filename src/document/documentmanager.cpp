@@ -20,6 +20,8 @@ DocumentManager::DocumentManager(QObject *parent)
     m_plainTextFormat = new PlainTextFormat(this);
     m_formats.append(m_plainTextFormat);
     m_storages.append(new LocalStorage(this));
+    // 记录最新实例，供 instance() 获取（构造即登记；析构时置空）
+    s_instance = this;
 }
 
 DocumentManager::~DocumentManager()
@@ -38,6 +40,11 @@ DocumentManager *DocumentManager::create(QQmlEngine *qmlEngine, QJSEngine *jsEng
     if (!s_instance)
         s_instance = new DocumentManager();
     QJSEngine::setObjectOwnership(s_instance, QQmlEngine::CppOwnership);
+    return s_instance;
+}
+
+DocumentManager *DocumentManager::instance()
+{
     return s_instance;
 }
 

@@ -1,3 +1,4 @@
+#include <QSignalSpy>
 #include <QTest>
 #include <QUrl>
 
@@ -15,6 +16,9 @@ private slots:
     void displayNameFollowsUrl();
     void filePathFollowsUrl();
     void lineEndingDefaultAndSet();
+    void cursorPositionDefaultAndSet();
+    void sameCursorPositionDoesNotEmitSignal();
+    void applyLoadedStateKeepsCursorPosition();
 };
 
 void TestDocument::defaultState()
@@ -86,6 +90,48 @@ void TestDocument::lineEndingDefaultAndSet()
     QCOMPARE(doc.lineEnding(), Document::LineEnding::Lf);
     doc.setLineEnding(Document::LineEnding::Crlf);
     QCOMPARE(doc.lineEnding(), Document::LineEnding::Crlf);
+}
+
+// cursorPosition 默认 0，可读写
+void TestDocument::cursorPositionDefaultAndSet()
+{
+    Document doc;
+    QCOMPARE(doc.cursorPosition(), 0);
+
+    doc.setCursorPosition(42);
+    QCOMPARE(doc.cursorPosition(), 42);
+
+    doc.setCursorPosition(0);
+    QCOMPARE(doc.cursorPosition(), 0);
+
+    doc.setCursorPosition(-1); // 负值下界保护：钳为 0
+    QCOMPARE(doc.cursorPosition(), 0);
+}
+
+// 同值重复设置不发射 cursorPositionChanged（防 QML 回写环）
+void TestDocument::sameCursorPositionDoesNotEmitSignal()
+{
+    Document doc;
+    doc.setCursorPosition(7);
+
+    QSignalSpy spy(&doc, &Document::cursorPositionChanged);
+    doc.setCursorPosition(7); // 同值
+    QCOMPARE(spy.count(), 0);
+
+    doc.setCursorPosition(8); // 不同值：发射一次
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(doc.cursorPosition(), 8);
+}
+
+// applyLoadedState 不改动 cursorPosition（另存覆盖重载不动光标）
+void TestDocument::applyLoadedStateKeepsCursorPosition()
+{
+    Document doc;
+    doc.setCursorPosition(15);
+
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/x.txt")),
+                         QStringLiteral("loaded"), Document::LineEnding::Crlf);
+    QCOMPARE(doc.cursorPosition(), 15); // 光标位置保持不变
 }
 
 int runDocumentTests(int argc, char *argv[])

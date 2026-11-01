@@ -39,6 +39,9 @@ public:
     /// QML 单例工厂：复用同一实例（生命周期归 C++ 管理）
     static DocumentManager *create(QQmlEngine *qmlEngine, QJSEngine *jsEngine);
 
+    /// 取当前实例（可能为 nullptr），供 SessionManager 等其他单例获取既有管理器
+    static DocumentManager *instance();
+
     QList<Document *> documents() const;
     /// 返回内部模型的同一实例（构造时创建、以本管理器为父，CONSTANT 不变）
     DocumentListModel *documentsModel() const;

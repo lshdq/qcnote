@@ -39,6 +39,11 @@ Document::LineEnding Document::lineEnding() const
     return m_lineEnding;
 }
 
+int Document::cursorPosition() const
+{
+    return m_cursorPosition;
+}
+
 void Document::setUrl(const QUrl &url)
 {
     if (m_url == url)
@@ -72,6 +77,17 @@ void Document::setLineEnding(LineEnding ending)
         return;
     m_lineEnding = ending;
     emit lineEndingChanged();
+}
+
+void Document::setCursorPosition(int position)
+{
+    // 值域 [0, +∞) 下界保护：负值（会话记录损坏等异常数据）钳为 0；
+    // 钳制后再比较，同值无信号语义不变
+    position = qMax(0, position);
+    if (m_cursorPosition == position)
+        return; // 同值直接返回，不发射信号（防 QML 光标位置回写造成的绑定环）
+    m_cursorPosition = position;
+    emit cursorPositionChanged();
 }
 
 void Document::applyLoadedState(const QUrl &url, const QString &content, LineEnding ending)
