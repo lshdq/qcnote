@@ -99,6 +99,10 @@ Item {
                     font.pointSize: 11
                     // Tab 宽度 = 4 个等宽字符
                     tabStopDistance: monoMetrics.advanceWidth("0000")
+                    color: AppTheme.textPrimary
+                    // 选区：半透明强调蓝（与多光标选区同色）；文字保持原色，避免默认白字在半透明底上对比不足
+                    selectionColor: AppTheme.selection
+                    selectedTextColor: AppTheme.textPrimary
 
                     background: Rectangle {
                         color: AppTheme.contentBackground

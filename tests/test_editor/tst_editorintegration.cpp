@@ -1,4 +1,7 @@
-// 列式编辑 QML 集成测试（测试用例 TC-101 至 TC-113 的可自动化部分）
+// QML 集成测试：
+// - 编辑区选中背景色（测试用例 TC-001 至 TC-005）：AppTheme.selection
+//   token 取值与 TextArea selectionColor / selectedTextColor 绑定的属性断言
+// - 列式编辑（测试用例 TC-101 至 TC-113 的可自动化部分）
 //
 // 测试方式：offscreen 平台下经 QQuickView 实例化真实 EditorArea 组件
 // （内含 TextArea + MultiCursorController + MultiCursorLayer 的完整接线），
@@ -14,6 +17,7 @@
 
 #include <QTest>
 #include <QClipboard>
+#include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QGuiApplication>
@@ -132,6 +136,33 @@ struct Bench
             dm = view.engine()->singletonInstance<DocumentManager *>(
                          u"qcnote", u"DocumentManager");
         return dm;
+    }
+
+    // 从当前 view 的 QML 引擎取 AppTheme QML 单例（pragma Singleton，
+    // per-engine 实例）：与 QML 侧 AppTheme.xxx 引用同一对象；
+    // 主题切换经 setProperty("dark") 驱动全部 token 重算
+    QObject *theme() const
+    {
+        return view.engine()->singletonInstance<QObject *>(u"qcnote", u"AppTheme");
+    }
+
+    // 切换主题并等待 QML 绑定重求值
+    void setDark(bool dark)
+    {
+        theme()->setProperty("dark", dark);
+        settle();
+    }
+
+    // TextArea 颜色属性（selectionColor / selectedTextColor）
+    QColor editorColor(const char *name) const
+    {
+        return editor->property(name).value<QColor>();
+    }
+
+    // AppTheme token 颜色属性（selection / multiSelection / textPrimary）
+    QColor themeColor(const char *name) const
+    {
+        return theme()->property(name).value<QColor>();
     }
 
     // 类名匹配见上方 classNameMatches 注释（TextArea 可能被包装为
@@ -362,7 +393,9 @@ EditorArea {
 
 // ==================== 测试类 ====================
 
-// 列式编辑 T3 验收：QML 集成层（TC-101 至 TC-113 可自动化项）
+// QML 集成层测试：
+// - 编辑区选中背景色（TC-001 至 TC-005：主题 token 与选区颜色绑定）
+// - 列式编辑 T3 验收（TC-101 至 TC-113 可自动化项）
 class TestEditorIntegration : public QObject
 {
     Q_OBJECT
@@ -409,6 +442,23 @@ private slots:
 
     // TC-113：标签页切换保留多光标；外部内容重置退回单光标
     void tc113_tabSwitch_externalReset();
+
+    // ---- 编辑区选中背景色（需求：编辑区选中背景色；TC-001 至 TC-005） ----
+
+    // TC-001：浅色主题原生选区背景为半透明强调蓝 #293564d4
+    void tc001_lightTheme_selectionColor();
+
+    // TC-002：深色主题原生选区背景为半透明强调蓝 #336f9bff
+    void tc002_darkTheme_selectionColor();
+
+    // TC-003：选中文字颜色绑定 textPrimary（两主题，保持原色可读）
+    void tc003_selectedTextColor_textPrimary();
+
+    // TC-004：选区存在时切换主题，selectionColor 随绑定即时切换
+    void tc004_themeSwitch_selectionFollows();
+
+    // TC-005：multiSelection 取值不变且与 selection 同值（观感统一）
+    void tc005_multiSelection_matchesSelection();
 };
 
 // TC-101：Alt+单击两处加光标（初始光标 + 2 = 3 光标），输入与 Backspace
@@ -872,6 +922,115 @@ void TestEditorIntegration::tc113_tabSwitch_externalReset()
     QVERIFY(!mcA->active());
     QCOMPARE(b.root->property("cursorCount").toInt(), 1);
     QCOMPARE(b.cursorPosition(), 0);
+}
+
+// ==================== 编辑区选中背景色（TC-001 至 TC-005） ====================
+//
+// offscreen 无法做像素级视觉验证，以属性断言为准：经真实 EditorArea
+// 组件（与主程序同接线，非最小复制品）读取 TextArea 的 selectionColor /
+// selectedTextColor 与 AppTheme token 比较，并以 nativeDragSelect 验证
+// 原生选择交互不变（选区确实产生）。颜色字面量为 #AARRGGBB 半透明格式。
+
+// TC-001：浅色主题（默认）下原生拖选产生选区，selectionColor 绑定
+// AppTheme.selection 的浅色值 #293564d4（半透明强调蓝，非系统红色）
+void TestEditorIntegration::tc001_lightTheme_selectionColor()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("hello selection color")), "testbench open failed");
+
+    QVERIFY(!b.theme()->property("dark").toBool()); // 默认浅色主题
+
+    // 原生拖选交互不变，产生 [0,5) 选区
+    b.nativeDragSelect(0, 5);
+    QCOMPARE(b.selectionStart(), 0);
+    QCOMPARE(b.selectionEnd(), 5);
+
+    const QColor expected(QStringLiteral("#293564d4"));
+    QCOMPARE(b.editorColor("selectionColor"), expected);
+    QCOMPARE(b.themeColor("selection"), expected);
+}
+
+// TC-002：深色主题下 selectionColor 为 #336f9bff
+void TestEditorIntegration::tc002_darkTheme_selectionColor()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("hello selection color")), "testbench open failed");
+
+    b.setDark(true);
+    QVERIFY(b.theme()->property("dark").toBool());
+
+    b.nativeDragSelect(0, 5);
+    QCOMPARE(b.selectionStart(), 0);
+    QCOMPARE(b.selectionEnd(), 5);
+
+    const QColor expected(QStringLiteral("#336f9bff"));
+    QCOMPARE(b.editorColor("selectionColor"), expected);
+    QCOMPARE(b.themeColor("selection"), expected);
+}
+
+// TC-003：selectedTextColor 绑定 AppTheme.textPrimary，两主题下选中文字
+// 均保持原色（不回落到默认白色——半透明底上对比不足）
+void TestEditorIntegration::tc003_selectedTextColor_textPrimary()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("hello selection color")), "testbench open failed");
+
+    b.nativeDragSelect(0, 5);
+    QVERIFY(b.selectionEnd() > b.selectionStart());
+
+    // 浅色：#212734；正文与选中文字同色（绑定同一 token）
+    QCOMPARE(b.editorColor("color"), b.themeColor("textPrimary"));
+    QCOMPARE(b.editorColor("selectedTextColor"), b.themeColor("textPrimary"));
+    QCOMPARE(b.editorColor("selectedTextColor"), QColor(QStringLiteral("#212734")));
+
+    // 深色：#e8eaf0
+    b.setDark(true);
+    QCOMPARE(b.editorColor("color"), b.themeColor("textPrimary"));
+    QCOMPARE(b.editorColor("selectedTextColor"), b.themeColor("textPrimary"));
+    QCOMPARE(b.editorColor("selectedTextColor"), QColor(QStringLiteral("#e8eaf0")));
+}
+
+// TC-004：选区保持存在时切换主题（浅→深→浅），selectionColor 随
+// AppTheme.selection 绑定即时切换，选区不被打断
+void TestEditorIntegration::tc004_themeSwitch_selectionFollows()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("hello selection color")), "testbench open failed");
+
+    b.nativeDragSelect(0, 5);
+    QVERIFY(b.selectionEnd() > b.selectionStart());
+
+    const QColor light(QStringLiteral("#293564d4"));
+    const QColor dark(QStringLiteral("#336f9bff"));
+    QCOMPARE(b.editorColor("selectionColor"), light);
+
+    b.setDark(true); // 浅 → 深
+    QCOMPARE(b.editorColor("selectionColor"), dark);
+    QVERIFY(b.selectionEnd() > b.selectionStart());
+
+    b.setDark(false); // 深 → 浅
+    QCOMPARE(b.editorColor("selectionColor"), light);
+    QVERIFY(b.selectionEnd() > b.selectionStart());
+}
+
+// TC-005：多光标选区 token multiSelection 取值不变（既有半透明蓝），
+// 且两主题下与新增 selection 同值，原生/多光标选区观感统一
+void TestEditorIntegration::tc005_multiSelection_matchesSelection()
+{
+    Bench b;
+    QVERIFY2(b.open(QString()), "testbench open failed");
+
+    const QColor light(QStringLiteral("#293564d4"));
+    const QColor dark(QStringLiteral("#336f9bff"));
+
+    QCOMPARE(b.themeColor("multiSelection"), light);
+    QCOMPARE(b.themeColor("selection"), light);
+    QCOMPARE(b.themeColor("multiSelection"), b.themeColor("selection"));
+
+    b.setDark(true);
+    QCOMPARE(b.themeColor("multiSelection"), dark);
+    QCOMPARE(b.themeColor("selection"), dark);
+    QCOMPARE(b.themeColor("multiSelection"), b.themeColor("selection"));
 }
 
 int main(int argc, char *argv[])

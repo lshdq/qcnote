@@ -54,9 +54,11 @@ QtObject {
     /// 未保存 ● 标记（形状本身即线索，颜色仅辅助）
     readonly property color unsavedMark: dark ? "#ffb454" : "#b37700"
 
-    // ---- 多光标（列式编辑） ----
+    // ---- 选区 / 多光标（列式编辑） ----
     /// 额外光标：与原生光标一致取强调色
     readonly property color multiCursor: accent
+    /// 原生文本选区高亮（半透明，叠于内容背景之上；与 multiSelection 同色，观感统一）
+    readonly property color selection: dark ? "#336f9bff" : "#293564d4"
     /// 多光标选区高亮（带透明度，叠于文本之上）
     readonly property color multiSelection: dark ? "#336f9bff" : "#293564d4"
 
