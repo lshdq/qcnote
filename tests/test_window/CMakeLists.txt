@@ -44,3 +44,27 @@ add_test(NAME test_sessionrestore COMMAND test_sessionrestore)
 set_tests_properties(test_sessionrestore PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# 启动参数打开 + 单实例转发 QML 集成测试目标（offscreen，架构同上）：
+# 复刻 main.cpp 启动序列（引擎加载前 SingleInstance::create + initialize
+# 启动参数），实例化 Main.qml 验证恢复会话后叠加打开（TC-007）、IPC 转发
+# 叠加（TC-008/TC-014）。main 中注入随机 USERNAME 隔离命名管道服务名，
+# 会话重定向到临时目录，QCNOTE_TEST_SHELL_NOOP 隔离首启提示。
+qt_add_executable(test_startupargs
+    tst_startupargs.cpp
+)
+
+target_link_libraries(test_startupargs PRIVATE
+    Qt6::Test
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(test_startupargs)
+
+add_test(NAME test_startupargs COMMAND test_startupargs)
+# GUI 红线：自动化验证一律 offscreen，无可见窗口
+set_tests_properties(test_startupargs PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)

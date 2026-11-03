@@ -21,6 +21,10 @@ qt_add_library(qcnote_core STATIC
     editor/multicursorengine.cpp
     editor/multicursorcontroller.h
     editor/multicursorcontroller.cpp
+    platform/shellintegration.h
+    platform/shellintegration.cpp
+    platform/singleinstance.h
+    platform/singleinstance.cpp
 )
 
 target_include_directories(qcnote_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -33,9 +37,12 @@ target_include_directories(qcnote_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/format
     ${CMAKE_CURRENT_SOURCE_DIR}/storage
     ${CMAKE_CURRENT_SOURCE_DIR}/editor
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform
 )
 
-target_link_libraries(qcnote_core PUBLIC Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2)
+# Network（QLocalServer/QLocalSocket，单实例转发）以 PUBLIC 链接：测试与
+# 可执行文件经 qcnote_core 传递获得链接（singleinstance.h 的使用方需网络符号）
+target_link_libraries(qcnote_core PUBLIC Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Network)
 
 # QML 文件放在 qml/ 子目录，QTP0004 NEW 自动生成各子目录的 qmldir
 qt_policy(SET QTP0004 NEW)
@@ -86,6 +93,9 @@ target_link_libraries(qcnote PRIVATE
     Qt6::QuickControls2
     # Svg 用于加载 SVG 格式的窗口图标
     Qt6::Svg
+    # main.cpp 直接包含 platform/singleinstance.h：显式链接核心库以获得其
+    # PUBLIC 头文件搜索路径与符号（仅链插件时 usage requirements 不完整传递）
+    qcnote_core
     qcnote_coreplugin
 )
 

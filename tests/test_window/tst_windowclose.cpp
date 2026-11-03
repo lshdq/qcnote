@@ -508,6 +508,10 @@ int main(int argc, char *argv[])
 {
     // GUI 红线：自动化验证一律 offscreen，全程无可见窗口
     qputenv("QT_QPA_PLATFORM", "offscreen");
+    // 隔离首启右键菜单提示：无标记机器上 Main.qml 启动会弹模态提示框并
+    // 锁定 uiLocked、拦截窗口关闭路径导致用例超时；置 no-op 钩子使
+    // ShellIntegration 不提示、不写注册表（须在 QML 引擎/单例创建前设置）
+    qputenv("QCNOTE_TEST_SHELL_NOOP", "1");
     // offscreen 平台不带字体目录（Qt 不带内嵌字体）时指定系统字体，
     // 保证文本渲染路径正常
     static const char kWinFonts[] = "C:/Windows/Fonts";

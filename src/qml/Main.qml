@@ -13,7 +13,9 @@ import QtQuick.Layouts
  * - 边缘 + 四角隐形命中区触发系统缩放，保留 Win+方向贴靠等原生行为；
  * - 会话恢复：启动时先恢复文档集（含光标/活动标签）再应用窗口几何、
  *   最后显示窗口（几何先就位再显示，避免默认几何闪跳）；运行期窗口
- *   几何与最大化标志变化经 SessionManager 防抖写盘。
+ *   几何与最大化标志变化经 SessionManager 防抖写盘；
+ * - 启动时序：会话恢复 → 单实例启动参数刷出（叠加打开）→ 首启右键
+ *   菜单提示；单实例激活请求（再次启动/打开）仅前置窗口。
  */
 ApplicationWindow {
     id: root
@@ -53,7 +55,7 @@ ApplicationWindow {
     function uiLocked() {
         return unsavedDialog.visible || errorDialog.visible
                || openFileDlg.visible || saveFileDialog.visible
-               || titleBar.menuVisible
+               || titleBar.menuVisible || ctxMenuPromptDialog.visible
     }
 
     function firstModifiedDoc() {
@@ -244,6 +246,11 @@ ApplicationWindow {
         visible = true
         // 首次上报：保证首启也写入 [window] 节（此后窗口创建会话文件窗口项）
         syncWindowState()
+        // 单实例：恢复会话后叠加打开启动参数中的文件
+        SingleInstance.openPendingUrls()
+        // 首启提示：恢复与参数打开完成后再弹，避免被覆盖
+        if (ShellIntegration.contextMenuPromptNeeded())
+            ctxMenuPromptDialog.open()
     }
 
     // 几何变化仅在普通窗口状态记录并上报（最大化/还原过程的中间几何
@@ -478,6 +485,53 @@ ApplicationWindow {
             } else {
                 errorDialog.currentError = null
             }
+        }
+    }
+
+    Dialog {
+        id: ctxMenuPromptDialog
+        modal: true
+        focus: true
+        width: 380
+        title: "添加右键菜单"
+
+        contentItem: Label {
+            text: "是否将『用qcnote打开』加入资源管理器右键菜单？"
+            wrapMode: Text.Wrap
+            width: ctxMenuPromptDialog.availableWidth
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: "添加"
+                highlighted: true
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            }
+            Button {
+                text: "不添加"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+        }
+
+        onAccepted: {
+            const r = ShellIntegration.applyContextMenuChoice(true)
+            if (!r.ok)
+                root.queueError("右键菜单设置失败", r.error)
+        }
+        onRejected: {
+            const r = ShellIntegration.applyContextMenuChoice(false)
+            if (!r.ok)
+                root.queueError("右键菜单设置失败", r.error)
+        }
+    }
+
+    Connections {
+        target: SingleInstance
+
+        // 单实例激活请求（再次启动/打开转发）：仅前置窗口，URL 已在 C++ 打开
+        function onActivationRequested() {
+            root.raise()
+            root.requestActivate()
         }
     }
 

@@ -7,6 +7,8 @@ qt_add_executable(test_core
     tst_localstorage.cpp
     tst_multicursorengine.cpp
     tst_sessionmanager.cpp
+    tst_shellintegration.cpp
+    tst_singleinstance.cpp
 )
 
 target_link_libraries(test_core PRIVATE
