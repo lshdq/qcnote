@@ -1,0 +1,1745 @@
+
+==> 设置构建 PATH
+
+==> 从 CMakeLists.txt 提取版本号
+版本号：0.1.0
+
+==> 清理旧 build 目录并全新配置 Release 构建
+-- The CXX compiler identification is GNU 13.1.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: D:/Program/Qt/Tools/mingw1310_64/bin/g++.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+-- Performing Test HAVE_STDATOMIC
+-- Performing Test HAVE_STDATOMIC - Success
+-- Found WrapAtomic: TRUE
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Configuring done (3.1s)
+-- Generating done (0.6s)
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_C_COMPILER
+
+
+-- Build files have been written to: D:/works/qcnote/build
+
+==> 完整构建
+[1/92] Copying qcnote_core qml resources into build dir
+[2/92] Copying qcnote_core qml sources into build dir
+[3/92] Running qmlimportscanner for test_core
+[4/92] Building CXX object src/CMakeFiles/qcnote_core_resources_3.dir/.qt/rcc/qrc_qcnote_core_raw_res_0_init.cpp.obj
+[5/92] Building CXX object src/CMakeFiles/qcnote_core_resources_1.dir/.qt/rcc/qrc_qmake_qcnote_init.cpp.obj
+[6/92] Building CXX object src/CMakeFiles/qcnote_core_resources_2.dir/.qt/rcc/qrc_qcnote_core_raw_qml_0_init.cpp.obj
+[7/92] Building CXX object src/CMakeFiles/qcnote_core_resources_4.dir/.qt/rcc/qrc_qcnote_core_raw_qml_0_extra_qmldirs_init.cpp.obj
+[8/92] Running qmlimportscanner for test_editor
+[9/92] Running qmlimportscanner for test_window
+[10/92] Running qmlimportscanner for test_sessionrestore
+[11/92] Populating .qmlls.ini file at D:/works/qcnote/build/.qt/.qmlls.build.ini
+[12/92] Running qmlimportscanner for qcnote
+[13/92] Automatic MOC and UIC for target qcnote_coreplugin_init
+[14/92] Running AUTOMOC file extraction for target qcnote_coreplugin_init
+[15/92] Running moc --collect-json for target qcnote_coreplugin_init
+[16/92] Building CXX object src/CMakeFiles/qcnote_coreplugin_init.dir/qcnote_coreplugin_init_autogen/mocs_compilation.cpp.obj
+[17/92] Automatic MOC and UIC for target qcnote_coreplugin
+[18/92] Automatic MOC and UIC for target qcnote_core
+[19/92] Running AUTOMOC file extraction for target qcnote_core
+[20/92] Running rcc for resource qmake_qcnote
+[21/92] Running rcc for resource qcnote_core_raw_qml_0
+[22/92] Running rcc for resource qcnote_core_raw_res_0
+[23/92] Running rcc for resource qcnote_core_raw_qml_0_extra_qmldirs
+[24/92] Generating .rcc/qmlcache/qcnote_core_qmlcache_loader.cpp
+[25/92] Running moc --collect-json for target qcnote_core
+[26/92] Automatic QML type registration for target qcnote_core
+[27/92] Generating .rcc/qmlcache/qcnote_core_qml_AppTheme_qml.cpp, .rcc/qmlcache/qcnote_core_qml_AppTheme_qml.cpp.aotstats
+[28/92] Generating .rcc/qmlcache/qcnote_core_qml_CaptionButton_qml.cpp, .rcc/qmlcache/qcnote_core_qml_CaptionButton_qml.cpp.aotstats
+[29/92] Generating .rcc/qmlcache/qcnote_core_qml_EditorArea_qml.cpp, .rcc/qmlcache/qcnote_core_qml_EditorArea_qml.cpp.aotstats
+[30/92] Generating .rcc/qmlcache/qcnote_core_qml_DocumentTabs_qml.cpp, .rcc/qmlcache/qcnote_core_qml_DocumentTabs_qml.cpp.aotstats
+[31/92] Generating .rcc/qmlcache/qcnote_core_qml_MultiCursorLayer_qml.cpp, .rcc/qmlcache/qcnote_core_qml_MultiCursorLayer_qml.cpp.aotstats
+[32/92] Generating .rcc/qmlcache/qcnote_core_qml_StatusBar_qml.cpp, .rcc/qmlcache/qcnote_core_qml_StatusBar_qml.cpp.aotstats
+[33/92] Generating .rcc/qmlcache/qcnote_core_qml_Toolbar_qml.cpp, .rcc/qmlcache/qcnote_core_qml_Toolbar_qml.cpp.aotstats
+[34/92] Generating .rcc/qmlcache/qcnote_core_qml_WelcomePage_qml.cpp, .rcc/qmlcache/qcnote_core_qml_WelcomePage_qml.cpp.aotstats
+[35/92] Generating .rcc/qmlcache/qcnote_core_qml_TitleBar_qml.cpp, .rcc/qmlcache/qcnote_core_qml_TitleBar_qml.cpp.aotstats
+[36/92] Generating .rcc/qmlcache/qcnote_core_qml_Main_qml.cpp, .rcc/qmlcache/qcnote_core_qml_Main_qml.cpp.aotstats
+[37/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.qt/rcc/qrc_qmake_qcnote.cpp.obj
+[38/92] Building CXX object src/CMakeFiles/qcnote_coreplugin_init.dir/qcnote_coreplugin_init.cpp.obj
+[39/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.qt/rcc/qrc_qcnote_core_raw_qml_0.cpp.obj
+[40/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.qt/rcc/qrc_qcnote_core_raw_res_0.cpp.obj
+[41/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.qt/rcc/qrc_qcnote_core_raw_qml_0_extra_qmldirs.cpp.obj
+[42/92] Building CXX object src/CMakeFiles/qcnote_coreplugin.dir/qcnote_coreplugin_autogen/mocs_compilation.cpp.obj
+[43/92] Building CXX object src/CMakeFiles/qcnote_coreplugin.dir/qcnote_coreplugin_qcnotePlugin.cpp.obj
+[44/92] Building CXX object src/CMakeFiles/qcnote_core.dir/document/document.cpp.obj
+[45/92] Building CXX object src/CMakeFiles/qcnote_core.dir/format/plaintextformat.cpp.obj
+[46/92] Building CXX object src/CMakeFiles/qcnote_core.dir/storage/localstorage.cpp.obj
+[47/92] Building CXX object src/CMakeFiles/qcnote_core.dir/document/documentlistmodel.cpp.obj
+[48/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_Toolbar_qml.cpp.obj
+[49/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_StatusBar_qml.cpp.obj
+[50/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_WelcomePage_qml.cpp.obj
+[51/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qmlcache_loader.cpp.obj
+[52/92] Building CXX object src/CMakeFiles/qcnote_core.dir/editor/multicursorengine.cpp.obj
+[53/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_MultiCursorLayer_qml.cpp.obj
+[54/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_CaptionButton_qml.cpp.obj
+[55/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_EditorArea_qml.cpp.obj
+[56/92] Building CXX object src/CMakeFiles/qcnote_core.dir/document/documentmanager.cpp.obj
+[57/92] Building CXX object src/CMakeFiles/qcnote_core.dir/qcnote_core_qmltyperegistrations.cpp.obj
+[58/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_AppTheme_qml.cpp.obj
+[59/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_TitleBar_qml.cpp.obj
+[60/92] Building CXX object src/CMakeFiles/qcnote_core.dir/editor/multicursorcontroller.cpp.obj
+[61/92] Building CXX object src/CMakeFiles/qcnote_core.dir/document/sessionmanager.cpp.obj
+[62/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_DocumentTabs_qml.cpp.obj
+[63/92] Building CXX object src/CMakeFiles/qcnote_core.dir/qcnote_core_autogen/mocs_compilation.cpp.obj
+[64/92] Building CXX object src/CMakeFiles/qcnote_core.dir/.rcc/qmlcache/qcnote_core_qml_Main_qml.cpp.obj
+[65/92] Linking CXX static library src\libqcnote_core.a
+[66/92] Linking CXX static library qcnote\libqcnote_coreplugin.a
+[67/92] Automatic MOC and UIC for target qcnote
+[68/92] Building CXX object src/CMakeFiles/qcnote.dir/qcnote_autogen/mocs_compilation.cpp.obj
+[69/92] Building RC object src/CMakeFiles/qcnote.dir/qcnote.rc.obj
+[70/92] Automatic MOC and UIC for target test_core
+[71/92] Building CXX object tests/test_core/CMakeFiles/test_core.dir/test_core_autogen/mocs_compilation.cpp.obj
+[72/92] Automatic MOC and UIC for target test_editor
+[73/92] Building CXX object tests/test_editor/CMakeFiles/test_editor.dir/test_editor_autogen/mocs_compilation.cpp.obj
+[74/92] Automatic MOC and UIC for target test_window
+[75/92] Automatic MOC and UIC for target test_sessionrestore
+[76/92] Building CXX object tests/test_window/CMakeFiles/test_window.dir/test_window_autogen/mocs_compilation.cpp.obj
+[77/92] Building CXX object tests/test_window/CMakeFiles/test_sessionrestore.dir/test_sessionrestore_autogen/mocs_compilation.cpp.obj
+[78/92] Building CXX object src/CMakeFiles/qcnote.dir/main.cpp.obj
+[79/92] Linking CXX executable qcnote.exe
+[80/92] Building CXX object tests/test_core/CMakeFiles/test_core.dir/main.cpp.obj
+[81/92] Building CXX object tests/test_core/CMakeFiles/test_core.dir/tst_document.cpp.obj
+[82/92] Building CXX object tests/test_core/CMakeFiles/test_core.dir/tst_localstorage.cpp.obj
+[83/92] Building CXX object tests/test_core/CMakeFiles/test_core.dir/tst_sessionmanager.cpp.obj
+[84/92] Building CXX object tests/test_core/CMakeFiles/test_core.dir/tst_documentmanager.cpp.obj
+[85/92] Building CXX object tests/test_window/CMakeFiles/test_sessionrestore.dir/tst_sessionrestore.cpp.obj
+[86/92] Building CXX object tests/test_window/CMakeFiles/test_window.dir/tst_windowclose.cpp.obj
+[87/92] Linking CXX executable test_sessionrestore.exe
+[88/92] Building CXX object tests/test_core/CMakeFiles/test_core.dir/tst_multicursorengine.cpp.obj
+[89/92] Linking CXX executable test_core.exe
+[90/92] Linking CXX executable test_window.exe
+[91/92] Building CXX object tests/test_editor/CMakeFiles/test_editor.dir/tst_editorintegration.cpp.obj
+[92/92] Linking CXX executable test_editor.exe
+
+==> 组装便携目录 qcnote-0.1.0-win64-portable
+
+==> windeployqt 部署 Qt 运行库
+D:\works\qcnote\dist\qcnote-0.1.0-win64-portable\qcnote.exe 64 bit, release executable [QML]
+Scanning D:\works\qcnote\src\qml:
+QML imports:
+  'QtQuick' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick
+  'QtQml' D:\Program\Qt\6.11.2\mingw_64\qml\QtQml
+  'QML' D:\Program\Qt\6.11.2\mingw_64\qml\QML
+  'QtQml.Models' D:\Program\Qt\6.11.2\mingw_64\qml\QtQml\Models
+  'QtQml.WorkerScript' D:\Program\Qt\6.11.2\mingw_64\qml\QtQml\WorkerScript
+  'QtQuick.Controls' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls
+  'QtQuick.Controls.Fusion' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Fusion
+  'QtQuick.Controls.Imagine' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Imagine
+  'QtQuick.Controls.Material' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Material
+  'QtQuick.Controls.Universal' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Universal
+  'QtQuick.Controls.FluentWinUI3' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\FluentWinUI3
+  'QtQuick.Controls.Windows' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Windows
+  'QtQuick.Controls.Basic' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Basic
+  'QtQuick.Templates' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Templates
+  'QtQuick.Controls.impl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\impl
+  'QtQuick.Controls.Fusion.impl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Fusion\impl
+  'QtQuick.Window' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Window
+  'QtQuick.Controls.Imagine.impl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Imagine\impl
+  'QtQuick.Controls.Material.impl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Material\impl
+  'QtQuick.Controls.Universal.impl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Universal\impl
+  'QtQuick.Controls.FluentWinUI3.impl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\FluentWinUI3\impl
+  'QtQuick.Effects' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Effects
+  'QtQuick.Layouts' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Layouts
+  'QtQuick.Shapes' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Shapes
+  'QtQuick.NativeStyle' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\NativeStyle
+  'QtQuick.Controls.Windows.impl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Windows\impl
+  'QtQuick.Controls.Basic.impl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\Basic\impl
+  'QtQuick.Dialogs' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Dialogs
+  'QtQuick.Dialogs.quickimpl' D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Dialogs\quickimpl
+  'Qt.labs.folderlistmodel' D:\Program\Qt\6.11.2\mingw_64\qml\Qt\labs\folderlistmodel
+Adding in plugin type generic for module: Qt6Gui
+Adding in plugin type iconengines for module: Qt6Gui
+Adding Qt6Svg for qsvgicon.dll from plugin type: iconengines
+Adding in plugin type imageformats for module: Qt6Gui
+Adding in plugin type networkinformation for module: Qt6Network
+Adding in plugin type platforms for module: Qt6Gui
+Adding in plugin type qmltooling for module: Qt6Qml
+Adding Qt6Quick3DUtils for qmldbg_quick3dprofiler.dll from plugin type: qmltooling
+Adding in plugin type tls for module: Qt6Network
+Skipping plugin qopensslbackend.dll. Use -force-openssl or specify -openssl-root if you want to use it.
+Performing additional pass of finding Qt plugins due to updated Qt module list: Qt6Core Qt6Gui Qt6LabsFolderListModel Qt6Network Qt6OpenGL Qt6Qml Qt6QmlMeta Qt6QmlModels Qt6QmlWorkerScript Qt6Quick Qt6Quick3DUtils Qt6QuickControls2 Qt6QuickControls2Basic Qt6QuickControls2BasicStyleImpl Qt6QuickControls2FluentWinUI3StyleImpl Qt6QuickControls2Fusion Qt6QuickControls2FusionStyleImpl Qt6QuickControls2Imagine Qt6QuickControls2ImagineStyleImpl Qt6QuickControls2Impl Qt6QuickControls2Material Qt6QuickControls2MaterialStyleImpl Qt6QuickControls2Universal Qt6QuickControls2UniversalStyleImpl Qt6QuickControls2WindowsStyleImpl Qt6QuickDialogs2 Qt6QuickDialogs2QuickImpl Qt6QuickDialogs2Utils Qt6QuickEffects Qt6QuickLayouts Qt6QuickShapes Qt6QuickTemplates2 Qt6Svg
+Adding in plugin type generic for module: Qt6Gui
+Adding in plugin type iconengines for module: Qt6Gui
+Adding in plugin type imageformats for module: Qt6Gui
+Adding in plugin type networkinformation for module: Qt6Network
+Adding in plugin type platforms for module: Qt6Gui
+Adding in plugin type qmltooling for module: Qt6Qml
+Adding in plugin type tls for module: Qt6Network
+Skipping plugin qopensslbackend.dll. Use -force-openssl or specify -openssl-root if you want to use it.
+Direct dependencies: Qt6Core Qt6Gui Qt6Network Qt6OpenGL Qt6Qml Qt6QmlMeta Qt6QmlModels Qt6QmlWorkerScript Qt6Quick Qt6QuickControls2 Qt6QuickTemplates2
+Warning: Cannot find any version of the dxcompiler.dll and dxil.dll. This is not a problem unless Direct3D 12 and certain features are used by the application.
+All dependencies   : Qt6Core Qt6Gui Qt6LabsFolderListModel Qt6Network Qt6OpenGL Qt6Qml Qt6QmlMeta Qt6QmlModels Qt6QmlWorkerScript Qt6Quick Qt6QuickControls2 Qt6QuickControls2Basic Qt6QuickControls2BasicStyleImpl Qt6QuickControls2FluentWinUI3StyleImpl Qt6QuickControls2Fusion Qt6QuickControls2FusionStyleImpl Qt6QuickControls2Imagine Qt6QuickControls2ImagineStyleImpl Qt6QuickControls2Impl Qt6QuickControls2Material Qt6QuickControls2MaterialStyleImpl Qt6QuickControls2Universal Qt6QuickControls2UniversalStyleImpl Qt6QuickControls2WindowsStyleImpl Qt6QuickDialogs2 Qt6QuickDialogs2QuickImpl Qt6QuickDialogs2Utils Qt6QuickEffects Qt6QuickLayouts Qt6QuickShapes Qt6QuickTemplates2
+To be deployed     : Qt6Core Qt6Gui Qt6LabsFolderListModel Qt6Network Qt6OpenGL Qt6Qml Qt6QmlMeta Qt6QmlModels Qt6QmlWorkerScript Qt6Quick Qt6Quick3DUtils Qt6QuickControls2 Qt6QuickControls2Basic Qt6QuickControls2BasicStyleImpl Qt6QuickControls2FluentWinUI3StyleImpl Qt6QuickControls2Fusion Qt6QuickControls2FusionStyleImpl Qt6QuickControls2Imagine Qt6QuickControls2ImagineStyleImpl Qt6QuickControls2Impl Qt6QuickControls2Material Qt6QuickControls2MaterialStyleImpl Qt6QuickControls2Universal Qt6QuickControls2UniversalStyleImpl Qt6QuickControls2WindowsStyleImpl Qt6QuickDialogs2 Qt6QuickDialogs2QuickImpl Qt6QuickDialogs2Utils Qt6QuickEffects Qt6QuickLayouts Qt6QuickShapes Qt6QuickTemplates2 Qt6Svg
+Updating Qt6Core.dll.
+Updating Qt6Gui.dll.
+Updating Qt6LabsFolderListModel.dll.
+Updating Qt6Network.dll.
+Updating Qt6OpenGL.dll.
+Updating Qt6Qml.dll.
+Updating Qt6QmlMeta.dll.
+Updating Qt6QmlModels.dll.
+Updating Qt6QmlWorkerScript.dll.
+Updating Qt6Quick.dll.
+Updating Qt6Quick3DUtils.dll.
+Updating Qt6QuickControls2.dll.
+Updating Qt6QuickControls2Basic.dll.
+Updating Qt6QuickControls2BasicStyleImpl.dll.
+Updating Qt6QuickControls2FluentWinUI3StyleImpl.dll.
+Updating Qt6QuickControls2Fusion.dll.
+Updating Qt6QuickControls2FusionStyleImpl.dll.
+Updating Qt6QuickControls2Imagine.dll.
+Updating Qt6QuickControls2ImagineStyleImpl.dll.
+Updating Qt6QuickControls2Impl.dll.
+Updating Qt6QuickControls2Material.dll.
+Updating Qt6QuickControls2MaterialStyleImpl.dll.
+Updating Qt6QuickControls2Universal.dll.
+Updating Qt6QuickControls2UniversalStyleImpl.dll.
+Updating Qt6QuickControls2WindowsStyleImpl.dll.
+Updating Qt6QuickDialogs2.dll.
+Updating Qt6QuickDialogs2QuickImpl.dll.
+Updating Qt6QuickDialogs2Utils.dll.
+Updating Qt6QuickEffects.dll.
+Updating Qt6QuickLayouts.dll.
+Updating Qt6QuickShapes.dll.
+Updating Qt6QuickTemplates2.dll.
+Updating Qt6Svg.dll.
+Updating opengl32sw.dll.
+Updating D3Dcompiler_47.dll.
+Updating libgcc_s_seh-1.dll.
+Updating libstdc++-6.dll.
+Updating libwinpthread-1.dll.
+Creating directory D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/generic.
+Updating qtuiotouchplugin.dll.
+Creating directory D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/iconengines.
+Updating qsvgicon.dll.
+Creating directory D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/imageformats.
+Updating qgif.dll.
+Updating qicns.dll.
+Updating qico.dll.
+Updating qjpeg.dll.
+Updating qsvg.dll.
+Updating qtga.dll.
+Updating qtiff.dll.
+Updating qwbmp.dll.
+Updating qwebp.dll.
+Creating directory D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/networkinformation.
+Updating qnetworklistmanager.dll.
+Creating directory D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/platforms.
+Updating qwindows.dll.
+Creating directory D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qmltooling.
+Updating qmldbg_debugger.dll.
+Updating qmldbg_inspector.dll.
+Updating qmldbg_local.dll.
+Updating qmldbg_messages.dll.
+Updating qmldbg_native.dll.
+Updating qmldbg_nativedebugger.dll.
+Updating qmldbg_preview.dll.
+Updating qmldbg_profiler.dll.
+Updating qmldbg_quick3dprofiler.dll.
+Updating qmldbg_quickeventreplay.dll.
+Updating qmldbg_quickprofiler.dll.
+Updating qmldbg_server.dll.
+Updating qmldbg_tcp.dll.
+Creating directory D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/tls.
+Updating qcertonlybackend.dll.
+Updating qschannelbackend.dll.
+Creating D:\works\qcnote\dist\qcnote-0.1.0-win64-portable\qml...
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick.
+Updating qtquick2plugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Basic.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Basic/impl.
+Skipping D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\designer.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/FluentWinUI3.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/FluentWinUI3/dark.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/FluentWinUI3/dark/images.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/FluentWinUI3/icons.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/FluentWinUI3/impl.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/FluentWinUI3/light.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/FluentWinUI3/light/images.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Fusion.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Fusion/impl.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Imagine.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Imagine/impl.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/impl.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Material.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Material/impl.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Universal.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Universal/impl.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Windows.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Windows/images.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Controls/Windows/impl.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Dialogs.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Dialogs/quickimpl.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Dialogs/quickimpl/qml.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Dialogs/quickimpl/qml/+Fusion.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Dialogs/quickimpl/qml/+Imagine.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Dialogs/quickimpl/qml/+Material.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Dialogs/quickimpl/qml/+Universal.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Effects.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Layouts.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/LocalStorage.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/NativeStyle.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/NativeStyle/controls.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/NativeStyle/util.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Particles.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Shapes.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Shapes/DesignHelpers.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Templates.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Timeline.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Timeline/BlendTrees.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/tooling.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/VectorImage.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/VectorImage/Helpers.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQuick/Window.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQml.
+Updating qmlplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQml/Models.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQml/WorkerScript.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QtQml/XmlListModel.
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/QML.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating modelsplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating workerscriptplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating qtquickcontrols2plugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Skipping D:\Program\Qt\6.11.2\mingw_64\qml\QtQuick\Controls\designer.
+Updating qtquickcontrols2fusionstyleplugin.dll.
+Updating ApplicationWindow.qml.
+Updating BusyIndicator.qml.
+Updating Button.qml.
+Updating CheckBox.qml.
+Updating CheckDelegate.qml.
+Updating ComboBox.qml.
+Updating DelayButton.qml.
+Updating Dial.qml.
+Updating Dialog.qml.
+Updating DialogButtonBox.qml.
+Updating DoubleSpinBox.qml.
+Updating Drawer.qml.
+Updating Frame.qml.
+Updating GroupBox.qml.
+Updating HorizontalHeaderView.qml.
+Updating HorizontalHeaderViewDelegate.qml.
+Updating ItemDelegate.qml.
+Updating Label.qml.
+Updating Menu.qml.
+Updating MenuBar.qml.
+Updating MenuBarItem.qml.
+Updating MenuItem.qml.
+Updating MenuSeparator.qml.
+Updating Page.qml.
+Updating PageIndicator.qml.
+Updating Pane.qml.
+Updating plugins.qmltypes.
+Updating Popup.qml.
+Updating ProgressBar.qml.
+Updating qmldir.
+Updating RadioButton.qml.
+Updating RadioDelegate.qml.
+Updating RangeSlider.qml.
+Updating RoundButton.qml.
+Updating ScrollBar.qml.
+Updating ScrollIndicator.qml.
+Updating ScrollView.qml.
+Updating SearchField.qml.
+Updating SelectionRectangle.qml.
+Updating Slider.qml.
+Updating SpinBox.qml.
+Updating SplitView.qml.
+Updating SwipeDelegate.qml.
+Updating Switch.qml.
+Updating SwitchDelegate.qml.
+Updating TabBar.qml.
+Updating TabButton.qml.
+Updating TextArea.qml.
+Updating TextField.qml.
+Updating ToolBar.qml.
+Updating ToolButton.qml.
+Updating ToolSeparator.qml.
+Updating ToolTip.qml.
+Updating TreeViewDelegate.qml.
+Updating Tumbler.qml.
+Updating VerticalHeaderView.qml.
+Updating VerticalHeaderViewDelegate.qml.
+Updating qtquickcontrols2imaginestyleplugin.dll.
+Updating ApplicationWindow.qml.
+Updating BusyIndicator.qml.
+Updating Button.qml.
+Updating CheckBox.qml.
+Updating CheckDelegate.qml.
+Updating ComboBox.qml.
+Updating DelayButton.qml.
+Updating Dial.qml.
+Updating Dialog.qml.
+Updating DialogButtonBox.qml.
+Updating DoubleSpinBox.qml.
+Updating Drawer.qml.
+Updating Frame.qml.
+Updating GroupBox.qml.
+Updating HorizontalHeaderView.qml.
+Updating HorizontalHeaderViewDelegate.qml.
+Updating ItemDelegate.qml.
+Updating Label.qml.
+Updating Menu.qml.
+Updating MenuBar.qml.
+Updating MenuBarItem.qml.
+Updating MenuItem.qml.
+Updating MenuSeparator.qml.
+Updating Page.qml.
+Updating PageIndicator.qml.
+Updating Pane.qml.
+Updating plugins.qmltypes.
+Updating Popup.qml.
+Updating ProgressBar.qml.
+Updating qmldir.
+Updating RadioButton.qml.
+Updating RadioDelegate.qml.
+Updating RangeSlider.qml.
+Updating RoundButton.qml.
+Updating ScrollBar.qml.
+Updating ScrollIndicator.qml.
+Updating ScrollView.qml.
+Updating SearchField.qml.
+Updating SelectionRectangle.qml.
+Updating Slider.qml.
+Updating SpinBox.qml.
+Updating SplitView.qml.
+Updating StackView.qml.
+Updating SwipeDelegate.qml.
+Updating SwipeView.qml.
+Updating Switch.qml.
+Updating SwitchDelegate.qml.
+Updating TabBar.qml.
+Updating TabButton.qml.
+Updating TextArea.qml.
+Updating TextField.qml.
+Updating ToolBar.qml.
+Updating ToolButton.qml.
+Updating ToolSeparator.qml.
+Updating ToolTip.qml.
+Updating Tumbler.qml.
+Updating VerticalHeaderView.qml.
+Updating VerticalHeaderViewDelegate.qml.
+Updating qtquickcontrols2materialstyleplugin.dll.
+Updating ApplicationWindow.qml.
+Updating BusyIndicator.qml.
+Updating Button.qml.
+Updating CheckBox.qml.
+Updating CheckDelegate.qml.
+Updating ComboBox.qml.
+Updating DelayButton.qml.
+Updating Dial.qml.
+Updating Dialog.qml.
+Updating DialogButtonBox.qml.
+Updating DoubleSpinBox.qml.
+Updating Drawer.qml.
+Updating Frame.qml.
+Updating GroupBox.qml.
+Updating HorizontalHeaderView.qml.
+Updating HorizontalHeaderViewDelegate.qml.
+Updating ItemDelegate.qml.
+Updating Label.qml.
+Updating Menu.qml.
+Updating MenuBar.qml.
+Updating MenuBarItem.qml.
+Updating MenuItem.qml.
+Updating MenuSeparator.qml.
+Updating Page.qml.
+Updating PageIndicator.qml.
+Updating Pane.qml.
+Updating plugins.qmltypes.
+Updating Popup.qml.
+Updating ProgressBar.qml.
+Updating qmldir.
+Updating RadioButton.qml.
+Updating RadioDelegate.qml.
+Updating RangeSlider.qml.
+Updating RoundButton.qml.
+Updating ScrollBar.qml.
+Updating ScrollIndicator.qml.
+Updating ScrollView.qml.
+Updating SearchField.qml.
+Updating SelectionRectangle.qml.
+Updating Slider.qml.
+Updating SpinBox.qml.
+Updating SplitView.qml.
+Updating StackView.qml.
+Updating SwipeDelegate.qml.
+Updating SwipeView.qml.
+Updating Switch.qml.
+Updating SwitchDelegate.qml.
+Updating TabBar.qml.
+Updating TabButton.qml.
+Updating TextArea.qml.
+Updating TextField.qml.
+Updating ToolBar.qml.
+Updating ToolButton.qml.
+Updating ToolSeparator.qml.
+Updating ToolTip.qml.
+Updating TreeViewDelegate.qml.
+Updating Tumbler.qml.
+Updating VerticalHeaderView.qml.
+Updating VerticalHeaderViewDelegate.qml.
+Updating qtquickcontrols2universalstyleplugin.dll.
+Updating ApplicationWindow.qml.
+Updating BusyIndicator.qml.
+Updating Button.qml.
+Updating CheckBox.qml.
+Updating CheckDelegate.qml.
+Updating ComboBox.qml.
+Updating DelayButton.qml.
+Updating Dial.qml.
+Updating Dialog.qml.
+Updating DialogButtonBox.qml.
+Updating DoubleSpinBox.qml.
+Updating Drawer.qml.
+Updating Frame.qml.
+Updating GroupBox.qml.
+Updating HorizontalHeaderView.qml.
+Updating HorizontalHeaderViewDelegate.qml.
+Updating ItemDelegate.qml.
+Updating Label.qml.
+Updating Menu.qml.
+Updating MenuBar.qml.
+Updating MenuBarItem.qml.
+Updating MenuItem.qml.
+Updating MenuSeparator.qml.
+Updating Page.qml.
+Updating PageIndicator.qml.
+Updating Pane.qml.
+Updating plugins.qmltypes.
+Updating Popup.qml.
+Updating ProgressBar.qml.
+Updating qmldir.
+Updating RadioButton.qml.
+Updating RadioDelegate.qml.
+Updating RangeSlider.qml.
+Updating RoundButton.qml.
+Updating ScrollBar.qml.
+Updating ScrollIndicator.qml.
+Updating ScrollView.qml.
+Updating SearchField.qml.
+Updating SelectionRectangle.qml.
+Updating Slider.qml.
+Updating SpinBox.qml.
+Updating SplitView.qml.
+Updating StackView.qml.
+Updating SwipeDelegate.qml.
+Updating Switch.qml.
+Updating SwitchDelegate.qml.
+Updating TabBar.qml.
+Updating TabButton.qml.
+Updating TextArea.qml.
+Updating TextField.qml.
+Updating ToolBar.qml.
+Updating ToolButton.qml.
+Updating ToolSeparator.qml.
+Updating ToolTip.qml.
+Updating Tumbler.qml.
+Updating VerticalHeaderView.qml.
+Updating VerticalHeaderViewDelegate.qml.
+Updating qtquickcontrols2fluentwinui3styleplugin.dll.
+Updating ApplicationWindow.qml.
+Updating BusyIndicator.qml.
+Updating Button.qml.
+Updating CheckBox.qml.
+Updating CheckDelegate.qml.
+Updating ComboBox.qml.
+Updating Config.qml.
+Updating DelayButton.qml.
+Updating Dialog.qml.
+Updating DialogButtonBox.qml.
+Updating DoubleSpinBox.qml.
+Updating FocusFrame.qml.
+Updating Frame.qml.
+Updating GroupBox.qml.
+Updating ItemDelegate.qml.
+Updating Menu.qml.
+Updating MenuBar.qml.
+Updating MenuBarItem.qml.
+Updating MenuItem.qml.
+Updating MenuSeparator.qml.
+Updating PageIndicator.qml.
+Updating plugins.qmltypes.
+Updating Popup.qml.
+Updating ProgressBar.qml.
+Updating qmldir.
+Updating RadioButton.qml.
+Updating RadioDelegate.qml.
+Updating RangeSlider.qml.
+Updating RoundButton.qml.
+Updating SearchField.qml.
+Updating Slider.qml.
+Updating SpinBox.qml.
+Updating StyleImage.qml.
+Updating SwipeDelegate.qml.
+Updating Switch.qml.
+Updating SwitchDelegate.qml.
+Updating TabBar.qml.
+Updating TabButton.qml.
+Updating TextArea.qml.
+Updating TextField.qml.
+Updating ToolBar.qml.
+Updating ToolButton.qml.
+Updating ToolSeparator.qml.
+Updating ToolTip.qml.
+Updating checkbox-indicator-checked-disabled.png.
+Updating checkbox-indicator-checked-disabled@2x.png.
+Updating checkbox-indicator-checked-disabled@3x.png.
+Updating checkbox-indicator-checked-hovered.png.
+Updating checkbox-indicator-checked-hovered@2x.png.
+Updating checkbox-indicator-checked-hovered@3x.png.
+Updating checkbox-indicator-checked-pressed.png.
+Updating checkbox-indicator-checked-pressed@2x.png.
+Updating checkbox-indicator-checked-pressed@3x.png.
+Updating checkbox-indicator-checked.png.
+Updating checkbox-indicator-checked@2x.png.
+Updating checkbox-indicator-checked@3x.png.
+Updating checkbox-indicator-disabled-partiallyChecked.png.
+Updating checkbox-indicator-disabled-partiallyChecked@2x.png.
+Updating checkbox-indicator-disabled-partiallyChecked@3x.png.
+Updating checkbox-indicator-disabled.png.
+Updating checkbox-indicator-disabled@2x.png.
+Updating checkbox-indicator-disabled@3x.png.
+Updating checkbox-indicator-hovered-partiallyChecked.png.
+Updating checkbox-indicator-hovered-partiallyChecked@2x.png.
+Updating checkbox-indicator-hovered-partiallyChecked@3x.png.
+Updating checkbox-indicator-hovered.png.
+Updating checkbox-indicator-hovered@2x.png.
+Updating checkbox-indicator-hovered@3x.png.
+Updating checkbox-indicator-partiallyChecked-pressed.png.
+Updating checkbox-indicator-partiallyChecked-pressed@2x.png.
+Updating checkbox-indicator-partiallyChecked-pressed@3x.png.
+Updating checkbox-indicator-partiallyChecked.png.
+Updating checkbox-indicator-partiallyChecked@2x.png.
+Updating checkbox-indicator-partiallyChecked@3x.png.
+Updating checkbox-indicator-pressed.png.
+Updating checkbox-indicator-pressed@2x.png.
+Updating checkbox-indicator-pressed@3x.png.
+Updating checkbox-indicator.png.
+Updating checkbox-indicator@2x.png.
+Updating checkbox-indicator@3x.png.
+Updating combobox-background-disabled.png.
+Updating combobox-background-disabled@2x.png.
+Updating combobox-background-disabled@3x.png.
+Updating combobox-background-focused.png.
+Updating combobox-background-focused@2x.png.
+Updating combobox-background-focused@3x.png.
+Updating combobox-background-hovered-open.png.
+Updating combobox-background-hovered-open@2x.png.
+Updating combobox-background-hovered-open@3x.png.
+Updating combobox-background-hovered.png.
+Updating combobox-background-hovered@2x.png.
+Updating combobox-background-hovered@3x.png.
+Updating combobox-background-open-pressed.png.
+Updating combobox-background-open-pressed@2x.png.
+Updating combobox-background-open-pressed@3x.png.
+Updating combobox-background-open.png.
+Updating combobox-background-open@2x.png.
+Updating combobox-background-open@3x.png.
+Updating combobox-background-pressed.png.
+Updating combobox-background-pressed@2x.png.
+Updating combobox-background-pressed@3x.png.
+Updating combobox-background.png.
+Updating combobox-background@2x.png.
+Updating combobox-background@3x.png.
+Updating combobox-indicator-disabled.png.
+Updating combobox-indicator-disabled@2x.png.
+Updating combobox-indicator-disabled@3x.png.
+Updating combobox-indicator-focused.png.
+Updating combobox-indicator-focused@2x.png.
+Updating combobox-indicator-focused@3x.png.
+Updating combobox-indicator-hovered-open.png.
+Updating combobox-indicator-hovered-open@2x.png.
+Updating combobox-indicator-hovered-open@3x.png.
+Updating combobox-indicator-hovered.png.
+Updating combobox-indicator-hovered@2x.png.
+Updating combobox-indicator-hovered@3x.png.
+Updating combobox-indicator-open-pressed.png.
+Updating combobox-indicator-open-pressed@2x.png.
+Updating combobox-indicator-open-pressed@3x.png.
+Updating combobox-indicator-open.png.
+Updating combobox-indicator-open@2x.png.
+Updating combobox-indicator-open@3x.png.
+Updating combobox-indicator-pressed.png.
+Updating combobox-indicator-pressed@2x.png.
+Updating combobox-indicator-pressed@3x.png.
+Updating combobox-indicator.png.
+Updating combobox-indicator@2x.png.
+Updating combobox-indicator@3x.png.
+Updating editablecombobox-background-hovered-open.png.
+Updating editablecombobox-background-hovered-open@2x.png.
+Updating editablecombobox-background-hovered-open@3x.png.
+Updating editablecombobox-background-open-pressed.png.
+Updating editablecombobox-background-open-pressed@2x.png.
+Updating editablecombobox-background-open-pressed@3x.png.
+Updating editablecombobox-background-open.png.
+Updating editablecombobox-background-open@2x.png.
+Updating editablecombobox-background-open@3x.png.
+Updating editablecombobox-indicator-hovered-open.png.
+Updating editablecombobox-indicator-hovered-open@2x.png.
+Updating editablecombobox-indicator-hovered-open@3x.png.
+Updating editablecombobox-indicator-open-pressed.png.
+Updating editablecombobox-indicator-open-pressed@2x.png.
+Updating editablecombobox-indicator-open-pressed@3x.png.
+Updating editablecombobox-indicator-open.png.
+Updating editablecombobox-indicator-open@2x.png.
+Updating editablecombobox-indicator-open@3x.png.
+Updating editablecombobox-popup-background-hovered-open.png.
+Updating editablecombobox-popup-background-hovered-open@2x.png.
+Updating editablecombobox-popup-background-hovered-open@3x.png.
+Updating editablecombobox-popup-background-open-pressed.png.
+Updating editablecombobox-popup-background-open-pressed@2x.png.
+Updating editablecombobox-popup-background-open-pressed@3x.png.
+Updating editablecombobox-popup-background-open.png.
+Updating editablecombobox-popup-background-open@2x.png.
+Updating editablecombobox-popup-background-open@3x.png.
+Updating frame-background-disabled.png.
+Updating frame-background-disabled@2x.png.
+Updating frame-background-disabled@3x.png.
+Updating frame-background.png.
+Updating frame-background@2x.png.
+Updating frame-background@3x.png.
+Updating itemdelegate-background-highlighted-hovered.png.
+Updating itemdelegate-background-highlighted-hovered@2x.png.
+Updating itemdelegate-background-highlighted-hovered@3x.png.
+Updating itemdelegate-background-highlighted-pressed.png.
+Updating itemdelegate-background-highlighted-pressed@2x.png.
+Updating itemdelegate-background-highlighted-pressed@3x.png.
+Updating itemdelegate-background-highlighted.png.
+Updating itemdelegate-background-highlighted@2x.png.
+Updating itemdelegate-background-highlighted@3x.png.
+Updating itemdelegate-background-hovered.png.
+Updating itemdelegate-background-hovered@2x.png.
+Updating itemdelegate-background-hovered@3x.png.
+Updating itemdelegate-background-pressed.png.
+Updating itemdelegate-background-pressed@2x.png.
+Updating itemdelegate-background-pressed@3x.png.
+Updating pageindicatordelegate-indicator-delegate-current-hovered.png.
+Updating pageindicatordelegate-indicator-delegate-current-hovered@2x.png.
+Updating pageindicatordelegate-indicator-delegate-current-hovered@3x.png.
+Updating pageindicatordelegate-indicator-delegate-current-pressed.png.
+Updating pageindicatordelegate-indicator-delegate-current-pressed@2x.png.
+Updating pageindicatordelegate-indicator-delegate-current-pressed@3x.png.
+Updating pageindicatordelegate-indicator-delegate-current.png.
+Updating pageindicatordelegate-indicator-delegate-current@2x.png.
+Updating pageindicatordelegate-indicator-delegate-current@3x.png.
+Updating pageindicatordelegate-indicator-delegate-pressed.png.
+Updating pageindicatordelegate-indicator-delegate-pressed@2x.png.
+Updating pageindicatordelegate-indicator-delegate-pressed@3x.png.
+Updating pageindicatordelegate-indicator-disabled.png.
+Updating pageindicatordelegate-indicator-disabled@2x.png.
+Updating pageindicatordelegate-indicator-disabled@3x.png.
+Updating pageindicatordelegate-indicator-hovered.png.
+Updating pageindicatordelegate-indicator-hovered@2x.png.
+Updating pageindicatordelegate-indicator-hovered@3x.png.
+Updating pageindicatordelegate-indicator.png.
+Updating pageindicatordelegate-indicator@2x.png.
+Updating pageindicatordelegate-indicator@3x.png.
+Updating popup-background.png.
+Updating popup-background@2x.png.
+Updating popup-background@3x.png.
+Updating progressbar-groove-disabled.png.
+Updating progressbar-groove-disabled@2x.png.
+Updating progressbar-groove-disabled@3x.png.
+Updating progressbar-groove.png.
+Updating progressbar-groove@2x.png.
+Updating progressbar-groove@3x.png.
+Updating radiobutton-indicator-checked-disabled.png.
+Updating radiobutton-indicator-checked-disabled@2x.png.
+Updating radiobutton-indicator-checked-disabled@3x.png.
+Updating radiobutton-indicator-checked-hovered.png.
+Updating radiobutton-indicator-checked-hovered@2x.png.
+Updating radiobutton-indicator-checked-hovered@3x.png.
+Updating radiobutton-indicator-checked-pressed.png.
+Updating radiobutton-indicator-checked-pressed@2x.png.
+Updating radiobutton-indicator-checked-pressed@3x.png.
+Updating radiobutton-indicator-checked.png.
+Updating radiobutton-indicator-checked@2x.png.
+Updating radiobutton-indicator-checked@3x.png.
+Updating radiobutton-indicator-disabled.png.
+Updating radiobutton-indicator-disabled@2x.png.
+Updating radiobutton-indicator-disabled@3x.png.
+Updating radiobutton-indicator-hovered.png.
+Updating radiobutton-indicator-hovered@2x.png.
+Updating radiobutton-indicator-hovered@3x.png.
+Updating radiobutton-indicator-pressed.png.
+Updating radiobutton-indicator-pressed@2x.png.
+Updating radiobutton-indicator-pressed@3x.png.
+Updating radiobutton-indicator.png.
+Updating radiobutton-indicator@2x.png.
+Updating radiobutton-indicator@3x.png.
+Updating rangeslider-first-handle-disabled.png.
+Updating rangeslider-first-handle-disabled@2x.png.
+Updating rangeslider-first-handle-disabled@3x.png.
+Updating rangeslider-first-handle-handle-pressed.png.
+Updating rangeslider-first-handle-handle-pressed@2x.png.
+Updating rangeslider-first-handle-handle-pressed@3x.png.
+Updating rangeslider-first-handle-hovered.png.
+Updating rangeslider-first-handle-hovered@2x.png.
+Updating rangeslider-first-handle-hovered@3x.png.
+Updating rangeslider-first-handle.png.
+Updating rangeslider-first-handle@2x.png.
+Updating rangeslider-first-handle@3x.png.
+Updating rangeslider-groove-disabled.png.
+Updating rangeslider-groove-disabled@2x.png.
+Updating rangeslider-groove-disabled@3x.png.
+Updating rangeslider-groove-handle-pressed.png.
+Updating rangeslider-groove-handle-pressed@2x.png.
+Updating rangeslider-groove-handle-pressed@3x.png.
+Updating rangeslider-groove-hovered.png.
+Updating rangeslider-groove-hovered@2x.png.
+Updating rangeslider-groove-hovered@3x.png.
+Updating rangeslider-groove.png.
+Updating rangeslider-groove@2x.png.
+Updating rangeslider-groove@3x.png.
+Updating rangeslider-second-handle-disabled.png.
+Updating rangeslider-second-handle-disabled@2x.png.
+Updating rangeslider-second-handle-disabled@3x.png.
+Updating rangeslider-second-handle-handle-pressed.png.
+Updating rangeslider-second-handle-handle-pressed@2x.png.
+Updating rangeslider-second-handle-handle-pressed@3x.png.
+Updating rangeslider-second-handle-hovered.png.
+Updating rangeslider-second-handle-hovered@2x.png.
+Updating rangeslider-second-handle-hovered@3x.png.
+Updating rangeslider-second-handle.png.
+Updating rangeslider-second-handle@2x.png.
+Updating rangeslider-second-handle@3x.png.
+Updating slider-groove-disabled.png.
+Updating slider-groove-disabled@2x.png.
+Updating slider-groove-disabled@3x.png.
+Updating slider-groove-hovered.png.
+Updating slider-groove-hovered@2x.png.
+Updating slider-groove-hovered@3x.png.
+Updating slider-groove-pressed.png.
+Updating slider-groove-pressed@2x.png.
+Updating slider-groove-pressed@3x.png.
+Updating slider-groove.png.
+Updating slider-groove@2x.png.
+Updating slider-groove@3x.png.
+Updating slider-handle-disabled.png.
+Updating slider-handle-disabled@2x.png.
+Updating slider-handle-disabled@3x.png.
+Updating slider-handle-hovered.png.
+Updating slider-handle-hovered@2x.png.
+Updating slider-handle-hovered@3x.png.
+Updating slider-handle-pressed.png.
+Updating slider-handle-pressed@2x.png.
+Updating slider-handle-pressed@3x.png.
+Updating slider-handle.png.
+Updating slider-handle@2x.png.
+Updating slider-handle@3x.png.
+Updating spinbox-background-atlimit.png.
+Updating spinbox-background-atlimit@2x.png.
+Updating spinbox-background-atlimit@3x.png.
+Updating spinbox-background-disabled.png.
+Updating spinbox-background-disabled@2x.png.
+Updating spinbox-background-disabled@3x.png.
+Updating spinbox-background-down-hovered.png.
+Updating spinbox-background-down-hovered@2x.png.
+Updating spinbox-background-down-hovered@3x.png.
+Updating spinbox-background-down-pressed.png.
+Updating spinbox-background-down-pressed@2x.png.
+Updating spinbox-background-down-pressed@3x.png.
+Updating spinbox-background-hovered.png.
+Updating spinbox-background-hovered@2x.png.
+Updating spinbox-background-hovered@3x.png.
+Updating spinbox-background-up-hovered.png.
+Updating spinbox-background-up-hovered@2x.png.
+Updating spinbox-background-up-hovered@3x.png.
+Updating spinbox-background-up-pressed.png.
+Updating spinbox-background-up-pressed@2x.png.
+Updating spinbox-background-up-pressed@3x.png.
+Updating spinbox-background.png.
+Updating spinbox-background@2x.png.
+Updating spinbox-background@3x.png.
+Updating spinbox-indicator-down-background-atlimit.png.
+Updating spinbox-indicator-down-background-atlimit@2x.png.
+Updating spinbox-indicator-down-background-atlimit@3x.png.
+Updating spinbox-indicator-down-background-disabled.png.
+Updating spinbox-indicator-down-background-disabled@2x.png.
+Updating spinbox-indicator-down-background-disabled@3x.png.
+Updating spinbox-indicator-down-background-down-hovered.png.
+Updating spinbox-indicator-down-background-down-hovered@2x.png.
+Updating spinbox-indicator-down-background-down-hovered@3x.png.
+Updating spinbox-indicator-down-background-down-pressed.png.
+Updating spinbox-indicator-down-background-down-pressed@2x.png.
+Updating spinbox-indicator-down-background-down-pressed@3x.png.
+Updating spinbox-indicator-down-background-hovered.png.
+Updating spinbox-indicator-down-background-hovered@2x.png.
+Updating spinbox-indicator-down-background-hovered@3x.png.
+Updating spinbox-indicator-down-background-up-hovered.png.
+Updating spinbox-indicator-down-background-up-hovered@2x.png.
+Updating spinbox-indicator-down-background-up-hovered@3x.png.
+Updating spinbox-indicator-down-background-up-pressed.png.
+Updating spinbox-indicator-down-background-up-pressed@2x.png.
+Updating spinbox-indicator-down-background-up-pressed@3x.png.
+Updating spinbox-indicator-down-background.png.
+Updating spinbox-indicator-down-background@2x.png.
+Updating spinbox-indicator-down-background@3x.png.
+Updating spinbox-indicator-down-icon-atlimit.png.
+Updating spinbox-indicator-down-icon-atlimit@2x.png.
+Updating spinbox-indicator-down-icon-atlimit@3x.png.
+Updating spinbox-indicator-down-icon-disabled.png.
+Updating spinbox-indicator-down-icon-disabled@2x.png.
+Updating spinbox-indicator-down-icon-disabled@3x.png.
+Updating spinbox-indicator-down-icon-down-hovered.png.
+Updating spinbox-indicator-down-icon-down-hovered@2x.png.
+Updating spinbox-indicator-down-icon-down-hovered@3x.png.
+Updating spinbox-indicator-down-icon-down-pressed.png.
+Updating spinbox-indicator-down-icon-down-pressed@2x.png.
+Updating spinbox-indicator-down-icon-down-pressed@3x.png.
+Updating spinbox-indicator-down-icon-hovered.png.
+Updating spinbox-indicator-down-icon-hovered@2x.png.
+Updating spinbox-indicator-down-icon-hovered@3x.png.
+Updating spinbox-indicator-down-icon-up-hovered.png.
+Updating spinbox-indicator-down-icon-up-hovered@2x.png.
+Updating spinbox-indicator-down-icon-up-hovered@3x.png.
+Updating spinbox-indicator-down-icon-up-pressed.png.
+Updating spinbox-indicator-down-icon-up-pressed@2x.png.
+Updating spinbox-indicator-down-icon-up-pressed@3x.png.
+Updating spinbox-indicator-down-icon.png.
+Updating spinbox-indicator-down-icon@2x.png.
+Updating spinbox-indicator-down-icon@3x.png.
+Updating spinbox-indicator-up-background-atlimit.png.
+Updating spinbox-indicator-up-background-atlimit@2x.png.
+Updating spinbox-indicator-up-background-atlimit@3x.png.
+Updating spinbox-indicator-up-background-disabled.png.
+Updating spinbox-indicator-up-background-disabled@2x.png.
+Updating spinbox-indicator-up-background-disabled@3x.png.
+Updating spinbox-indicator-up-background-down-hovered.png.
+Updating spinbox-indicator-up-background-down-hovered@2x.png.
+Updating spinbox-indicator-up-background-down-hovered@3x.png.
+Updating spinbox-indicator-up-background-down-pressed.png.
+Updating spinbox-indicator-up-background-down-pressed@2x.png.
+Updating spinbox-indicator-up-background-down-pressed@3x.png.
+Updating spinbox-indicator-up-background-hovered.png.
+Updating spinbox-indicator-up-background-hovered@2x.png.
+Updating spinbox-indicator-up-background-hovered@3x.png.
+Updating spinbox-indicator-up-background-up-hovered.png.
+Updating spinbox-indicator-up-background-up-hovered@2x.png.
+Updating spinbox-indicator-up-background-up-hovered@3x.png.
+Updating spinbox-indicator-up-background-up-pressed.png.
+Updating spinbox-indicator-up-background-up-pressed@2x.png.
+Updating spinbox-indicator-up-background-up-pressed@3x.png.
+Updating spinbox-indicator-up-background.png.
+Updating spinbox-indicator-up-background@2x.png.
+Updating spinbox-indicator-up-background@3x.png.
+Updating spinbox-indicator-up-icon-atlimit.png.
+Updating spinbox-indicator-up-icon-atlimit@2x.png.
+Updating spinbox-indicator-up-icon-atlimit@3x.png.
+Updating spinbox-indicator-up-icon-disabled.png.
+Updating spinbox-indicator-up-icon-disabled@2x.png.
+Updating spinbox-indicator-up-icon-disabled@3x.png.
+Updating spinbox-indicator-up-icon-down-hovered.png.
+Updating spinbox-indicator-up-icon-down-hovered@2x.png.
+Updating spinbox-indicator-up-icon-down-hovered@3x.png.
+Updating spinbox-indicator-up-icon-down-pressed.png.
+Updating spinbox-indicator-up-icon-down-pressed@2x.png.
+Updating spinbox-indicator-up-icon-down-pressed@3x.png.
+Updating spinbox-indicator-up-icon-hovered.png.
+Updating spinbox-indicator-up-icon-hovered@2x.png.
+Updating spinbox-indicator-up-icon-hovered@3x.png.
+Updating spinbox-indicator-up-icon-up-hovered.png.
+Updating spinbox-indicator-up-icon-up-hovered@2x.png.
+Updating spinbox-indicator-up-icon-up-hovered@3x.png.
+Updating spinbox-indicator-up-icon-up-pressed.png.
+Updating spinbox-indicator-up-icon-up-pressed@2x.png.
+Updating spinbox-indicator-up-icon-up-pressed@3x.png.
+Updating spinbox-indicator-up-icon.png.
+Updating spinbox-indicator-up-icon@2x.png.
+Updating spinbox-indicator-up-icon@3x.png.
+Updating textarea-background-disabled.png.
+Updating textarea-background-disabled@2x.png.
+Updating textarea-background-disabled@3x.png.
+Updating textarea-background-focused.png.
+Updating textarea-background-focused@2x.png.
+Updating textarea-background-focused@3x.png.
+Updating textarea-background-hovered.png.
+Updating textarea-background-hovered@2x.png.
+Updating textarea-background-hovered@3x.png.
+Updating textarea-background.png.
+Updating textarea-background@2x.png.
+Updating textarea-background@3x.png.
+Updating textfield-background-disabled.png.
+Updating textfield-background-disabled@2x.png.
+Updating textfield-background-disabled@3x.png.
+Updating textfield-background-focused.png.
+Updating textfield-background-focused@2x.png.
+Updating textfield-background-focused@3x.png.
+Updating textfield-background-hovered.png.
+Updating textfield-background-hovered@2x.png.
+Updating textfield-background-hovered@3x.png.
+Updating textfield-background.png.
+Updating textfield-background@2x.png.
+Updating textfield-background@3x.png.
+Updating checkmark.png.
+Updating checkmark@2x.png.
+Updating checkmark@3x.png.
+Updating close_big.png.
+Updating close_big@2x.png.
+Updating close_big@3x.png.
+Updating menuarrow.png.
+Updating menuarrow@2x.png.
+Updating menuarrow@3x.png.
+Updating search-magnifier.png.
+Updating search-magnifier@2x.png.
+Updating search-magnifier@3x.png.
+Updating checkbox-indicator-checked-disabled.png.
+Updating checkbox-indicator-checked-disabled@2x.png.
+Updating checkbox-indicator-checked-disabled@3x.png.
+Updating checkbox-indicator-checked-hovered.png.
+Updating checkbox-indicator-checked-hovered@2x.png.
+Updating checkbox-indicator-checked-hovered@3x.png.
+Updating checkbox-indicator-checked-pressed.png.
+Updating checkbox-indicator-checked-pressed@2x.png.
+Updating checkbox-indicator-checked-pressed@3x.png.
+Updating checkbox-indicator-checked.png.
+Updating checkbox-indicator-checked@2x.png.
+Updating checkbox-indicator-checked@3x.png.
+Updating checkbox-indicator-disabled-partiallyChecked.png.
+Updating checkbox-indicator-disabled-partiallyChecked@2x.png.
+Updating checkbox-indicator-disabled-partiallyChecked@3x.png.
+Updating checkbox-indicator-disabled.png.
+Updating checkbox-indicator-disabled@2x.png.
+Updating checkbox-indicator-disabled@3x.png.
+Updating checkbox-indicator-hovered-partiallyChecked.png.
+Updating checkbox-indicator-hovered-partiallyChecked@2x.png.
+Updating checkbox-indicator-hovered-partiallyChecked@3x.png.
+Updating checkbox-indicator-hovered.png.
+Updating checkbox-indicator-hovered@2x.png.
+Updating checkbox-indicator-hovered@3x.png.
+Updating checkbox-indicator-partiallyChecked-pressed.png.
+Updating checkbox-indicator-partiallyChecked-pressed@2x.png.
+Updating checkbox-indicator-partiallyChecked-pressed@3x.png.
+Updating checkbox-indicator-partiallyChecked.png.
+Updating checkbox-indicator-partiallyChecked@2x.png.
+Updating checkbox-indicator-partiallyChecked@3x.png.
+Updating checkbox-indicator-pressed.png.
+Updating checkbox-indicator-pressed@2x.png.
+Updating checkbox-indicator-pressed@3x.png.
+Updating checkbox-indicator.png.
+Updating checkbox-indicator@2x.png.
+Updating checkbox-indicator@3x.png.
+Updating combobox-background-disabled.png.
+Updating combobox-background-disabled@2x.png.
+Updating combobox-background-disabled@3x.png.
+Updating combobox-background-focused.png.
+Updating combobox-background-focused@2x.png.
+Updating combobox-background-focused@3x.png.
+Updating combobox-background-hovered-open.png.
+Updating combobox-background-hovered-open@2x.png.
+Updating combobox-background-hovered-open@3x.png.
+Updating combobox-background-hovered.png.
+Updating combobox-background-hovered@2x.png.
+Updating combobox-background-hovered@3x.png.
+Updating combobox-background-open-pressed.png.
+Updating combobox-background-open-pressed@2x.png.
+Updating combobox-background-open-pressed@3x.png.
+Updating combobox-background-open.png.
+Updating combobox-background-open@2x.png.
+Updating combobox-background-open@3x.png.
+Updating combobox-background-pressed.png.
+Updating combobox-background-pressed@2x.png.
+Updating combobox-background-pressed@3x.png.
+Updating combobox-background.png.
+Updating combobox-background@2x.png.
+Updating combobox-background@3x.png.
+Updating combobox-indicator-disabled.png.
+Updating combobox-indicator-disabled@2x.png.
+Updating combobox-indicator-disabled@3x.png.
+Updating combobox-indicator-focused.png.
+Updating combobox-indicator-focused@2x.png.
+Updating combobox-indicator-focused@3x.png.
+Updating combobox-indicator-hovered-open.png.
+Updating combobox-indicator-hovered-open@2x.png.
+Updating combobox-indicator-hovered-open@3x.png.
+Updating combobox-indicator-hovered.png.
+Updating combobox-indicator-hovered@2x.png.
+Updating combobox-indicator-hovered@3x.png.
+Updating combobox-indicator-open-pressed.png.
+Updating combobox-indicator-open-pressed@2x.png.
+Updating combobox-indicator-open-pressed@3x.png.
+Updating combobox-indicator-open.png.
+Updating combobox-indicator-open@2x.png.
+Updating combobox-indicator-open@3x.png.
+Updating combobox-indicator-pressed.png.
+Updating combobox-indicator-pressed@2x.png.
+Updating combobox-indicator-pressed@3x.png.
+Updating combobox-indicator.png.
+Updating combobox-indicator@2x.png.
+Updating combobox-indicator@3x.png.
+Updating editablecombobox-background-hovered-open.png.
+Updating editablecombobox-background-hovered-open@2x.png.
+Updating editablecombobox-background-hovered-open@3x.png.
+Updating editablecombobox-background-open-pressed.png.
+Updating editablecombobox-background-open-pressed@2x.png.
+Updating editablecombobox-background-open-pressed@3x.png.
+Updating editablecombobox-background-open.png.
+Updating editablecombobox-background-open@2x.png.
+Updating editablecombobox-background-open@3x.png.
+Updating editablecombobox-indicator-hovered-open.png.
+Updating editablecombobox-indicator-hovered-open@2x.png.
+Updating editablecombobox-indicator-hovered-open@3x.png.
+Updating editablecombobox-indicator-open-pressed.png.
+Updating editablecombobox-indicator-open-pressed@2x.png.
+Updating editablecombobox-indicator-open-pressed@3x.png.
+Updating editablecombobox-indicator-open.png.
+Updating editablecombobox-indicator-open@2x.png.
+Updating editablecombobox-indicator-open@3x.png.
+Updating editablecombobox-popup-background-hovered-open.png.
+Updating editablecombobox-popup-background-hovered-open@2x.png.
+Updating editablecombobox-popup-background-hovered-open@3x.png.
+Updating editablecombobox-popup-background-open-pressed.png.
+Updating editablecombobox-popup-background-open-pressed@2x.png.
+Updating editablecombobox-popup-background-open-pressed@3x.png.
+Updating editablecombobox-popup-background-open.png.
+Updating editablecombobox-popup-background-open@2x.png.
+Updating editablecombobox-popup-background-open@3x.png.
+Updating frame-background-disabled.png.
+Updating frame-background-disabled@2x.png.
+Updating frame-background-disabled@3x.png.
+Updating frame-background.png.
+Updating frame-background@2x.png.
+Updating frame-background@3x.png.
+Updating itemdelegate-background-highlighted-hovered.png.
+Updating itemdelegate-background-highlighted-hovered@2x.png.
+Updating itemdelegate-background-highlighted-hovered@3x.png.
+Updating itemdelegate-background-highlighted-pressed.png.
+Updating itemdelegate-background-highlighted-pressed@2x.png.
+Updating itemdelegate-background-highlighted-pressed@3x.png.
+Updating itemdelegate-background-highlighted.png.
+Updating itemdelegate-background-highlighted@2x.png.
+Updating itemdelegate-background-highlighted@3x.png.
+Updating itemdelegate-background-hovered.png.
+Updating itemdelegate-background-hovered@2x.png.
+Updating itemdelegate-background-hovered@3x.png.
+Updating itemdelegate-background-pressed.png.
+Updating itemdelegate-background-pressed@2x.png.
+Updating itemdelegate-background-pressed@3x.png.
+Updating pageindicatordelegate-indicator-delegate-current-hovered.png.
+Updating pageindicatordelegate-indicator-delegate-current-hovered@2x.png.
+Updating pageindicatordelegate-indicator-delegate-current-hovered@3x.png.
+Updating pageindicatordelegate-indicator-delegate-current-pressed.png.
+Updating pageindicatordelegate-indicator-delegate-current-pressed@2x.png.
+Updating pageindicatordelegate-indicator-delegate-current-pressed@3x.png.
+Updating pageindicatordelegate-indicator-delegate-current.png.
+Updating pageindicatordelegate-indicator-delegate-current@2x.png.
+Updating pageindicatordelegate-indicator-delegate-current@3x.png.
+Updating pageindicatordelegate-indicator-delegate-pressed.png.
+Updating pageindicatordelegate-indicator-delegate-pressed@2x.png.
+Updating pageindicatordelegate-indicator-delegate-pressed@3x.png.
+Updating pageindicatordelegate-indicator-disabled.png.
+Updating pageindicatordelegate-indicator-disabled@2x.png.
+Updating pageindicatordelegate-indicator-disabled@3x.png.
+Updating pageindicatordelegate-indicator-hovered.png.
+Updating pageindicatordelegate-indicator-hovered@2x.png.
+Updating pageindicatordelegate-indicator-hovered@3x.png.
+Updating pageindicatordelegate-indicator.png.
+Updating pageindicatordelegate-indicator@2x.png.
+Updating pageindicatordelegate-indicator@3x.png.
+Updating popup-background.png.
+Updating popup-background@2x.png.
+Updating popup-background@3x.png.
+Updating progressbar-groove-disabled.png.
+Updating progressbar-groove-disabled@2x.png.
+Updating progressbar-groove-disabled@3x.png.
+Updating progressbar-groove.png.
+Updating progressbar-groove@2x.png.
+Updating progressbar-groove@3x.png.
+Updating radiobutton-indicator-checked-disabled.png.
+Updating radiobutton-indicator-checked-disabled@2x.png.
+Updating radiobutton-indicator-checked-disabled@3x.png.
+Updating radiobutton-indicator-checked-hovered.png.
+Updating radiobutton-indicator-checked-hovered@2x.png.
+Updating radiobutton-indicator-checked-hovered@3x.png.
+Updating radiobutton-indicator-checked-pressed.png.
+Updating radiobutton-indicator-checked-pressed@2x.png.
+Updating radiobutton-indicator-checked-pressed@3x.png.
+Updating radiobutton-indicator-checked.png.
+Updating radiobutton-indicator-checked@2x.png.
+Updating radiobutton-indicator-checked@3x.png.
+Updating radiobutton-indicator-disabled.png.
+Updating radiobutton-indicator-disabled@2x.png.
+Updating radiobutton-indicator-disabled@3x.png.
+Updating radiobutton-indicator-hovered.png.
+Updating radiobutton-indicator-hovered@2x.png.
+Updating radiobutton-indicator-hovered@3x.png.
+Updating radiobutton-indicator-pressed.png.
+Updating radiobutton-indicator-pressed@2x.png.
+Updating radiobutton-indicator-pressed@3x.png.
+Updating radiobutton-indicator.png.
+Updating radiobutton-indicator@2x.png.
+Updating radiobutton-indicator@3x.png.
+Updating rangeslider-first-handle-disabled.png.
+Updating rangeslider-first-handle-disabled@2x.png.
+Updating rangeslider-first-handle-disabled@3x.png.
+Updating rangeslider-first-handle-handle-pressed.png.
+Updating rangeslider-first-handle-handle-pressed@2x.png.
+Updating rangeslider-first-handle-handle-pressed@3x.png.
+Updating rangeslider-first-handle-hovered.png.
+Updating rangeslider-first-handle-hovered@2x.png.
+Updating rangeslider-first-handle-hovered@3x.png.
+Updating rangeslider-first-handle.png.
+Updating rangeslider-first-handle@2x.png.
+Updating rangeslider-first-handle@3x.png.
+Updating rangeslider-groove-disabled.png.
+Updating rangeslider-groove-disabled@2x.png.
+Updating rangeslider-groove-disabled@3x.png.
+Updating rangeslider-groove-handle-pressed.png.
+Updating rangeslider-groove-handle-pressed@2x.png.
+Updating rangeslider-groove-handle-pressed@3x.png.
+Updating rangeslider-groove-hovered.png.
+Updating rangeslider-groove-hovered@2x.png.
+Updating rangeslider-groove-hovered@3x.png.
+Updating rangeslider-groove.png.
+Updating rangeslider-groove@2x.png.
+Updating rangeslider-groove@3x.png.
+Updating rangeslider-second-handle-disabled.png.
+Updating rangeslider-second-handle-disabled@2x.png.
+Updating rangeslider-second-handle-disabled@3x.png.
+Updating rangeslider-second-handle-handle-pressed.png.
+Updating rangeslider-second-handle-handle-pressed@2x.png.
+Updating rangeslider-second-handle-handle-pressed@3x.png.
+Updating rangeslider-second-handle-hovered.png.
+Updating rangeslider-second-handle-hovered@2x.png.
+Updating rangeslider-second-handle-hovered@3x.png.
+Updating rangeslider-second-handle.png.
+Updating rangeslider-second-handle@2x.png.
+Updating rangeslider-second-handle@3x.png.
+Updating slider-groove-disabled.png.
+Updating slider-groove-disabled@2x.png.
+Updating slider-groove-disabled@3x.png.
+Updating slider-groove-hovered.png.
+Updating slider-groove-hovered@2x.png.
+Updating slider-groove-hovered@3x.png.
+Updating slider-groove-pressed.png.
+Updating slider-groove-pressed@2x.png.
+Updating slider-groove-pressed@3x.png.
+Updating slider-groove.png.
+Updating slider-groove@2x.png.
+Updating slider-groove@3x.png.
+Updating slider-handle-disabled.png.
+Updating slider-handle-disabled@2x.png.
+Updating slider-handle-disabled@3x.png.
+Updating slider-handle-hovered.png.
+Updating slider-handle-hovered@2x.png.
+Updating slider-handle-hovered@3x.png.
+Updating slider-handle-pressed.png.
+Updating slider-handle-pressed@2x.png.
+Updating slider-handle-pressed@3x.png.
+Updating slider-handle.png.
+Updating slider-handle@2x.png.
+Updating slider-handle@3x.png.
+Updating spinbox-background-atlimit.png.
+Updating spinbox-background-atlimit@2x.png.
+Updating spinbox-background-atlimit@3x.png.
+Updating spinbox-background-disabled.png.
+Updating spinbox-background-disabled@2x.png.
+Updating spinbox-background-disabled@3x.png.
+Updating spinbox-background-down-hovered.png.
+Updating spinbox-background-down-hovered@2x.png.
+Updating spinbox-background-down-hovered@3x.png.
+Updating spinbox-background-down-pressed.png.
+Updating spinbox-background-down-pressed@2x.png.
+Updating spinbox-background-down-pressed@3x.png.
+Updating spinbox-background-hovered.png.
+Updating spinbox-background-hovered@2x.png.
+Updating spinbox-background-hovered@3x.png.
+Updating spinbox-background-up-hovered.png.
+Updating spinbox-background-up-hovered@2x.png.
+Updating spinbox-background-up-hovered@3x.png.
+Updating spinbox-background-up-pressed.png.
+Updating spinbox-background-up-pressed@2x.png.
+Updating spinbox-background-up-pressed@3x.png.
+Updating spinbox-background.png.
+Updating spinbox-background@2x.png.
+Updating spinbox-background@3x.png.
+Updating spinbox-indicator-down-background-atlimit.png.
+Updating spinbox-indicator-down-background-atlimit@2x.png.
+Updating spinbox-indicator-down-background-atlimit@3x.png.
+Updating spinbox-indicator-down-background-disabled.png.
+Updating spinbox-indicator-down-background-disabled@2x.png.
+Updating spinbox-indicator-down-background-disabled@3x.png.
+Updating spinbox-indicator-down-background-down-hovered.png.
+Updating spinbox-indicator-down-background-down-hovered@2x.png.
+Updating spinbox-indicator-down-background-down-hovered@3x.png.
+Updating spinbox-indicator-down-background-down-pressed.png.
+Updating spinbox-indicator-down-background-down-pressed@2x.png.
+Updating spinbox-indicator-down-background-down-pressed@3x.png.
+Updating spinbox-indicator-down-background-hovered.png.
+Updating spinbox-indicator-down-background-hovered@2x.png.
+Updating spinbox-indicator-down-background-hovered@3x.png.
+Updating spinbox-indicator-down-background-up-hovered.png.
+Updating spinbox-indicator-down-background-up-hovered@2x.png.
+Updating spinbox-indicator-down-background-up-hovered@3x.png.
+Updating spinbox-indicator-down-background-up-pressed.png.
+Updating spinbox-indicator-down-background-up-pressed@2x.png.
+Updating spinbox-indicator-down-background-up-pressed@3x.png.
+Updating spinbox-indicator-down-background.png.
+Updating spinbox-indicator-down-background@2x.png.
+Updating spinbox-indicator-down-background@3x.png.
+Updating spinbox-indicator-down-icon-atlimit.png.
+Updating spinbox-indicator-down-icon-atlimit@2x.png.
+Updating spinbox-indicator-down-icon-atlimit@3x.png.
+Updating spinbox-indicator-down-icon-disabled.png.
+Updating spinbox-indicator-down-icon-disabled@2x.png.
+Updating spinbox-indicator-down-icon-disabled@3x.png.
+Updating spinbox-indicator-down-icon-down-hovered.png.
+Updating spinbox-indicator-down-icon-down-hovered@2x.png.
+Updating spinbox-indicator-down-icon-down-hovered@3x.png.
+Updating spinbox-indicator-down-icon-down-pressed.png.
+Updating spinbox-indicator-down-icon-down-pressed@2x.png.
+Updating spinbox-indicator-down-icon-down-pressed@3x.png.
+Updating spinbox-indicator-down-icon-hovered.png.
+Updating spinbox-indicator-down-icon-hovered@2x.png.
+Updating spinbox-indicator-down-icon-hovered@3x.png.
+Updating spinbox-indicator-down-icon-up-hovered.png.
+Updating spinbox-indicator-down-icon-up-hovered@2x.png.
+Updating spinbox-indicator-down-icon-up-hovered@3x.png.
+Updating spinbox-indicator-down-icon-up-pressed.png.
+Updating spinbox-indicator-down-icon-up-pressed@2x.png.
+Updating spinbox-indicator-down-icon-up-pressed@3x.png.
+Updating spinbox-indicator-down-icon.png.
+Updating spinbox-indicator-down-icon@2x.png.
+Updating spinbox-indicator-down-icon@3x.png.
+Updating spinbox-indicator-up-background-atlimit.png.
+Updating spinbox-indicator-up-background-atlimit@2x.png.
+Updating spinbox-indicator-up-background-atlimit@3x.png.
+Updating spinbox-indicator-up-background-disabled.png.
+Updating spinbox-indicator-up-background-disabled@2x.png.
+Updating spinbox-indicator-up-background-disabled@3x.png.
+Updating spinbox-indicator-up-background-down-hovered.png.
+Updating spinbox-indicator-up-background-down-hovered@2x.png.
+Updating spinbox-indicator-up-background-down-hovered@3x.png.
+Updating spinbox-indicator-up-background-down-pressed.png.
+Updating spinbox-indicator-up-background-down-pressed@2x.png.
+Updating spinbox-indicator-up-background-down-pressed@3x.png.
+Updating spinbox-indicator-up-background-hovered.png.
+Updating spinbox-indicator-up-background-hovered@2x.png.
+Updating spinbox-indicator-up-background-hovered@3x.png.
+Updating spinbox-indicator-up-background-up-hovered.png.
+Updating spinbox-indicator-up-background-up-hovered@2x.png.
+Updating spinbox-indicator-up-background-up-hovered@3x.png.
+Updating spinbox-indicator-up-background-up-pressed.png.
+Updating spinbox-indicator-up-background-up-pressed@2x.png.
+Updating spinbox-indicator-up-background-up-pressed@3x.png.
+Updating spinbox-indicator-up-background.png.
+Updating spinbox-indicator-up-background@2x.png.
+Updating spinbox-indicator-up-background@3x.png.
+Updating spinbox-indicator-up-icon-atlimit.png.
+Updating spinbox-indicator-up-icon-atlimit@2x.png.
+Updating spinbox-indicator-up-icon-atlimit@3x.png.
+Updating spinbox-indicator-up-icon-disabled.png.
+Updating spinbox-indicator-up-icon-disabled@2x.png.
+Updating spinbox-indicator-up-icon-disabled@3x.png.
+Updating spinbox-indicator-up-icon-down-hovered.png.
+Updating spinbox-indicator-up-icon-down-hovered@2x.png.
+Updating spinbox-indicator-up-icon-down-hovered@3x.png.
+Updating spinbox-indicator-up-icon-down-pressed.png.
+Updating spinbox-indicator-up-icon-down-pressed@2x.png.
+Updating spinbox-indicator-up-icon-down-pressed@3x.png.
+Updating spinbox-indicator-up-icon-hovered.png.
+Updating spinbox-indicator-up-icon-hovered@2x.png.
+Updating spinbox-indicator-up-icon-hovered@3x.png.
+Updating spinbox-indicator-up-icon-up-hovered.png.
+Updating spinbox-indicator-up-icon-up-hovered@2x.png.
+Updating spinbox-indicator-up-icon-up-hovered@3x.png.
+Updating spinbox-indicator-up-icon-up-pressed.png.
+Updating spinbox-indicator-up-icon-up-pressed@2x.png.
+Updating spinbox-indicator-up-icon-up-pressed@3x.png.
+Updating spinbox-indicator-up-icon.png.
+Updating spinbox-indicator-up-icon@2x.png.
+Updating spinbox-indicator-up-icon@3x.png.
+Updating textarea-background-disabled.png.
+Updating textarea-background-disabled@2x.png.
+Updating textarea-background-disabled@3x.png.
+Updating textarea-background-focused.png.
+Updating textarea-background-focused@2x.png.
+Updating textarea-background-focused@3x.png.
+Updating textarea-background-hovered.png.
+Updating textarea-background-hovered@2x.png.
+Updating textarea-background-hovered@3x.png.
+Updating textarea-background.png.
+Updating textarea-background@2x.png.
+Updating textarea-background@3x.png.
+Updating textfield-background-disabled.png.
+Updating textfield-background-disabled@2x.png.
+Updating textfield-background-disabled@3x.png.
+Updating textfield-background-focused.png.
+Updating textfield-background-focused@2x.png.
+Updating textfield-background-focused@3x.png.
+Updating textfield-background-hovered.png.
+Updating textfield-background-hovered@2x.png.
+Updating textfield-background-hovered@3x.png.
+Updating textfield-background.png.
+Updating textfield-background@2x.png.
+Updating textfield-background@3x.png.
+Updating qtquickcontrols2windowsstyleplugin.dll.
+Updating ApplicationWindow.qml.
+Updating Button.qml.
+Updating CheckBox.qml.
+Updating CheckDelegate.qml.
+Updating ComboBox.qml.
+Updating DelayButton.qml.
+Updating DoubleSpinBox.qml.
+Updating Frame.qml.
+Updating GroupBox.qml.
+Updating ItemDelegate.qml.
+Updating Menu.qml.
+Updating MenuBar.qml.
+Updating MenuBarItem.qml.
+Updating MenuItem.qml.
+Updating MenuSeparator.qml.
+Updating plugins.qmltypes.
+Updating ProgressBar.qml.
+Updating qmldir.
+Updating RadioButton.qml.
+Updating RadioDelegate.qml.
+Updating RangeSlider.qml.
+Updating ScrollBar.qml.
+Updating ScrollIndicator.qml.
+Updating ScrollView.qml.
+Updating SearchField.qml.
+Updating SelectionRectangle.qml.
+Updating Slider.qml.
+Updating SpinBox.qml.
+Updating Switch.qml.
+Updating SwitchDelegate.qml.
+Updating TextArea.qml.
+Updating TextField.qml.
+Updating checkmark.png.
+Updating checkmark@2x.png.
+Updating checkmark@3x.png.
+Updating close_big.png.
+Updating close_big@2x.png.
+Updating close_big@3x.png.
+Updating menuarrow.png.
+Updating menuarrow@2x.png.
+Updating menuarrow@3x.png.
+Updating search-magnifier.png.
+Updating search-magnifier@2x.png.
+Updating search-magnifier@3x.png.
+Updating qtquickcontrols2basicstyleplugin.dll.
+Updating AbstractButton.qml.
+Updating Action.qml.
+Updating ActionGroup.qml.
+Updating ApplicationWindow.qml.
+Updating BusyIndicator.qml.
+Updating Button.qml.
+Updating ButtonGroup.qml.
+Updating Calendar.qml.
+Updating CalendarModel.qml.
+Updating CheckBox.qml.
+Updating CheckDelegate.qml.
+Updating ComboBox.qml.
+Updating Container.qml.
+Updating Control.qml.
+Updating DayOfWeekRow.qml.
+Updating DelayButton.qml.
+Updating Dial.qml.
+Updating Dialog.qml.
+Updating DialogButtonBox.qml.
+Updating DoubleSpinBox.qml.
+Updating Drawer.qml.
+Updating Frame.qml.
+Updating GroupBox.qml.
+Updating HorizontalHeaderView.qml.
+Updating HorizontalHeaderViewDelegate.qml.
+Updating ItemDelegate.qml.
+Updating Label.qml.
+Updating Menu.qml.
+Updating MenuBar.qml.
+Updating MenuBarItem.qml.
+Updating MenuItem.qml.
+Updating MenuSeparator.qml.
+Updating MonthGrid.qml.
+Updating Page.qml.
+Updating PageIndicator.qml.
+Updating Pane.qml.
+Updating plugins.qmltypes.
+Updating Popup.qml.
+Updating ProgressBar.qml.
+Updating qmldir.
+Updating RadioButton.qml.
+Updating RadioDelegate.qml.
+Updating RangeSlider.qml.
+Updating RoundButton.qml.
+Updating ScrollBar.qml.
+Updating ScrollIndicator.qml.
+Updating ScrollView.qml.
+Updating SearchField.qml.
+Updating SelectionRectangle.qml.
+Updating Slider.qml.
+Updating SpinBox.qml.
+Updating SplitView.qml.
+Updating StackView.qml.
+Updating SwipeDelegate.qml.
+Updating SwipeView.qml.
+Updating Switch.qml.
+Updating SwitchDelegate.qml.
+Updating TabBar.qml.
+Updating TabButton.qml.
+Updating TableViewDelegate.qml.
+Updating TextArea.qml.
+Updating TextField.qml.
+Updating ToolBar.qml.
+Updating ToolButton.qml.
+Updating ToolSeparator.qml.
+Updating ToolTip.qml.
+Updating TreeViewDelegate.qml.
+Updating Tumbler.qml.
+Updating VerticalHeaderView.qml.
+Updating VerticalHeaderViewDelegate.qml.
+Updating WeekNumberColumn.qml.
+Updating qtquicktemplates2plugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating qtquickcontrols2implplugin.dll.
+Updating CopyAction.qml.
+Updating CutAction.qml.
+Updating DeleteAction.qml.
+Updating PasteAction.qml.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating RedoAction.qml.
+Updating SelectAllAction.qml.
+Updating UndoAction.qml.
+Updating qtquickcontrols2fusionstyleimplplugin.dll.
+Updating ButtonPanel.qml.
+Updating CheckIndicator.qml.
+Updating CopyAction.qml.
+Updating CutAction.qml.
+Updating DeleteAction.qml.
+Updating PasteAction.qml.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating RadioIndicator.qml.
+Updating RedoAction.qml.
+Updating SelectAllAction.qml.
+Updating SliderGroove.qml.
+Updating SliderHandle.qml.
+Updating SwitchIndicator.qml.
+Updating TextEditingContextMenu.qml.
+Updating TextFieldBackground.qml.
+Updating UndoAction.qml.
+Updating quickwindowplugin.dll.
+Updating qmldir.
+Updating quickwindow.qmltypes.
+Updating qtquickcontrols2imaginestyleimplplugin.dll.
+Updating OpacityMask.qml.
+Updating qmldir.
+Updating QuickControls2ImagineStyleImpl.qmltypes.
+Updating TextEditingContextMenu.qml.
+Updating qtquickcontrols2materialstyleimplplugin.dll.
+Updating BoxShadow.qml.
+Updating CheckIndicator.qml.
+Updating CursorDelegate.qml.
+Updating ElevationEffect.qml.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating RadioIndicator.qml.
+Updating RectangularGlow.qml.
+Updating RoundedElevationEffect.qml.
+Updating SliderHandle.qml.
+Updating SwitchIndicator.qml.
+Updating TextEditingContextMenu.qml.
+Updating qtquickcontrols2universalstyleimplplugin.dll.
+Updating CheckIndicator.qml.
+Updating CopyAction.qml.
+Updating CutAction.qml.
+Updating DeleteAction.qml.
+Updating PasteAction.qml.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating RadioIndicator.qml.
+Updating RedoAction.qml.
+Updating SelectAllAction.qml.
+Updating SwitchIndicator.qml.
+Updating TextEditingContextMenu.qml.
+Updating UndoAction.qml.
+Updating qtquickcontrols2fluentwinui3styleimplplugin.dll.
+Updating ButtonBackground.qml.
+Updating CheckIndicator.qml.
+Updating CopyAction.qml.
+Updating CutAction.qml.
+Updating DeleteAction.qml.
+Updating FocusFrame.qml.
+Updating PasteAction.qml.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating RadioIndicator.qml.
+Updating RedoAction.qml.
+Updating SelectAllAction.qml.
+Updating StyleImage.qml.
+Updating SwitchIndicator.qml.
+Updating TextEditingContextMenu.qml.
+Updating UndoAction.qml.
+Updating effectsplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating qquicklayoutsplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating qmlshapesplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating qtquickcontrols2nativestyleplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating qtquickcontrols2windowsstyleimplplugin.dll.
+Updating CheckIndicator.qml.
+Updating CopyAction.qml.
+Updating CutAction.qml.
+Updating DeleteAction.qml.
+Updating PasteAction.qml.
+Updating qmldir.
+Updating QuickControls2WindowsStyleImpl.qmltypes.
+Updating RedoAction.qml.
+Updating SelectAllAction.qml.
+Updating SwitchIndicator.qml.
+Updating TextEditingContextMenu.qml.
+Updating UndoAction.qml.
+Updating qtquickcontrols2basicstyleimplplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating TextEditingContextMenu.qml.
+Updating qtquickdialogsplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating qtquickdialogs2quickimplplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Updating ColorDialog.qml.
+Updating ColorInputs.qml.
+Updating DelegateBackground.qml.
+Updating FileDialog.qml.
+Updating FileDialogDelegate.qml.
+Updating FileDialogDelegateLabel.qml.
+Updating FolderBreadcrumbBar.qml.
+Updating FolderDialog.qml.
+Updating FolderDialogDelegate.qml.
+Updating FolderDialogDelegateLabel.qml.
+Updating FontDialog.qml.
+Updating FontDialogContent.qml.
+Updating HueGradient.qml.
+Updating MessageDialog.qml.
+Updating PickerHandle.qml.
+Updating SaturationLightnessPicker.qml.
+Updating SideBar.qml.
+Updating ColorDialog.qml.
+Updating ColorInputs.qml.
+Updating FileDialog.qml.
+Updating FileDialogDelegate.qml.
+Updating FolderBreadcrumbBar.qml.
+Updating FolderDialog.qml.
+Updating FolderDialogDelegate.qml.
+Updating FontDialog.qml.
+Updating MessageDialog.qml.
+Updating SideBar.qml.
+Updating ColorDialog.qml.
+Updating ColorInputs.qml.
+Updating FileDialog.qml.
+Updating FileDialogDelegate.qml.
+Updating FolderBreadcrumbBar.qml.
+Updating FolderDialog.qml.
+Updating FolderDialogDelegate.qml.
+Updating FontDialog.qml.
+Updating MessageDialog.qml.
+Updating SideBar.qml.
+Updating ColorDialog.qml.
+Updating ColorInputs.qml.
+Updating FileDialog.qml.
+Updating FileDialogDelegate.qml.
+Updating FolderBreadcrumbBar.qml.
+Updating FolderDialog.qml.
+Updating FolderDialogDelegate.qml.
+Updating FontDialog.qml.
+Updating MessageDialog.qml.
+Updating SideBar.qml.
+Updating ColorDialog.qml.
+Updating ColorInputs.qml.
+Updating FileDialog.qml.
+Updating FileDialogDelegate.qml.
+Updating FolderBreadcrumbBar.qml.
+Updating FolderDialog.qml.
+Updating FolderDialogDelegate.qml.
+Updating FontDialog.qml.
+Updating MessageDialog.qml.
+Updating SideBar.qml.
+Creating D:\works\qcnote\dist\qcnote-0.1.0-win64-portable\qml\Qt\labs...
+Creating D:/works/qcnote/dist/qcnote-0.1.0-win64-portable/qml/Qt/labs/folderlistmodel.
+Updating qmlfolderlistmodelplugin.dll.
+Updating plugins.qmltypes.
+Updating qmldir.
+Creating D:\works\qcnote\dist\qcnote-0.1.0-win64-portable\translations...
+Creating qt_ar.qm...
+Creating qt_bg.qm...
+Creating qt_ca.qm...
+Creating qt_cs.qm...
+Creating qt_da.qm...
+Creating qt_de.qm...
+Creating qt_en.qm...
+Creating qt_es.qm...
+Creating qt_fa.qm...
+Creating qt_fi.qm...
+Creating qt_fr.qm...
+Creating qt_gd.qm...
+Creating qt_he.qm...
+Creating qt_hr.qm...
+Creating qt_hu.qm...
+Creating qt_it.qm...
+Creating qt_ja.qm...
+Creating qt_ka.qm...
+Creating qt_ko.qm...
+Creating qt_lg.qm...
+Creating qt_lv.qm...
+Creating qt_nl.qm...
+Creating qt_nn.qm...
+Creating qt_pl.qm...
+Creating qt_pt_BR.qm...
+Creating qt_ru.qm...
+Creating qt_sk.qm...
+Creating qt_sv.qm...
+Creating qt_tr.qm...
+Creating qt_uk.qm...
+Creating qt_zh_CN.qm...
+Creating qt_zh_TW.qm...
+
+==> 写入便携标记文件 qcnote.portable
+
+==> offscreen 冒烟验证（无可见窗口）
+进程存活 5 秒：启动成功
+便携数据模式验证通过：应用已将 exe 旁 qcnote.ini 重写为 size=0（D:\works\qcnote\dist\qcnote-0.1.0-win64-portable\qcnote.ini）
+
+==> 压缩便携目录为 zip
+
+================== 打包完成 ==================
+zip 路径      ：D:\works\qcnote\dist\qcnote-0.1.0-win64-portable.zip
+zip 大小      ：40.38 MB
+便携目录      ：D:\works\qcnote\dist\qcnote-0.1.0-win64-portable
+目录条目文件数：1484
+===============================================

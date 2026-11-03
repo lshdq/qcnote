@@ -1,4 +1,5 @@
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QMetaObject>
 #include <QRegularExpression>
@@ -11,6 +12,52 @@
 #include "document/document.h"
 #include "document/documentmanager.h"
 #include "document/sessionmanager.h"
+
+// RAII：便携构造级测试需要临时占用测试进程 exe 目录（build/，与 qcnote.exe
+// 同目录）放置 qcnote.portable 标记并接收测试产生的 qcnote.ini。QVERIFY 失败
+// 仅 return 出测试函数，局部对象析构照常执行，保证 build 目录恢复原状；
+// 目录中已存在任一目标文件（异常残留/他人产物）时不创建也不清理，
+// 调用方据此 QSKIP。
+class ExeDirPortableView
+{
+public:
+    ExeDirPortableView()
+        : m_markerPath(QDir(QCoreApplication::applicationDirPath())
+                           .filePath(QStringLiteral("qcnote.portable")))
+        , m_iniPath(QDir(QCoreApplication::applicationDirPath())
+                        .filePath(QStringLiteral("qcnote.ini")))
+        , m_clean(!QFile::exists(m_markerPath) && !QFile::exists(m_iniPath))
+    {
+    }
+
+    bool dirIsClean() const { return m_clean; }
+
+    bool createMarker()
+    {
+        if (!m_clean)
+            return false;
+        QFile marker(m_markerPath);
+        if (!marker.open(QIODevice::WriteOnly))
+            return false;
+        marker.close();
+        return true;
+    }
+
+    QString iniPath() const { return m_iniPath; }
+
+    ~ExeDirPortableView()
+    {
+        if (!m_clean)
+            return;
+        QFile::remove(m_iniPath);    // 便携分支产生的会话文件
+        QFile::remove(m_markerPath); // 本视图创建的标记
+    }
+
+private:
+    QString m_markerPath;
+    QString m_iniPath;
+    bool m_clean;
+};
 
 // 会话恢复核心行为：文档往返、缺失文件静默跳过、active 丢失回退、空会话无副作用、
 // 损坏数据容错、光标钳制、防抖写盘与 flush、几何校验纯函数、窗口状态往返。
@@ -31,6 +78,13 @@ private slots:
     void aboutToQuitFlushesPendingDebounce();
     void validateWindowStateClampsAndRejectsOffscreen();
     void windowStateRoundTrip();
+    void resolvePortableIniPath_returnsIniWhenMarkerExists();
+    void resolvePortableIniPath_returnsEmptyWhenMarkerMissing();
+    void resolvePortableIniPath_returnsEmptyWhenAppDirMissing();
+    void resolvePortableIniPath_returnsEmptyWhenMarkerIsDirectory();
+    void resolvePortableIniPath_returnsEmptyWhenAppDirEmpty();
+    void constructWithEmptyPathWritesIniNextToExeWhenMarkerPresent();
+    void constructWithEmptyPathKeepsExeDirCleanWhenMarkerMissing();
 
 private:
     static void writeRawBytes(const QString &path, const QByteArray &bytes)
@@ -414,6 +468,111 @@ void TestSessionManager::windowStateRoundTrip()
         QCOMPARE(restored.value(QStringLiteral("height")).toInt(), 640);
         QCOMPARE(restored.value(QStringLiteral("maximized")).toBool(), true);
     }
+}
+
+// 便携模式：标记文件 qcnote.portable 存在 → 返回 appDir/qcnote.ini 的绝对路径
+void TestSessionManager::resolvePortableIniPath_returnsIniWhenMarkerExists()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString appDir = dir.path();
+    writeRawBytes(dir.filePath(QStringLiteral("qcnote.portable")), QByteArrayLiteral(""));
+
+    const QString result = SessionManager::resolvePortableIniPath(appDir);
+
+    QCOMPARE(result, QFileInfo(QDir(appDir).filePath(QStringLiteral("qcnote.ini"))).absoluteFilePath());
+    QVERIFY(QFileInfo(result).isAbsolute()); // 绝对路径约定
+}
+
+// 便携模式：标记文件不存在 → 返回空串（走用户目录默认路径）
+void TestSessionManager::resolvePortableIniPath_returnsEmptyWhenMarkerMissing()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    QVERIFY(SessionManager::resolvePortableIniPath(dir.path()).isEmpty());
+}
+
+// 便携模式：appDir 本身不存在 → 返回空串、不崩溃
+void TestSessionManager::resolvePortableIniPath_returnsEmptyWhenAppDirMissing()
+{
+    const QString missing = QDir::temp().absoluteFilePath(
+        QStringLiteral("qcnote-nonexistent-") + QString::number(QCoreApplication::applicationPid()));
+
+    QVERIFY(!QDir(missing).exists());
+    QVERIFY(SessionManager::resolvePortableIniPath(missing).isEmpty());
+}
+
+// 便携模式：标记 qcnote.portable 是目录而非常规文件 → 返回空串（isFile 判定不通过）
+void TestSessionManager::resolvePortableIniPath_returnsEmptyWhenMarkerIsDirectory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(QDir(dir.path()).mkdir(QStringLiteral("qcnote.portable"))); // 同名目录
+
+    QVERIFY(SessionManager::resolvePortableIniPath(dir.path()).isEmpty());
+}
+
+// 便携模式：appDir 为空串 → 必须返回空串，不得以进程 CWD 为基准探测标记。
+// 在 exe 目录（ctest 运行时的 CWD）临时放置 qcnote.portable 后传入空串：
+// 无空串防御的实现经 QDir("") 会相对 CWD 误判命中并返回 CWD 下 qcnote.ini，
+// 本用例锁定"空入参即空结果"契约。标记由 RAII 视图创建并清理。
+void TestSessionManager::resolvePortableIniPath_returnsEmptyWhenAppDirEmpty()
+{
+    ExeDirPortableView exeDir;
+    if (!exeDir.dirIsClean())
+        QSKIP("build 目录已存在 qcnote.portable/qcnote.ini，跳过以免误动他人产物");
+
+    QVERIFY(exeDir.createMarker()); // CWD 下放置标记：任何基于 CWD 的探测都会命中
+
+    QVERIFY(SessionManager::resolvePortableIniPath(QString()).isEmpty());
+}
+
+// 便携构造级：注入路径为空 + exe 目录存在 qcnote.portable 标记 → 会话 ini 落在
+// exe 旁（构造函数便携命中分支，需求 F1 写盘行为在单元层的端到端验证）。
+// 标记由 RAII 视图创建并清理，不污染 build 目录。
+void TestSessionManager::constructWithEmptyPathWritesIniNextToExeWhenMarkerPresent()
+{
+    ExeDirPortableView exeDir;
+    if (!exeDir.dirIsClean())
+        QSKIP("build 目录已存在 qcnote.portable/qcnote.ini，跳过以免误动他人产物");
+
+    QVERIFY(exeDir.createMarker());
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("portable.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("P"));
+
+    DocumentManager mgr;
+    SessionManager session(&mgr, QString()); // 空注入路径：应命中便携模式
+    mgr.openUrls({ url });
+    session.flush(); // 不等防抖，立即落盘
+
+    QVERIFY(QFile::exists(exeDir.iniPath())); // ini 生成于 exe 旁
+    QSettings reader(exeDir.iniPath(), QSettings::IniFormat);
+    QCOMPARE(reader.value(QStringLiteral("documents/size")).toInt(), 1);
+    QCOMPARE(QUrl(reader.value(QStringLiteral("documents/1/url")).toString()), url);
+}
+
+// 无标记构造级：注入路径为空 + exe 目录无 qcnote.portable → 构造到析构全程不得
+// 在 exe 旁产生 qcnote.ini（便携分支不得误触发）。仅做零副作用断言，不验证
+// UserScope 实际落点——那指向真实 %APPDATA%\qcnote\qcnote.ini，写盘验证由
+// TC-008 集成场景（便携产物临时副本）承担，避免单元测试污染真实用户目录。
+// 注意：此处不调用 restoreDocuments——若真实用户目录存在历史会话，
+// 恢复路径末尾的 saveNow 会重写该文件。
+void TestSessionManager::constructWithEmptyPathKeepsExeDirCleanWhenMarkerMissing()
+{
+    ExeDirPortableView exeDir;
+    if (!exeDir.dirIsClean())
+        QSKIP("build 目录已存在 qcnote.portable/qcnote.ini，跳过以免误动他人产物");
+
+    DocumentManager mgr;
+    SessionManager session(&mgr, QString()); // 空注入路径 + 无标记：走默认 UserScope
+    QCOMPARE(mgr.documents().size(), 0);
+    session.flush(); // 无任何写操作：仅 sync，不落盘
+
+    QVERIFY(!QFile::exists(exeDir.iniPath())); // exe 旁零副作用
 }
 
 int runSessionManagerTests(int argc, char *argv[])

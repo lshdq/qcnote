@@ -1,0 +1,35 @@
+===== T6 前置：预置用户数据 =====
+[通过] 前置：%APPDATA%\qcnote 原本不存在
+
+===== T6 执行：后台运行脚本 + 抢锁测试目录 ini =====
+已抢锁测试创建物：C:\Users\aiRunner\AppData\Roaming\qcnote\qcnote.ini
+脚本退出码：1
+产物目录：D:\works\qcnote\dist\qcnote-0.1.0-win64-portable
+临时副本：D:\temp\aiRunner\opencode\qcnote-verify-20261103-115230\portable-copy
+
+==> TC-007/TC-008前半 : offscreen 启动（最小 PATH）
+进程存活 5 秒（PID 84744）：启动成功
+TC-008 前半通过：会话 ini 落 exe 旁并被应用重写（size=1 → size=0）
+
+==> TC-008 后半 : 备份真实 %APPDATA%\qcnote（如存在）
+已备份（同卷原子改名）：C:\Users\aiRunner\AppData\Roaming\qcnote → C:\Users\aiRunner\AppData\Roaming\qcnote.verify-backup-20261103-115237
+
+==> TC-008后半 : offscreen 启动（最小 PATH）
+进程存活 5 秒（PID 89408）：启动成功
+[失败] TC-008 后半失败：%APPDATA% qcnote.ini 未被应用重写为 size=0（未写回用户目录）
+[错误] 还原失败（The process cannot access the file 'C:\Users\aiRunner\AppData\Roaming\qcnote\qcnote.ini' because it is being used by another process.）：备份保留于 C:\Users\aiRunner\AppData\Roaming\qcnote.verify-backup-20261103-115237，请人工检查
+
+===== T6 断言（锁定未释放状态） =====
+[通过] 脚本以非零退出码结束（实际 1）
+[通过] 备份目录完整保留（1 个，实际 1）：C:\Users\aiRunner\AppData\Roaming\qcnote.verify-backup-20261103-115237
+[通过] T6 保留备份中的用户数据（零丢失） ：文件清单（路径+大小+SHA256）完全一致
+[通过] 
+[通过] 当前 %APPDATA%\qcnote 未被误删（还原失败时保留现场）
+
+===== T6 人工恢复演练：按报错指引完成还原 =====
+[通过] T6 人工恢复后用户数据 ：文件清单（路径+大小+SHA256）完全一致
+[通过] 
+[通过] 人工恢复后无 qcnote.verify-backup-* 残留
+[通过] 已清理测试 fixture（恢复机器原状）
+
+===== T6 失败注入：还原阶段失败 → 备份保留零丢失 ：PASS =====

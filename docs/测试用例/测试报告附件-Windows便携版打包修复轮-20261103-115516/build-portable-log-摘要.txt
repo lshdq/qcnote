@@ -1,0 +1,19 @@
+
+==> 设置构建 PATH
+
+==> 从 CMakeLists.txt 提取版本号
+版本号：0.1.0
+
+
+Updating ComboBox.qml.
+Updating Tumbler.qml.
+Updating ComboBox.qml.
+Updating Tumbler.qml.
+Updating ComboBox.qml.
+Updating Tumbler.qml.
+Updating ComboBox.qml.
+Updating Tumbler.qml.
+Updating ComboBox.qml.
+Updating combobox-background-disabled.png.
+Updating combobox-background-disabled@2x.png.
+Updating combobox-background-disabled@3x.png.

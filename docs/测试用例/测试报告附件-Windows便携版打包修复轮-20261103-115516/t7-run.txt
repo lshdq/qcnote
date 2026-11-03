@@ -1,0 +1,18 @@
+[通过] 锚点 A（删除重建 build）存在
+[通过] 锚点 B（dist 目录）存在
+[通过] 锚点 R（项目根）存在
+[通过] 锚点 C（冒烟成功条件）存在
+注入副本：D:\temp\aiRunner\opencode\qcnote-retest-fixround-20261103\t7-build-injected.ps1
+
+===== T7 执行：运行注入副本（冒烟必超时失败） =====
+
+===== T7 断言 =====
+[通过] 脚本以非零退出码结束（实际 1）
+[通过] 临时 dist 中便携目录已组装（失败发生在冒烟段）
+[通过] finally 清理：无 qcnote.ini 残留
+[通过] finally 清理：无 qoffscreen.dll 残留
+[通过] finally 清理：无 qcnote 进程残留
+[通过] 失败后不产出 zip
+[通过] 已清理注入用临时 dist
+
+===== T7 失败注入：冒烟超时 → finally 四路径清理 ：PASS =====

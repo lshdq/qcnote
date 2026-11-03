@@ -1,0 +1,15 @@
+浜х墿鐩綍锛欴:\works\qcnote\dist\qcnote-0.1.0-win64-portable
+涓存椂鍓湰锛欴:\temp\aiRunner\opencode\qcnote-verify-20261103-110812\portable-copy
+
+==> TC-007/TC-008鍓嶅崐 : offscreen 鍚姩锛堟渶灏?PATH锛?
+杩涚▼瀛樻椿 5 绉掞紙PID 83376锛夛細鍚姩鎴愬姛
+TC-008 鍓嶅崐閫氳繃锛氫細璇?ini 钀?exe 鏃佸苟琚簲鐢ㄩ噸鍐欙紙size=1 鈫?size=0锛?
+
+==> TC-008 鍚庡崐 : 澶囦唤鐪熷疄 %APPDATA%\qcnote锛堝瀛樺湪锛?
+C:\Users\aiRunner\AppData\Roaming\qcnote 涓嶅瓨鍦紝鏃犻渶澶囦唤锛堥獙璇佸悗鍒犻櫎鍒涘缓鐗╂仮澶嶅師鐘讹級
+
+==> TC-008鍚庡崐 : offscreen 鍚姩锛堟渶灏?PATH锛?
+杩涚▼瀛樻椿 5 绉掞紙PID 15328锛夛細鍚姩鎴愬姛
+TC-008 鍚庡崐閫氳繃锛氬垹闄ゆ爣璁板悗鏁版嵁鍐欏洖 %APPDATA%\qcnote\qcnote.ini锛坰ize=1 鈫?size=0锛夛紝exe 鏃佹棤 ini
+
+================== 楠岃瘉瀹屾垚锛圱C-007 / TC-008 鍏ㄩ儴閫氳繃锛?==================

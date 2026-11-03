@@ -1,0 +1,25 @@
+===== T5 前置：预置用户数据并锁定其中一个文件 =====
+[通过] 前置：%APPDATA%\qcnote 原本不存在
+已锁定：C:\Users\aiRunner\AppData\Roaming\qcnote\sessions\a.json
+
+===== T5 执行：运行真实 verify-portable.ps1（备份步骤应失败） =====
+产物目录：D:\works\qcnote\dist\qcnote-0.1.0-win64-portable
+临时副本：D:\temp\aiRunner\opencode\qcnote-verify-20261103-115207\portable-copy
+
+==> TC-007/TC-008前半 : offscreen 启动（最小 PATH）
+进程存活 5 秒（PID 80844）：启动成功
+TC-008 前半通过：会话 ini 落 exe 旁并被应用重写（size=1 → size=0）
+
+==> TC-008 后半 : 备份真实 %APPDATA%\qcnote（如存在）
+[失败] 备份 %APPDATA%\qcnote 失败（Access to the path 'C:\Users\aiRunner\AppData\Roaming\qcnote' is denied.）；原目录保持原样未动
+已释放锁定
+
+===== T5 断言 =====
+[通过] 脚本以非零退出码结束（实际 1）
+[通过] 原目录 %APPDATA%\qcnote 仍存在（未被删除）
+[通过] T5 备份失败后原目录数据 ：文件清单（路径+大小+SHA256）完全一致
+[通过] 
+[通过] 无 qcnote.verify-backup-* 残留
+[通过] 已清理测试 fixture（恢复机器原状）
+
+===== T5 失败注入：备份改名失败 → 原目录保持原样 ：PASS =====

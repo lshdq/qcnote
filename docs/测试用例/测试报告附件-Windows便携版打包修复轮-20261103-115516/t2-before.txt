@@ -1,0 +1,3 @@
+用户备注.md | 30 | 1F38DF73C3D242D4
+qcnote.ini | 101 | 3CEDD758432B9B17
+sessions\2026\11\deep.txt | 28 | AB1F4950E6CEE26A

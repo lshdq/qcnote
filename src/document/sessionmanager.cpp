@@ -1,6 +1,7 @@
 #include "document/sessionmanager.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QJSEngine>
@@ -17,11 +18,16 @@ SessionManager::SessionManager(DocumentManager *manager, const QString &filePath
     : QObject(parent)
     , m_manager(manager)
 {
-    // 会话文件：测试注入显式路径；缺省为用户目录 qcnote.ini（IniFormat + UserScope）
-    if (filePath.isEmpty())
-        m_settings = std::make_unique<QSettings>(QSettings::IniFormat, QSettings::UserScope,
-                                                 QStringLiteral("qcnote"), QStringLiteral("qcnote"));
-    else
+    // 会话文件：测试注入显式路径；缺省优先便携模式（exe 旁存在 qcnote.portable
+    // 标记时会话 ini 落在 exe 同目录），无标记时为用户目录 qcnote.ini
+    if (filePath.isEmpty()) {
+        const QString portableIni = resolvePortableIniPath(QCoreApplication::applicationDirPath());
+        if (!portableIni.isEmpty())
+            m_settings = std::make_unique<QSettings>(portableIni, QSettings::IniFormat);
+        else
+            m_settings = std::make_unique<QSettings>(QSettings::IniFormat, QSettings::UserScope,
+                                                     QStringLiteral("qcnote"), QStringLiteral("qcnote"));
+    } else
         m_settings = std::make_unique<QSettings>(filePath, QSettings::IniFormat);
 
     // 防抖：500ms 单触发聚合高频变化（光标移动、窗口拖动），CoarseTimer 精度足够
@@ -213,6 +219,19 @@ QVariantMap SessionManager::validateWindowState(int x, int y, int width, int hei
         { QStringLiteral("height"), clampedHeight },
         { QStringLiteral("maximized"), maximized },
     };
+}
+
+QString SessionManager::resolvePortableIniPath(const QString &appDir)
+{
+    // 空 appDir 防御：QDir("") 会以进程 CWD 为基准判断，违背"appDir 下"契约，直接返回空
+    if (appDir.isEmpty())
+        return QString();
+    // 仅判断标记文件存在（不读写内容）；appDir 不存在或标记是目录等情形均返回空
+    const QFileInfo marker(QDir(appDir).filePath(QStringLiteral("qcnote.portable")));
+    if (!marker.isFile())
+        return QString();
+    // QDir 拼接保证分隔符正确；返回绝对路径
+    return QDir(appDir).absoluteFilePath(QStringLiteral("qcnote.ini"));
 }
 
 void SessionManager::scheduleSave()

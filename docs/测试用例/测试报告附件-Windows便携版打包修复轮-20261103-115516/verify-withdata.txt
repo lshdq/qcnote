@@ -1,0 +1,16 @@
+产物目录：D:\works\qcnote\dist\qcnote-0.1.0-win64-portable
+临时副本：D:\temp\aiRunner\opencode\qcnote-verify-20261103-115045\portable-copy
+
+==> TC-007/TC-008前半 : offscreen 启动（最小 PATH）
+进程存活 5 秒（PID 79504）：启动成功
+TC-008 前半通过：会话 ini 落 exe 旁并被应用重写（size=1 → size=0）
+
+==> TC-008 后半 : 备份真实 %APPDATA%\qcnote（如存在）
+已备份（同卷原子改名）：C:\Users\aiRunner\AppData\Roaming\qcnote → C:\Users\aiRunner\AppData\Roaming\qcnote.verify-backup-20261103-115052
+
+==> TC-008后半 : offscreen 启动（最小 PATH）
+进程存活 5 秒（PID 84356）：启动成功
+TC-008 后半通过：删除标记后数据写回 %APPDATA%\qcnote\qcnote.ini（size=1 → size=0），exe 旁无 ini
+
+================== 验证完成（TC-007 / TC-008 全部通过） ==================
+已还原 %APPDATA%\qcnote 备份（条目核验一致，无备份残留）

@@ -1,0 +1,22 @@
+********* Start testing of TestSessionManager *********
+Config: Using QtTest library 6.11.2, Qt 6.11.2 (x86_64-little_endian-llp64 shared (dynamic) release build; by GCC 13.1.0), windows 11
+PASS   : TestSessionManager::initTestCase()
+PASS   : TestSessionManager::sessionRoundTrip()
+PASS   : TestSessionManager::unnamedDocumentsAreExcludedFromSession()
+PASS   : TestSessionManager::missingFilesAreSkippedSilently()
+PASS   : TestSessionManager::lostActiveFallsBackToLastOpened()
+PASS   : TestSessionManager::emptySessionIsNoop()
+PASS   : TestSessionManager::corruptSessionEntriesAreSkippedOrClamped()
+PASS   : TestSessionManager::cursorPositionIsClampedToContentLength()
+PASS   : TestSessionManager::debouncedSaveAndFlush()
+PASS   : TestSessionManager::aboutToQuitFlushesPendingDebounce()
+PASS   : TestSessionManager::validateWindowStateClampsAndRejectsOffscreen()
+PASS   : TestSessionManager::windowStateRoundTrip()
+PASS   : TestSessionManager::resolvePortableIniPath_returnsIniWhenMarkerExists()
+PASS   : TestSessionManager::resolvePortableIniPath_returnsEmptyWhenMarkerMissing()
+PASS   : TestSessionManager::resolvePortableIniPath_returnsEmptyWhenAppDirMissing()
+PASS   : TestSessionManager::constructWithEmptyPathWritesIniNextToExeWhenMarkerPresent()
+PASS   : TestSessionManager::constructWithEmptyPathKeepsExeDirCleanWhenMarkerMissing()
+PASS   : TestSessionManager::cleanupTestCase()
+Totals: 18 passed, 0 failed, 0 skipped, 0 blacklisted, 844ms
+********* Finished testing of TestSessionManager *********

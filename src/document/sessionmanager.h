@@ -39,9 +39,10 @@ class SessionManager : public QObject
 public:
     /**
      * @param manager 文档管理器（生命周期须覆盖本实例）
-     * @param filePath 会话文件路径；为空时使用用户目录 qcnote.ini
-     *                （IniFormat + UserScope，组织名/应用名均为 qcnote）；
-     *                测试注入临时路径，不污染真实配置
+     * @param filePath 会话文件路径；为空时优先便携模式检测（exe 旁存在
+     *                qcnote.portable 标记时会话写 exe 旁 qcnote.ini），未命中
+     *                才用用户目录（IniFormat + UserScope，组织名/应用名均为
+     *                qcnote）；测试注入临时路径，不污染真实配置
      */
     explicit SessionManager(DocumentManager *manager, const QString &filePath = QString(),
                             QObject *parent = nullptr);
@@ -72,6 +73,15 @@ public:
      */
     static QVariantMap validateWindowState(int x, int y, int width, int height, bool maximized,
                                            const QList<QRect> &screenGeometries);
+
+    /**
+     * @brief 便携数据模式路径解析（纯函数，可测）。
+     *
+     * 当 appDir 下存在标记文件 qcnote.portable（仅判断存在，不读写内容）时，
+     * 返回 appDir 下 qcnote.ini 的绝对路径（QDir 拼接保证分隔符正确）；
+     * 否则（标记不存在、appDir 不存在、标记是目录而非文件等）返回空 QString()。
+     */
+    static QString resolvePortableIniPath(const QString &appDir);
 
 private:
     void scheduleSave();
