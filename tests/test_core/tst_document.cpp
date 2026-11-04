@@ -13,6 +13,11 @@ private slots:
     void defaultState();
     void setContentMarksModified();
     void sameContentDoesNotChangeModified();
+    void revertToBaselineClearsModified();
+    void markSavedUpdatesBaseline();
+    void applyLoadedStateResetsBaseline();
+    void modifiedChangedEmitsOnlyOnToggle();
+    void newDocumentRevertToEmptyClearsModified();
     void displayNameFollowsUrl();
     void filePathFollowsUrl();
     void lineEndingDefaultAndSet();
@@ -47,19 +52,106 @@ void TestDocument::setContentMarksModified()
     QCOMPARE(doc.modified(), true);
 }
 
-// 同值再写：modified 保持不变（不置脏也不清除）
+// 同值再写：modified 保持不变（不置脏也不清除）。
+// 基线比较语义下：置脏态同值再写仍脏（内容仍在基线之外）；干净态（基线已随
+// markSaved 对齐当前内容）同值再写早退，仍干净。
 void TestDocument::sameContentDoesNotChangeModified()
 {
     Document doc;
     QCOMPARE(doc.modified(), false);
 
     doc.setContent(QStringLiteral("x"));
-    QCOMPARE(doc.modified(), true);
+    QCOMPARE(doc.modified(), true); // 基线为空串，"x" ≠ 基线
     doc.setContent(QStringLiteral("x")); // 同值再写，保持 true
     QCOMPARE(doc.modified(), true);
 
-    doc.setModified(false);
+    doc.markSaved(); // 基线对齐当前内容 "x"：干净态
+    QCOMPARE(doc.modified(), false);
     doc.setContent(doc.content()); // 同值再写，保持 false
+    QCOMPARE(doc.modified(), false);
+}
+
+// TC-001（缺陷主用例）：编辑后撤消回写回到基线内容，modified 自动清脏；
+// modifiedChanged 仅在脏↔干净翻转时发射（恰 2 次：置脏一次、清脏一次）
+void TestDocument::revertToBaselineClearsModified()
+{
+    Document doc;
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/revert.txt")),
+                         QStringLiteral("abc"), Document::LineEnding::Lf,
+                         Document::Encoding::Utf8, false);
+    QCOMPARE(doc.modified(), false);
+
+    QSignalSpy spy(&doc, &Document::modifiedChanged);
+    doc.setContent(QStringLiteral("abcX")); // 编辑置脏（干净→脏，发射）
+    QCOMPARE(doc.modified(), true);
+    doc.setContent(QStringLiteral("abc")); // 撤消回写回到基线（脏→干净，发射）
+    QCOMPARE(doc.modified(), false);
+    QCOMPARE(spy.count(), 2);
+}
+
+// TC-002：markSaved 后基线更新为保存时内容，撤回到该内容清脏、离开则置脏
+void TestDocument::markSavedUpdatesBaseline()
+{
+    Document doc;
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/saved.txt")),
+                         QStringLiteral("abc"), Document::LineEnding::Lf,
+                         Document::Encoding::Utf8, false);
+    doc.setContent(QStringLiteral("abcX")); // 置脏
+    doc.markSaved();                        // 保存成功：基线 = "abcX"
+    QCOMPARE(doc.modified(), false);
+
+    doc.setContent(QStringLiteral("abc")); // 相对新基线是变化：置脏
+    QCOMPARE(doc.modified(), true);
+    doc.setContent(QStringLiteral("abcX")); // 撤回到保存时内容：清脏
+    QCOMPARE(doc.modified(), false);
+}
+
+// TC-003：applyLoadedState 重置基线为本次加载内容（加载后必为干净态）
+void TestDocument::applyLoadedStateResetsBaseline()
+{
+    Document doc;
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/reload.txt")),
+                         QStringLiteral("abc"), Document::LineEnding::Lf,
+                         Document::Encoding::Utf8, false);
+    doc.setContent(QStringLiteral("abcX")); // 置脏
+    QCOMPARE(doc.modified(), true);
+
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/reload.txt")),
+                         QStringLiteral("NEW"), Document::LineEnding::Lf,
+                         Document::Encoding::Utf8, false);
+    QCOMPARE(doc.content(), QStringLiteral("NEW"));
+    QCOMPARE(doc.modified(), false); // 基线已重置为 "NEW"
+
+    doc.setContent(QStringLiteral("NEW")); // 同值再写：保持干净
+    QCOMPARE(doc.modified(), false);
+}
+
+// TC-004：modifiedChanged 仅在脏↔干净翻转时发射，脏值之间切换不发射
+void TestDocument::modifiedChangedEmitsOnlyOnToggle()
+{
+    Document doc;
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/toggle.txt")),
+                         QStringLiteral("abc"), Document::LineEnding::Lf,
+                         Document::Encoding::Utf8, false);
+    QSignalSpy spy(&doc, &Document::modifiedChanged);
+
+    doc.setContent(QStringLiteral("abd")); // 干净→脏：发射
+    QCOMPARE(doc.modified(), true);
+    doc.setContent(QStringLiteral("abx")); // 仍脏（脏值间切换）：不发射
+    QCOMPARE(doc.modified(), true);
+    doc.setContent(QStringLiteral("abc")); // 脏→干净：发射
+    QCOMPARE(doc.modified(), false);
+    QCOMPARE(spy.count(), 2);
+}
+
+// TC-005：新建空文档（基线为空串）全部撤空后清脏
+void TestDocument::newDocumentRevertToEmptyClearsModified()
+{
+    Document doc;
+    QCOMPARE(doc.modified(), false);
+    doc.setContent(QStringLiteral("x"));
+    QCOMPARE(doc.modified(), true);
+    doc.setContent(QString()); // 撤空回到基线
     QCOMPARE(doc.modified(), false);
 }
 

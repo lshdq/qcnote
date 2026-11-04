@@ -55,6 +55,9 @@ private slots:
     void storageForUrlMatchesScheme();
     void saveRequiresUrl();
     void saveClearsModifiedAndWritesDisk();
+    void saveThenEditThenRevertToSavedClearsModified();
+    void saveAsThenRevertToSavedClearsModified();
+    void saveFailureKeepsModified();
     void saveAsUpdatesUrlAndDisplayName();
     void saveAsOverwritesExistingFile();
     void saveAsLeavesOriginalFileUntouched();
@@ -540,6 +543,76 @@ void TestDocumentManager::saveClearsModifiedAndWritesDisk()
     QCOMPARE(mgr.save(doc), true);
     QCOMPARE(doc->modified(), false);
     QCOMPARE(readRawBytes(path), QByteArrayLiteral("one\r\ntwo\r\nthree")); // 保持 CRLF
+}
+
+// TC-006（保存集成）：保存成功后基线更新为保存时内容，再编辑置脏、
+// 撤回到保存时内容自动清脏（save 路径 markSaved 生效）
+void TestDocumentManager::saveThenEditThenRevertToSavedClearsModified()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("revert.txt"));
+    writeRawBytes(path, QByteArrayLiteral("one"));
+
+    mgr.openUrls({ QUrl::fromLocalFile(path) });
+    Document *doc = mgr.activeDocument();
+    doc->setContent(QStringLiteral("two"));
+    QCOMPARE(mgr.save(doc), true);
+    QCOMPARE(doc->modified(), false);
+
+    doc->setContent(QStringLiteral("three"));
+    QCOMPARE(doc->modified(), true);
+    doc->setContent(QStringLiteral("two")); // 撤回到保存时内容
+    QCOMPARE(doc->modified(), false);
+}
+
+// TC-007（另存为集成）：另存成功后基线更新为另存时内容，撤回到该内容清脏
+void TestDocumentManager::saveAsThenRevertToSavedClearsModified()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    mgr.newDocument();
+    Document *doc = mgr.activeDocument();
+    doc->setContent(QStringLiteral("abc"));
+    const QUrl target = QUrl::fromLocalFile(dir.filePath(QStringLiteral("saved-as.txt")));
+    QCOMPARE(mgr.saveAs(doc, target), true);
+    QCOMPARE(doc->modified(), false);
+
+    doc->setContent(QStringLiteral("abd"));
+    QCOMPARE(doc->modified(), true);
+    doc->setContent(QStringLiteral("abc")); // 撤回到另存时内容
+    QCOMPARE(doc->modified(), false);
+}
+
+// TC-008（回归）：保存失败不更新基线，脏标记保留（save 与 saveAs 失败路径）
+void TestDocumentManager::saveFailureKeepsModified()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl bad = QUrl::fromLocalFile(dir.filePath(QStringLiteral("no/such/dir/x.txt")));
+
+    // save 失败：写盘目标为非法路径（父目录不存在），发 saveFailed 且不清脏
+    mgr.newDocument();
+    Document *doc = mgr.activeDocument();
+    doc->setContent(QStringLiteral("dirty"));
+    doc->setUrl(bad); // 模拟已保存文档的路径变为不可写
+    QSignalSpy saveSpy(&mgr, &DocumentManager::saveFailed);
+    QCOMPARE(mgr.save(doc), false);
+    QCOMPARE(saveSpy.count(), 1);
+    QCOMPARE(doc->modified(), true); // 失败保留脏标记
+
+    // saveAs 失败：另存到非法路径，同样保留脏标记
+    mgr.newDocument();
+    Document *untitled = mgr.activeDocument();
+    untitled->setContent(QStringLiteral("keep"));
+    QSignalSpy saveAsSpy(&mgr, &DocumentManager::saveFailed);
+    QCOMPARE(mgr.saveAs(untitled, bad), false);
+    QCOMPARE(saveAsSpy.count(), 1);
+    QCOMPARE(untitled->modified(), true);
 }
 
 // 另存为：url / displayName 更新，modified 清除，文件写入新路径

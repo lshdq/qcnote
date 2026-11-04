@@ -187,9 +187,9 @@ bool DocumentManager::saveWithEncoding(Document *doc, Document::Encoding encodin
     if (!storage->write(url, doc->content(), doc->lineEnding(), encoding, doc->hasBom(), &error)) {
         doc->setEncoding(previous); // 回滚（DEC-005：GBK 不可编码等失败时编码标记不产生误导）
         emit saveFailed(doc, error.isEmpty() ? tr("写入失败：%1").arg(url.toString()) : error);
-        return false; // 磁盘未被触碰（不可编码校验先于写盘）
+        return false; // 磁盘未被触碰（不可编码校验先于写盘），基线不更新、脏标记保留
     }
-    doc->setModified(false);
+    doc->markSaved(); // 写盘成功：基线重置为当前内容（modified 清脏）
     return true;
 }
 
@@ -214,7 +214,7 @@ bool DocumentManager::save(Document *doc)
         emit saveFailed(doc, error.isEmpty() ? tr("写入失败：%1").arg(url.toString()) : error);
         return false;
     }
-    doc->setModified(false);
+    doc->markSaved(); // 写盘成功：基线重置为当前内容（modified 清脏）
     return true;
 }
 
@@ -242,7 +242,7 @@ bool DocumentManager::saveAs(Document *doc, const QUrl &url)
     Document *shadowed = documentForUrl(url);
 
     doc->setUrl(url); // displayName 随 url 更新
-    doc->setModified(false);
+    doc->markSaved(); // 写盘成功：基线重置为当前内容（modified 清脏）
 
     if (shadowed && shadowed != doc) {
         QString reloadError;

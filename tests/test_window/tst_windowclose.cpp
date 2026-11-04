@@ -12,6 +12,10 @@
 // 无法自动化项（真实鼠标点击关闭图标、真实 Alt+F4 按键、另存为平台
 // 对话框内交互）见测试报告"未执行"清单。
 //
+// 另覆盖《测试用例-未保存状态基线比较》TC-010（UI 冒烟）：编辑→撤消
+// 回写回到基线后，Tab ● 标记与标题 * 随 modifiedChanged 同步消失、
+// 再编辑重现，全程无 "Binding loop" 警告（tc010，复用同一 Bench 测试台）。
+//
 // 对象定位说明：Qt 6.5+ QtQuick.Controls 控件实例的 metaObject 类名是
 // QML 包装类型（如 "Dialog_QMLTYPE_13"、"Menu_QMLTYPE_30"），故按 QML
 // 类型短名（首个下划线前段）精确匹配；QtQuick.Dialogs 的 FileDialog
@@ -131,6 +135,47 @@ QString dialogText(QObject *dlg)
         return QString();
     QObject *label = ci.value<QObject *>();
     return label ? label->property("text").toString() : QString();
+}
+
+// ===== TC-010（未保存状态基线比较）专用辅助 =====
+
+// 捕获 QML 绑定循环警告（"Binding loop detected ..."），验证绑定链路健康
+QStringList g_bindingLoopWarnings;
+void bindingLoopCollector(QtMsgType type, const QMessageLogContext &context, const QString &msg)
+{
+    Q_UNUSED(type)
+    Q_UNUSED(context)
+    if (msg.contains(QStringLiteral("Binding loop"), Qt::CaseInsensitive))
+        g_bindingLoopWarnings.append(msg);
+}
+
+// RAII：用例内临时接管消息 handler（QML 加载与绑定刷新期间捕获绑定循环
+// 警告），失败路径也保证恢复，不污染后续用例的 QtTest 默认消息处理
+struct MessageHandlerGuard
+{
+    QtMessageHandler restore;
+    explicit MessageHandlerGuard(QtMessageHandler handler)
+        : restore(qInstallMessageHandler(handler)) {}
+    ~MessageHandlerGuard() { qInstallMessageHandler(restore); }
+};
+
+// 定位 DocumentTabs 可视树中的未保存 ● 标记（DocumentTabs.unsavedMark）。
+// 基础类型 Text 的 C++ 类名是 QQuickText（原生类型，无 QML 包装后缀，
+// qmlTypeNameIs 不适用），以恒定文本 "●" 识别：可视树内唯一
+// （markMetrics 是非可视 TextMetrics，不进入可视树）。
+// Tab delegate 由 ListView 异步布局实例化：offscreen 下渲染循环不自动
+// 推进，调用方须先 win->grabWindow() 同步驱动一帧渲染再定位。
+QQuickItem *findUnsavedMark(QQuickWindow *win)
+{
+    QQuickItem *tabs = findItemByQmlType(win->contentItem(), "DocumentTabs");
+    if (!tabs)
+        return nullptr;
+    QQuickItem *mark = nullptr;
+    visitItems(tabs, [&](QQuickItem *it) {
+        if (!mark && it->property("text").toString() == QStringLiteral("●"))
+            mark = it;
+    });
+    return mark;
 }
 
 // 诊断：转储 QObject 子树（限深度，便于定位实际类名）
@@ -267,6 +312,10 @@ private slots:
 
     // TC-009: 模态 UI（主菜单 / 错误框）打开时关闭请求被忽略
     void tc009_modalUI_closeIgnored();
+
+    // TC-010（《测试用例-未保存状态基线比较》）: UI 冒烟——编辑→撤回基线
+    // 后 Tab ● 与标题 * 随 modifiedChanged 消失、再编辑重现，无绑定循环
+    void tc010_unsavedBaseline_uiMarksFollowModified();
 };
 
 // TC-001: 无未保存修改时，一次关闭请求即关闭窗口。
@@ -506,6 +555,78 @@ void TestWindowClose::tc009_modalUI_closeIgnored()
     QTRY_VERIFY(b.errDlg->property("visible").toBool());
     QVERIFY(!b.win->close());
     QVERIFY(b.win->isVisible());
+}
+
+// TC-010（《测试用例-未保存状态基线比较》）: UI 冒烟。
+// 程序化走 TC-001 场景（经 Document 层模拟 TextArea 撤消回写）：
+// 编辑置脏 → Tab ● 出现、标题带 *；撤回基线清脏 → ● 与 * 随
+// modifiedChanged 同步消失；再编辑（重做）重新出现。另覆盖 TC-005
+// 场景（新建文档输入后全部撤空清 UI）。handler 接管期覆盖 QML 加载
+// 与全部绑定刷新，断言无 "Binding loop" 警告。
+void TestWindowClose::tc010_unsavedBaseline_uiMarksFollowModified()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // 场景 a：已保存文档 编辑→撤回保存基线（TC-001 场景）
+    g_bindingLoopWarnings.clear();
+    MessageHandlerGuard guard(bindingLoopCollector); // QML 加载期起捕获
+    {
+        Bench b;
+        QVERIFY2(b.init(), "testbench init failed");
+        Document *doc = b.newDoc(QStringLiteral("abc"));
+        QVERIFY(b.dm->saveAs(doc, QUrl::fromLocalFile(dir.filePath(QStringLiteral("base.txt")))));
+        QVERIFY(!doc->modified()); // 保存成功：基线 = "abc"，干净
+
+        // offscreen 渲染循环不自动推进：同步抓一帧驱动 ListView 布局，
+        // 实例化 Tab delegate（此后绑定刷新由 NOTIFY 即时驱动，无需再抓帧）
+        QVERIFY(!b.win->grabWindow().isNull());
+        QQuickItem *unsavedMark = findUnsavedMark(b.win);
+        QVERIFY(unsavedMark != nullptr);
+        QVERIFY(!unsavedMark->property("visible").toBool()); // 干净：无 ●
+        QVERIFY(!b.win->property("title").toString().contains(QLatin1String(" *"))); // 无 *
+
+        doc->setContent(QStringLiteral("abcX")); // 编辑置脏（模拟 TextArea 回写）
+        QVERIFY(doc->modified());
+        QTRY_VERIFY(unsavedMark->property("visible").toBool()); // ● 出现
+        QTRY_VERIFY(b.win->property("title").toString().contains(QLatin1String(" *")));
+
+        doc->setContent(QStringLiteral("abc")); // 撤消回写回到基线：清脏（缺陷修复点）
+        QVERIFY(!doc->modified());
+        QTRY_VERIFY(!unsavedMark->property("visible").toBool()); // ● 消失
+        QTRY_VERIFY(!b.win->property("title").toString().contains(QLatin1String(" *")));
+
+        doc->setContent(QStringLiteral("abcY")); // 再编辑（重做）：重新置脏
+        QVERIFY(doc->modified());
+        QTRY_VERIFY(unsavedMark->property("visible").toBool());
+        QTRY_VERIFY(b.win->property("title").toString().contains(QLatin1String(" *")));
+    }
+
+    // 场景 b：新建文档 输入→全部撤空（TC-005 场景：空基线撤空清 UI）
+    {
+        Bench b;
+        QVERIFY2(b.init(), "testbench init failed");
+        Document *fresh = b.newDoc();
+        QVERIFY(fresh && !fresh->modified()); // 新文档基线为空串，干净
+
+        QVERIFY(!b.win->grabWindow().isNull()); // 同步驱动 Tab delegate 实例化
+        QQuickItem *unsavedMark = findUnsavedMark(b.win);
+        QVERIFY(unsavedMark != nullptr);
+        QVERIFY(!unsavedMark->property("visible").toBool());
+
+        fresh->setContent(QStringLiteral("x")); // 输入置脏
+        QVERIFY(fresh->modified());
+        QTRY_VERIFY(unsavedMark->property("visible").toBool());
+
+        fresh->setContent(QString()); // 全部撤空：回到空基线，清脏
+        QVERIFY(!fresh->modified());
+        QTRY_VERIFY(!unsavedMark->property("visible").toBool());
+        QTRY_VERIFY(!b.win->property("title").toString().contains(QLatin1String(" *")));
+    }
+
+    QVERIFY2(g_bindingLoopWarnings.isEmpty(),
+             qPrintable(QStringLiteral("检测到绑定循环: %1")
+                            .arg(g_bindingLoopWarnings.join(u';'))));
 }
 
 int main(int argc, char *argv[])

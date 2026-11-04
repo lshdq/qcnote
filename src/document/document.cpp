@@ -21,7 +21,8 @@ QString Document::content() const
 
 bool Document::modified() const
 {
-    return m_modified;
+    // 计算属性：仅反映内容相对基线的差异（编码/换行/BOM 元数据不参与）
+    return m_content != m_savedContent;
 }
 
 QString Document::displayName() const
@@ -68,17 +69,21 @@ void Document::setContent(const QString &content)
 {
     if (m_content == content)
         return; // 同值不置脏
+    const bool wasModified = modified();
     m_content = content;
     emit contentChanged();
-    setModified(true);
+    // 脏标记按基线比较结果翻转：回到基线（撤消到原始内容）自动清脏，
+    // 仍在基线之外（脏值之间切换）不翻转——modifiedChanged 仅在脏↔干净翻转时发射
+    if (modified() != wasModified)
+        emit modifiedChanged();
 }
 
-void Document::setModified(bool modified)
+void Document::markSaved()
 {
-    if (m_modified == modified)
-        return;
-    m_modified = modified;
-    emit modifiedChanged();
+    if (m_savedContent == m_content)
+        return; // 已是干净态：基线不重置（内容未变），无信号
+    m_savedContent = m_content;
+    emit modifiedChanged(); // 脏→干净翻转
 }
 
 void Document::setLineEnding(LineEnding ending)
@@ -119,15 +124,20 @@ void Document::setCursorPosition(int position)
 void Document::applyLoadedState(const QUrl &url, const QString &content, LineEnding ending,
                                 Encoding encoding, bool hasBom)
 {
+    const bool wasModified = modified();
     setUrl(url);
     if (m_content != content) {
         m_content = content;
         emit contentChanged();
     }
+    // 基线重置为本次加载内容：磁盘是事实之源，加载后必为干净态
+    // （内容恰与当前编辑值相同时不发 contentChanged，但基线仍须重置）
+    m_savedContent = content;
     setLineEnding(ending);
     setEncoding(encoding);
     setHasBom(hasBom);
-    setModified(false);
+    if (modified() != wasModified)
+        emit modifiedChanged();
 }
 
 void Document::updateDisplayName()
