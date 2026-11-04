@@ -92,3 +92,28 @@ add_test(NAME test_dialogstyle COMMAND test_dialogstyle)
 set_tests_properties(test_dialogstyle PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# GBK 与 UTF-8 编码支持 QML 集成测试目标（offscreen，架构同上：单 main）：
+# 按标题定位「编码」子菜单与按编码重载确认框，直发菜单项 triggered()
+# 驱动 TitleBar → Main → DocumentManager 信号链，断言菜单启用状态、
+# 打勾标识、状态栏编码文本、确认框取消/确认/不弹框三分支、通过编码
+# 保存的转换/转另存为/不可编码错误链路（《测试用例-GBK与UTF8编码支持》
+# TC-017/TC-018 的可自动化部分）。
+qt_add_executable(test_encodingmenu
+    tst_encodingmenu.cpp
+)
+
+target_link_libraries(test_encodingmenu PRIVATE
+    Qt6::Test
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(test_encodingmenu)
+
+add_test(NAME test_encodingmenu COMMAND test_encodingmenu)
+# GUI 红线：自动化验证一律 offscreen，无可见窗口
+set_tests_properties(test_encodingmenu PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)

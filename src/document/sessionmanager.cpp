@@ -9,6 +9,8 @@
 #include <QScreen>
 #include <QSettings>
 
+#include <optional>
+
 #include "document/document.h"
 #include "document/documentmanager.h"
 
@@ -111,6 +113,8 @@ void SessionManager::restoreDocuments()
     {
         QUrl url;
         int cursor = 0;
+        /// 会话记录的编码（手动指定或当时的自动识别结果）；缺失/非法值为空（回退自动识别）
+        std::optional<Document::Encoding> forcedEncoding;
     };
     QList<SessionEntry> entries;
     for (int i = 1; i <= size; ++i) {
@@ -124,15 +128,26 @@ void SessionManager::restoreDocuments()
                       // 常规文件"语义对齐，按坏条目静默跳过（不发 openFailed、不弹错、不打断启动）
         if (!m_manager->storageForUrl(url))
             continue; // 无可用存储（损坏/未知 scheme）：静默跳过，避免启动路径弹错
-        entries.append({ url, cursor });
+
+        // 编码记忆：仅接受已知值；非法/缺失（旧会话文件）静默回退自动识别，不阻断启动
+        std::optional<Document::Encoding> forcedEncoding;
+        const QString encoding = m_settings->value(prefix + QStringLiteral("/encoding")).toString();
+        if (encoding == QStringLiteral("utf8"))
+            forcedEncoding = Document::Encoding::Utf8;
+        else if (encoding == QStringLiteral("gbk"))
+            forcedEncoding = Document::Encoding::Gbk;
+
+        entries.append({ url, cursor, forcedEncoding });
     }
 
-    // 按原顺序交给 openUrls（Tab 顺序 = 上次顺序；最后成功打开者被自动激活）
-    QList<QUrl> urls;
-    urls.reserve(entries.size());
-    for (const SessionEntry &entry : entries)
-        urls.append(entry.url);
-    m_manager->openUrls(urls);
+    // 按原顺序打开（Tab 顺序 = 上次顺序；最后成功打开者被自动激活）。
+    // 逐条打开：有编码记忆走 openUrlWithEncoding（按记忆编码解码），否则自动识别
+    for (const SessionEntry &entry : entries) {
+        if (entry.forcedEncoding)
+            m_manager->openUrlWithEncoding(entry.url, *entry.forcedEncoding);
+        else
+            m_manager->openUrls({ entry.url });
+    }
 
     // 逐文档恢复光标：钳到 [0, 内容长度]（文件被外部改短/记录损坏时防越界）
     for (const SessionEntry &entry : entries) {
@@ -276,6 +291,11 @@ void SessionManager::saveNow()
             const QString prefix = QString::number(index);
             m_settings->setValue(prefix + QStringLiteral("/url"), url.toString());
             m_settings->setValue(prefix + QStringLiteral("/cursor"), doc->cursorPosition());
+            // 编码一律写（含 utf8）：重启后按记忆编码打开，避免自动识别误判反复发生
+            m_settings->setValue(prefix + QStringLiteral("/encoding"),
+                                 doc->encoding() == Document::Encoding::Gbk
+                                     ? QStringLiteral("gbk")
+                                     : QStringLiteral("utf8"));
         }
     }
     m_settings->setValue(QStringLiteral("size"), index);
@@ -319,6 +339,7 @@ void SessionManager::connectDocumentSignals()
             continue;
         connect(doc, &Document::urlChanged, this, &SessionManager::scheduleSave);
         connect(doc, &Document::cursorPositionChanged, this, &SessionManager::scheduleSave);
+        connect(doc, &Document::encodingChanged, this, &SessionManager::scheduleSave);
         m_connectedDocuments.insert(doc);
     }
 }

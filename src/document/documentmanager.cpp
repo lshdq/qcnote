@@ -4,6 +4,7 @@
 #include <QJSEngine>
 
 #include <algorithm>
+#include <optional>
 
 #include "format/documentformat.h"
 #include "format/plaintextformat.h"
@@ -84,39 +85,112 @@ void DocumentManager::newDocument()
 
 void DocumentManager::openUrls(const QList<QUrl> &urls)
 {
-    for (const QUrl &url : urls) {
-        if (url.isEmpty())
-            continue; // 空 URL（非法输入）：跳过，不误激活未命名文档、不报错中断
+    for (const QUrl &url : urls)
+        openSingle(url, std::nullopt); // 失败已在 openSingle 内发 openFailed，继续后续 URL
+}
 
-        if (Document *existing = documentForUrl(url)) {
-            // 重复打开同一 URL：激活已有文档，不新建
-            setActiveDocument(existing);
-            continue;
-        }
+void DocumentManager::openUrlWithEncoding(const QUrl &url, Document::Encoding encoding)
+{
+    openSingle(url, encoding);
+}
 
-        DocumentStorage *storage = storageForUrl(url);
-        if (!storage) {
-            emit openFailed(url, tr("没有可用于打开该地址的存储：%1").arg(url.toString()));
-            continue;
-        }
+Document *DocumentManager::openSingle(const QUrl &url,
+                                      const std::optional<Document::Encoding> &forcedEncoding)
+{
+    if (url.isEmpty())
+        return nullptr; // 空 URL（非法输入）：跳过，不误激活未命名文档、不报错中断
 
-        QString error;
-        const DocumentStorage::LoadResult loaded = storage->read(url, &error);
-        // 双保险：ok 未置位（存储实现漏设 error 的防御）或 error 非空均视为失败
-        if (!loaded.ok || !error.isEmpty()) {
-            emit openFailed(url, error.isEmpty() ? tr("读取失败：%1").arg(url.toString()) : error);
-            continue; // 失败不中断后续 URL 的处理
-        }
-
-        auto *doc = new Document(QString(), this);
-        doc->applyLoadedState(url, loaded.content, loaded.lineEnding);
-        m_documents.append(doc);
-        // 先建 model 行（rowsInserted，视图只新增对应 delegate），再发 documentsChanged
-        m_documentsModel->insert(m_documents.size() - 1, doc);
-        emit documentsChanged();
-        emit documentOpened(doc);
-        setActiveDocument(doc);
+    if (Document *existing = documentForUrl(url)) {
+        // 重复打开同一 URL：激活已有文档，不新建（编码不变更——已在打开的文档以现状为准）
+        setActiveDocument(existing);
+        return existing;
     }
+
+    DocumentStorage *storage = storageForUrl(url);
+    if (!storage) {
+        emit openFailed(url, tr("没有可用于打开该地址的存储：%1").arg(url.toString()));
+        return nullptr;
+    }
+
+    QString error;
+    const DocumentStorage::LoadResult loaded = forcedEncoding
+            ? storage->read(url, *forcedEncoding, &error)
+            : storage->read(url, &error);
+    // 双保险：ok 未置位（存储实现漏设 error 的防御）或 error 非空均视为失败
+    if (!loaded.ok || !error.isEmpty()) {
+        emit openFailed(url, error.isEmpty() ? tr("读取失败：%1").arg(url.toString()) : error);
+        return nullptr;
+    }
+
+    auto *doc = new Document(QString(), this);
+    doc->applyLoadedState(url, loaded.content, loaded.lineEnding, loaded.encoding, loaded.hasBom);
+    m_documents.append(doc);
+    // 先建 model 行（rowsInserted，视图只新增对应 delegate），再发 documentsChanged
+    m_documentsModel->insert(m_documents.size() - 1, doc);
+    emit documentsChanged();
+    emit documentOpened(doc);
+    setActiveDocument(doc);
+    return doc;
+}
+
+void DocumentManager::reloadWithEncoding(Document *doc, Document::Encoding encoding)
+{
+    if (!doc)
+        return; // 空指针防御：QML 传错对象时静默忽略
+    const QUrl url = doc->url();
+    if (url.isEmpty()) {
+        emit openFailed(url, tr("文档尚未保存到磁盘，无法按编码重新加载"));
+        return;
+    }
+
+    DocumentStorage *storage = storageForUrl(url);
+    if (!storage) {
+        emit openFailed(url, tr("没有可用于读取该地址的存储：%1").arg(url.toString()));
+        return;
+    }
+
+    QString error;
+    const DocumentStorage::LoadResult loaded = storage->read(url, encoding, &error);
+    if (!loaded.ok || !error.isEmpty()) {
+        // 读取失败：保留原文档内容（不产生半更新状态）
+        emit openFailed(url, error.isEmpty() ? tr("重新读取文件失败：%1").arg(url.toString()) : error);
+        return;
+    }
+
+    // 刷新内容/换行/编码/BOM（不置脏、不动光标），随后把光标钳制到新内容长度内
+    doc->applyLoadedState(url, loaded.content, loaded.lineEnding, loaded.encoding, loaded.hasBom);
+    if (doc->cursorPosition() > loaded.content.size())
+        doc->setCursorPosition(static_cast<int>(loaded.content.size()));
+}
+
+bool DocumentManager::saveWithEncoding(Document *doc, Document::Encoding encoding)
+{
+    if (!doc)
+        return false;
+
+    const Document::Encoding previous = doc->encoding();
+    doc->setEncoding(encoding); // 先设编码：未命名文档也要携带（后续另存为按此编码写出）
+
+    const QUrl url = doc->url();
+    if (url.isEmpty())
+        return false; // 未命名：UI 应转另存为流程（编码已设置并保留，不发 saveFailed）
+
+    DocumentStorage *storage = storageForUrl(url);
+    if (!storage) {
+        doc->setEncoding(previous); // 回滚：保存未发生，编码标记不得误导状态栏
+        emit saveFailed(doc, tr("没有可用于保存该地址的存储：%1").arg(url.toString()));
+        return false;
+    }
+
+    QString error;
+    // UTF-8 目标按 BOM 历史写回；GBK 目标 writeBom 由 LocalStorage 忽略
+    if (!storage->write(url, doc->content(), doc->lineEnding(), encoding, doc->hasBom(), &error)) {
+        doc->setEncoding(previous); // 回滚（DEC-005：GBK 不可编码等失败时编码标记不产生误导）
+        emit saveFailed(doc, error.isEmpty() ? tr("写入失败：%1").arg(url.toString()) : error);
+        return false; // 磁盘未被触碰（不可编码校验先于写盘）
+    }
+    doc->setModified(false);
+    return true;
 }
 
 bool DocumentManager::save(Document *doc)
@@ -135,7 +209,8 @@ bool DocumentManager::save(Document *doc)
     }
 
     QString error;
-    if (!storage->write(url, doc->content(), doc->lineEnding(), &error)) {
+    if (!storage->write(url, doc->content(), doc->lineEnding(), doc->encoding(), doc->hasBom(),
+                        &error)) {
         emit saveFailed(doc, error.isEmpty() ? tr("写入失败：%1").arg(url.toString()) : error);
         return false;
     }
@@ -154,8 +229,10 @@ bool DocumentManager::saveAs(Document *doc, const QUrl &url)
         return false;
     }
 
+    // 另存为按 doc 当前编码与 BOM 状态写出（未命名文档经 saveWithEncoding 设过编码后走此路径）
+    const Document::Encoding encoding = doc->encoding();
     QString error;
-    if (!storage->write(url, doc->content(), doc->lineEnding(), &error)) {
+    if (!storage->write(url, doc->content(), doc->lineEnding(), encoding, doc->hasBom(), &error)) {
         emit saveFailed(doc, error.isEmpty() ? tr("写入失败：%1").arg(url.toString()) : error);
         return false;
     }
@@ -169,15 +246,18 @@ bool DocumentManager::saveAs(Document *doc, const QUrl &url)
 
     if (shadowed && shadowed != doc) {
         QString reloadError;
-        const DocumentStorage::LoadResult reloaded = storage->read(url, &reloadError);
+        // 按刚写出的编码强制重读（不自动识别：刚写盘的字节编码已知，重识别存在
+        // GBK 字节被误判 UTF-8 的理论风险），只同步内容与元数据并清除修改标记
+        const DocumentStorage::LoadResult reloaded = storage->read(url, encoding, &reloadError);
         if (!reloaded.ok || !reloadError.isEmpty()) {
             // 重载失败：对方文档内存态已过期，发 openFailed 提示（其 url 仍指向被覆盖的文件）
             emit openFailed(url, reloadError.isEmpty()
                                      ? tr("重新读取被覆盖的文件失败：%1").arg(url.toString())
                                      : reloadError);
         } else {
-            // 只同步内容与换行风格并清除修改标记（内容已等价磁盘），不动光标等 UI 状态
-            shadowed->applyLoadedState(url, reloaded.content, reloaded.lineEnding);
+            // 不动光标等 UI 状态（内容已等价磁盘）
+            shadowed->applyLoadedState(url, reloaded.content, reloaded.lineEnding,
+                                       reloaded.encoding, reloaded.hasBom);
         }
     }
     return true;

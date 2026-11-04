@@ -4,6 +4,8 @@ qt_add_executable(test_core
     main.cpp
     tst_document.cpp
     tst_documentmanager.cpp
+    tst_encodingdetector.cpp
+    tst_gbkcodec.cpp
     tst_localstorage.cpp
     tst_multicursorengine.cpp
     tst_sessionmanager.cpp

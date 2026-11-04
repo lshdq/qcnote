@@ -51,11 +51,15 @@ ApplicationWindow {
     property var saveAsTarget: null
     /// 待展示错误队列
     property var errorQueue: []
+    /// 按编码重载确认流程的目标文档与编码（确认框展示期间有效）
+    property var reloadConfirmDoc: null
+    property int reloadEncoding: 0
 
     function uiLocked() {
         return unsavedDialog.visible || errorDialog.visible
                || openFileDlg.visible || saveFileDialog.visible
                || titleBar.menuVisible || ctxMenuPromptDialog.visible
+               || reloadConfirmDialog.visible
     }
 
     function firstModifiedDoc() {
@@ -103,6 +107,40 @@ ApplicationWindow {
         saveAsTarget = doc
         prefillSaveDialog(doc)
         saveFileDialog.open()
+    }
+
+    // 按指定编码重新加载（纠正自动识别错误）。有未保存修改时先弹确认框
+    // （DEC-008：确认只在 QML 层，C++ 重载直接执行、以磁盘内容覆盖内存）
+    function doReloadWithEncoding(encoding) {
+        if (uiLocked())
+            return
+        const doc = DocumentManager.activeDocument
+        if (!doc || doc.url.toString().length === 0)
+            return
+        if (doc.modified) {
+            reloadConfirmDoc = doc
+            reloadEncoding = encoding
+            reloadConfirmDialog.open()
+            return
+        }
+        DocumentManager.reloadWithEncoding(doc, encoding)
+    }
+
+    // 按指定编码保存（编码转换，DEC-005 一步完成）。返回 false：
+    // url 为空（未命名，C++ 已保留编码设置）→ 转既有另存为流程，按该编码写出；
+    // 有 url 但写入失败（含 GBK 不可编码）→ saveFailed 信号 → errorDialog
+    function doSaveWithEncoding(encoding) {
+        if (uiLocked())
+            return
+        const doc = DocumentManager.activeDocument
+        if (!doc)
+            return
+        if (!DocumentManager.saveWithEncoding(doc, encoding)
+                && doc.url.toString().length === 0) {
+            saveAsTarget = doc
+            prefillSaveDialog(doc)
+            saveFileDialog.open()
+        }
     }
 
     function doCloseActive() {
@@ -306,6 +344,8 @@ ApplicationWindow {
             onRequestSaveAs: root.doSaveAs()
             onRequestCloseTab: (doc) => root.closeDocumentWithConfirm(doc)
             onRequestQuit: root.doQuit()
+            onRequestReloadWithEncoding: (encoding) => root.doReloadWithEncoding(encoding)
+            onRequestSaveWithEncoding: (encoding) => root.doSaveWithEncoding(encoding)
         }
 
         Toolbar {
@@ -538,6 +578,48 @@ ApplicationWindow {
             if (!r.ok)
                 root.queueError("右键菜单设置失败", r.error)
         }
+    }
+
+    // 按编码重新加载的未保存修改确认（DEC-008：确认在 QML 层；
+    // 确认后 C++ 以磁盘内容覆盖内存未保存修改，取消则不动作）
+    Dialog {
+        id: reloadConfirmDialog
+        modal: true
+        focus: true
+        anchors.centerIn: parent
+        closePolicy: Popup.CloseOnEscape
+        width: 380
+        title: "按编码重新加载"
+
+        contentItem: Label {
+            text: "通过 "
+                  + (root.reloadEncoding === Document.Encoding.Gbk ? "GBK" : "UTF-8")
+                  + " 重新加载将丢弃未保存的修改"
+            wrapMode: Text.Wrap
+            width: reloadConfirmDialog.availableWidth
+        }
+
+        footer: DialogButtonBox {
+            buttonLayout: DialogButtonBox.WinLayout
+            DialogButton {
+                text: "重新加载"
+                primary: true
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            }
+            DialogButton {
+                text: "取消"
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+        }
+
+        onAccepted: {
+            const doc = root.reloadConfirmDoc
+            root.reloadConfirmDoc = null
+            if (doc && doc.url.toString().length > 0)
+                DocumentManager.reloadWithEncoding(doc, root.reloadEncoding)
+        }
+        // 取消（含 Esc）：不动作，未保存修改保留
+        onRejected: root.reloadConfirmDoc = null
     }
 
     Connections {

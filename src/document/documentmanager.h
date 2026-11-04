@@ -54,7 +54,29 @@ public:
     /// 批量打开 URL；同 url 已存在则激活已有文档；空 URL 跳过；失败发 openFailed 并继续处理后续 URL
     Q_INVOKABLE void openUrls(const QList<QUrl> &urls);
 
-    /// 保存；url 为空返回 false（UI 应转另存为）；失败发 saveFailed
+    /// 单 URL 按指定编码打开（纠正识别错误的打开入口；会话按记忆编码恢复也走此路径）。
+    /// 同 url 已存在则激活已有文档；空 URL 跳过；失败发 openFailed
+    Q_INVOKABLE void openUrlWithEncoding(const QUrl &url, Document::Encoding encoding);
+
+    /**
+     * @brief 按指定编码从磁盘重新加载（纠正自动识别错误）。
+     *
+     * 以磁盘内容为准覆盖内存（未保存修改被丢弃；确认框由 QML 层负责，DEC-008）。
+     * 成功后刷新内容/换行/编码/BOM，不置脏，光标钳制到新内容长度内；
+     * url 为空（未命名）发 openFailed 提示并返回；读取失败发 openFailed 且保留原文档内容。
+     */
+    Q_INVOKABLE void reloadWithEncoding(Document *doc, Document::Encoding encoding);
+
+    /**
+     * @brief 按指定编码立即保存（编码转换，DEC-005 一步完成：设编码 + 保存）。
+     *
+     * UTF-8 目标 writeBom 取 doc->hasBom()；GBK 目标忽略 BOM。成功清除修改标记；
+     * 无 url（未命名）保留已设编码返回 false（UI 转另存为，另存为按已设编码写出）；
+     * 失败（含 GBK 不可编码）回滚编码设置、发 saveFailed 返回 false（编码标记不产生误导）。
+     */
+    Q_INVOKABLE bool saveWithEncoding(Document *doc, Document::Encoding encoding);
+
+    /// 保存；url 为空返回 false（UI 应转另存为）；失败发 saveFailed。按 doc 的编码与 BOM 状态写出
     Q_INVOKABLE bool save(Document *doc);
 
     /// 另存为；成功后更新 doc 的 url（displayName 随之）并清除修改标记。
@@ -93,6 +115,15 @@ signals:
 
 private:
     static DocumentManager *s_instance;
+
+    /**
+     * @brief 打开单个 URL 的公共路径（openUrls 与 openUrlWithEncoding 共用）。
+     *
+     * forcedEncoding 有值时按指定编码强制解码，否则自动识别；重复 URL 激活已有
+     * 文档；空 URL 返回 nullptr（不报错）；失败发 openFailed 返回 nullptr。
+     * 成功则新建文档（应用 encoding/hasBom 元数据）并激活。
+     */
+    Document *openSingle(const QUrl &url, const std::optional<Document::Encoding> &forcedEncoding);
 
     QList<Document *> m_documents;
     DocumentListModel *m_documentsModel = nullptr;

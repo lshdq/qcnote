@@ -2,8 +2,9 @@
 // 《测试用例-对话框居中与按钮Windows化》TC-001/002/004/005/006/007/008
 // 的可自动化部分）。
 //
-// 测试方式：offscreen 平台下实例化完整 Main.qml，按标题定位三个对话框
-// （unsavedDialog / errorDialog / ctxMenuPromptDialog），断言：
+// 测试方式：offscreen 平台下实例化完整 Main.qml，按标题定位四个对话框
+// （unsavedDialog / errorDialog / ctxMenuPromptDialog / reloadConfirmDialog），
+// 断言：
 // - 居中：anchors.centerIn 生效，x/y 与窗口中心差 ≤1px，resize 后跟随；
 // - footer：DialogButtonBox 为 WinLayout、右对齐，按钮自左向右为
 //   保存/不保存/取消（unsaved）、确定（error）、添加/不添加（ctxPrompt），
@@ -125,6 +126,7 @@ struct Bench
     QObject *unsavedDlg = nullptr;      // unsavedDialog（标题「未保存的修改」）
     QObject *errDlg = nullptr;          // errorDialog（title 绑定 currentError，未打开为空）
     QObject *ctxPromptDlg = nullptr;    // ctxMenuPromptDialog（标题「添加右键菜单」）
+    QObject *reloadDlg = nullptr;       // reloadConfirmDialog（标题「按编码重新加载」）
 
     Bench()
     {
@@ -155,7 +157,7 @@ Main {}
         for (Document *d : docs)
             dm->closeDocument(d);
 
-        // 三个对话框按标题定位；errorDialog 未打开时 title 为空串走排除法
+        // 四个对话框按标题定位；errorDialog 未打开时 title 为空串走排除法
         QList<QObject *> dialogs;
         collectByQmlType(win, "Dialog", &dialogs);
         for (QObject *d : dialogs) {
@@ -164,14 +166,17 @@ Main {}
                 unsavedDlg = d;
             else if (t == QStringLiteral("添加右键菜单"))
                 ctxPromptDlg = d;
+            else if (t == QStringLiteral("按编码重新加载"))
+                reloadDlg = d;
             else
                 errDlg = d;
         }
-        if (dialogs.size() != 3 || !unsavedDlg || !errDlg || !ctxPromptDlg) {
+        if (dialogs.size() != 4 || !unsavedDlg || !errDlg || !ctxPromptDlg || !reloadDlg) {
             qWarning() << "[bench] dialogs found:" << dialogs.size()
                        << "unsaved:" << (unsavedDlg != nullptr)
                        << "err:" << (errDlg != nullptr)
-                       << "ctxPrompt:" << (ctxPromptDlg != nullptr);
+                       << "ctxPrompt:" << (ctxPromptDlg != nullptr)
+                       << "reload:" << (reloadDlg != nullptr);
             return false;
         }
         return true;
@@ -299,6 +304,10 @@ private slots:
 
     // TC-008: 右键菜单首启提示居中与按钮（NOOP 隔离下直接 open 等价驱动）
     void tc008_ctxPrompt_centeredButtons();
+
+    // GBK 编码支持 TC-018 关联：按编码重载确认框的样式惯例
+    // （居中、WinLayout、按钮 重新加载(primary)/取消）与正文文案
+    void tc010_reloadConfirm_layoutText();
 };
 
 // TC-001: 有未保存修改触发关闭 → 确认框弹出且居中；窗口 resize 后保持居中。
@@ -357,7 +366,7 @@ void TestDialogStyle::tc002_footerButtons_layoutNamingAlignment()
     QVERIFY(!buttonByText(box, QStringLiteral("取消"))->property("primary").toBool());
 }
 
-// TC-004: 三个对话框 closePolicy 均为 Popup.CloseOnEscape；
+// TC-004: 四个对话框 closePolicy 均为 Popup.CloseOnEscape；
 // 合成鼠标点击对话框外部遮罩 → 不关闭、退出流程未中止、内容保留。
 void TestDialogStyle::tc004_closePolicy_escapeOnly()
 {
@@ -365,7 +374,7 @@ void TestDialogStyle::tc004_closePolicy_escapeOnly()
     QVERIFY2(b.init(), "testbench init failed");
 
     // 属性断言：仅 Esc 关闭，不含任何点击外部关闭的位
-    for (QObject *dlg : { b.unsavedDlg, b.errDlg, b.ctxPromptDlg }) {
+    for (QObject *dlg : { b.unsavedDlg, b.errDlg, b.ctxPromptDlg, b.reloadDlg }) {
         QVERIFY(dlg);
         QCOMPARE(dlg->property("closePolicy").toInt(), kCloseOnEscape);
     }
@@ -538,6 +547,50 @@ void TestDialogStyle::tc008_ctxPrompt_centeredButtons()
     clickOutside(b.win, b.win->width() / 2.0, 20);
     QTest::qWait(150);
     QVERIFY(b.ctxPromptDlg->property("visible").toBool());
+}
+
+// GBK 编码支持（《测试用例-GBK与UTF8编码支持》TC-018 关联）：按编码
+// 重载确认框样式与 Windows 按钮惯例一致：居中、WinLayout、自左向右
+// 重新加载（primary）/取消，正文文案含编码名与「丢弃未保存的修改」。
+// 直接触发重载入口（doReloadWithEncoding）而非真实菜单鼠标链路，
+// 与 tc008 的 open() 等价驱动模式一致；完整确认/取消行为链路由
+// test_encodingmenu 覆盖。
+void TestDialogStyle::tc010_reloadConfirm_layoutText()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("gbk.txt"));
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(QByteArray::fromHex("c4e3bac3")); // "你好" 的 GBK 字节
+    f.close();
+    b.dm->openUrls({ QUrl::fromLocalFile(path) });
+    Document *doc = b.dm->activeDocument();
+    QVERIFY(doc && doc->encoding() == Document::Encoding::Gbk);
+    doc->setContent(QStringLiteral("dirty")); // 置脏以触发确认框
+
+    QVERIFY(QMetaObject::invokeMethod(
+        b.win, "doReloadWithEncoding",
+        Q_ARG(QVariant, static_cast<int>(Document::Encoding::Gbk))));
+    QTRY_VERIFY(b.reloadDlg->property("visible").toBool());
+    QTest::qWait(50);
+
+    // 居中 + footer WinLayout + 按钮 重新加载（primary）/取消
+    QString why;
+    QVERIFY2(isCentered(b.win, b.reloadDlg, &why), qPrintable(why));
+    QObject *box = footerBox(b.reloadDlg);
+    QVERIFY2(box, "reloadConfirmDialog footer DialogButtonBox not found");
+    QCOMPARE(box->property("buttonLayout").toInt(), kWinLayout);
+    QCOMPARE(buttonsLeftToRight(box),
+             QStringList({ QStringLiteral("重新加载"), QStringLiteral("取消") }));
+    QVERIFY(buttonByText(box, QStringLiteral("重新加载"))->property("primary").toBool());
+    QVERIFY(!buttonByText(box, QStringLiteral("取消"))->property("primary").toBool());
+
+    // 正文文案（按触发编码 GBK 呈现）
+    QCOMPARE(dialogText(b.reloadDlg),
+             QStringLiteral("通过 GBK 重新加载将丢弃未保存的修改"));
 }
 
 int main(int argc, char *argv[])

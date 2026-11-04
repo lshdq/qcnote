@@ -37,6 +37,19 @@ private slots:
     void openMissingFileEmitsOpenFailedAndContinues();
     void openUrlWithoutStorageEmitsOpenFailed();
     void openUrlsSkipsEmptyUrl();
+    void openUrlsAppliesGbkDetection();
+    void openUrlsRecordsUtf8Bom();
+    void openUrlWithEncodingForcesEncoding();
+    void openUrlWithEncodingDeduplicatesSameUrl();
+    void reloadWithEncodingCorrectsMisjudgment();
+    void reloadWithEncodingOnUntitledEmitsOpenFailed();
+    void reloadWithEncodingReadFailureKeepsContent();
+    void saveWithEncodingConvertsGbkToUtf8();
+    void saveWithEncodingConvertsUtf8ToGbkAndKeepsBomRecord();
+    void saveWithEncodingUnencodableFailsAndReverts();
+    void saveWithEncodingUntitledKeepsEncoding();
+    void saveKeepsGbkEncodingOnDisk();
+    void saveAsCarriesEncoding();
     void formatForUrlFallsBackToPlainText();
     void formatForUrlPrefersRegisteredFormatOverFallback();
     void storageForUrlMatchesScheme();
@@ -111,6 +124,8 @@ void TestDocumentManager::openUrlsCreatesDocumentWithContent()
     QCOMPARE(doc->content(), QStringLiteral("hello\nworld"));
     QCOMPARE(doc->modified(), false);
     QCOMPARE(doc->displayName(), QStringLiteral("hello.txt"));
+    QCOMPARE(doc->encoding(), Document::Encoding::Utf8); // ASCII 自动识别为 UTF-8
+    QCOMPARE(doc->hasBom(), false);
     QCOMPARE(mgr.activeDocument(), doc);
     QCOMPARE(openedSpy.count(), 1);
 }
@@ -189,6 +204,263 @@ void TestDocumentManager::openUrlsSkipsEmptyUrl()
     QCOMPARE(mgr.activeDocument(), fileDoc);            // 不误激活未命名文档
     QCOMPARE(mgr.documentForUrl(QUrl()), nullptr);      // 空 URL 检索不到任何文档
     QVERIFY(untitled != nullptr);
+}
+
+// TC-004：GBK 文件经 openUrls 自动识别打开——encoding=Gbk、内容正确解码、无替换符
+void TestDocumentManager::openUrlsAppliesGbkDetection()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("gbk.txt"));
+    writeRawBytes(path, QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
+
+    mgr.openUrls({ QUrl::fromLocalFile(path) });
+    Document *doc = mgr.documents().constFirst();
+    QCOMPARE(doc->encoding(), Document::Encoding::Gbk);
+    QCOMPARE(doc->hasBom(), false);
+    QCOMPARE(doc->content(), QStringLiteral("\u4F60\u597D")); // 你好
+    QCOMPARE(doc->content().contains(QChar(0xFFFD)), false);
+    QCOMPARE(doc->modified(), false);
+}
+
+// TC-001 管理器侧：BOM UTF-8 文件经 openUrls 打开——encoding/hasBom 元数据
+// 正确记录，内容不含 BOM 字符（openUrls 完整链路，detector/storage 之外的直连断言）
+void TestDocumentManager::openUrlsRecordsUtf8Bom()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("bom.txt"));
+    writeRawBytes(path, QByteArrayLiteral("\xEF\xBB\xBF") + QStringLiteral("你好").toUtf8());
+
+    mgr.openUrls({ QUrl::fromLocalFile(path) });
+    Document *doc = mgr.documents().constFirst();
+    QCOMPARE(doc->encoding(), Document::Encoding::Utf8);
+    QCOMPARE(doc->hasBom(), true);
+    QCOMPARE(doc->content(), QStringLiteral("你好")); // BOM 剥离，不进入内容
+    QCOMPARE(doc->content().startsWith(QChar(0xFEFF)), false);
+    QCOMPARE(doc->modified(), false);
+}
+
+// openUrlWithEncoding：强制按指定编码打开（GBK 文件强制 UTF-8 → 替换符乱码但可打开）
+void TestDocumentManager::openUrlWithEncodingForcesEncoding()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("force.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
+
+    mgr.openUrlWithEncoding(url, Document::Encoding::Utf8);
+    QCOMPARE(mgr.documents().size(), 1);
+    Document *doc = mgr.documents().constFirst();
+    QCOMPARE(doc->encoding(), Document::Encoding::Utf8); // 强制值生效（而非自动识别的 Gbk）
+    QCOMPARE(doc->content().contains(QChar(0xFFFD)), true); // 乱码以替换符呈现
+    QCOMPARE(doc->modified(), false);
+}
+
+// openUrlWithEncoding：重复 URL 激活已有文档（与 openUrls 去重行为一致）
+void TestDocumentManager::openUrlWithEncodingDeduplicatesSameUrl()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("dup.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("x"));
+
+    mgr.openUrls({ url });
+    Document *first = mgr.activeDocument();
+    mgr.openUrlWithEncoding(url, Document::Encoding::Gbk);
+    QCOMPARE(mgr.documents().size(), 1);   // 不新建
+    QCOMPARE(mgr.activeDocument(), first); // 激活已有
+}
+
+// TC-012：reloadWithEncoding 纠正识别错误——内容纠正、encoding 更新、不置脏、
+// 光标钳制到新内容长度、换行风格重探测
+void TestDocumentManager::reloadWithEncodingCorrectsMisjudgment()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("misjudge.txt")));
+    // “你好”+CRLF 的 GBK 字节（C4 E3 BA C3 0D 0A）
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3\r\n"));
+
+    // 模拟识别错误：强制按 UTF-8 打开（乱码、modified=false）
+    mgr.openUrlWithEncoding(url, Document::Encoding::Utf8);
+    Document *doc = mgr.documents().constFirst();
+    QCOMPARE(doc->encoding(), Document::Encoding::Utf8);
+    doc->setContent(QStringLiteral("unsaved edit")); // 制造未保存修改（QML 层确认后 C++ 直接执行）
+    doc->setCursorPosition(100);                     // 制造超界光标
+
+    mgr.reloadWithEncoding(doc, Document::Encoding::Gbk);
+
+    QCOMPARE(doc->encoding(), Document::Encoding::Gbk);   // 编码纠正
+    QCOMPARE(doc->content(), QStringLiteral("\u4F60\u597D\n")); // 内容正确（LF 归一化）
+    QCOMPARE(doc->modified(), false);                     // 不置脏（磁盘为准）
+    QCOMPARE(doc->lineEnding(), Document::LineEnding::Crlf); // 换行风格重探测
+    QCOMPARE(doc->cursorPosition(), doc->content().size());  // 光标钳制到新内容长度
+}
+
+// TC-013：未命名文档防御——url 为空发 openFailed，不崩溃
+void TestDocumentManager::reloadWithEncodingOnUntitledEmitsOpenFailed()
+{
+    DocumentManager mgr;
+    mgr.newDocument();
+    Document *doc = mgr.activeDocument();
+
+    QSignalSpy spy(&mgr, &DocumentManager::openFailed);
+    mgr.reloadWithEncoding(doc, Document::Encoding::Gbk); // 不崩溃
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(doc->content(), QString()); // 内容不变
+}
+
+// reloadWithEncoding 读取失败（磁盘文件被删）：发 openFailed 且保留原文档内容
+void TestDocumentManager::reloadWithEncodingReadFailureKeepsContent()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("gone.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("hello"));
+
+    mgr.openUrls({ url });
+    Document *doc = mgr.documents().constFirst();
+    QVERIFY(QFile::remove(url.toLocalFile())); // 模拟文件被外部删除
+
+    QSignalSpy spy(&mgr, &DocumentManager::openFailed);
+    mgr.reloadWithEncoding(doc, Document::Encoding::Gbk);
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(doc->content(), QStringLiteral("hello")); // 原内容保留
+    QCOMPARE(doc->modified(), false);
+}
+
+// TC-014：saveWithEncoding GBK→UTF-8——磁盘字节为合法 UTF-8、编码与修改标记更新
+void TestDocumentManager::saveWithEncodingConvertsGbkToUtf8()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("conv.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
+
+    mgr.openUrls({ url }); // 自动识别为 GBK
+    Document *doc = mgr.documents().constFirst();
+    QCOMPARE(doc->encoding(), Document::Encoding::Gbk);
+    doc->setContent(QStringLiteral("\u4F60\u597D\u4E16\u754C")); // 你好世界（置脏）
+
+    QCOMPARE(mgr.saveWithEncoding(doc, Document::Encoding::Utf8), true);
+    QCOMPARE(doc->encoding(), Document::Encoding::Utf8);
+    QCOMPARE(doc->modified(), false);
+    QCOMPARE(readRawBytes(url.toLocalFile()), QStringLiteral("你好世界").toUtf8()); // 合法 UTF-8
+}
+
+// TC-015：saveWithEncoding UTF-8→GBK——磁盘字节为 GBK；BOM 记录跨 GBK 往返保留
+// （UTF-8+BOM 文件转 GBK 再转回 UTF-8 仍带 BOM）
+void TestDocumentManager::saveWithEncodingConvertsUtf8ToGbkAndKeepsBomRecord()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("bom-conv.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xEF\xBB\xBF") + QStringLiteral("你好").toUtf8());
+
+    mgr.openUrls({ url }); // 自动识别为 UTF-8 + BOM
+    Document *doc = mgr.documents().constFirst();
+    QCOMPARE(doc->encoding(), Document::Encoding::Utf8);
+    QCOMPARE(doc->hasBom(), true);
+
+    // 转 GBK：成功、磁盘 GBK 无 BOM、hasBom 记录不清除
+    QCOMPARE(mgr.saveWithEncoding(doc, Document::Encoding::Gbk), true);
+    QCOMPARE(doc->encoding(), Document::Encoding::Gbk);
+    QCOMPARE(doc->hasBom(), true); // GBK 保存不清除 BOM 记录
+    QCOMPARE(readRawBytes(url.toLocalFile()), QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
+
+    // 转回 UTF-8：BOM 按记录写回
+    QCOMPARE(mgr.saveWithEncoding(doc, Document::Encoding::Utf8), true);
+    QCOMPARE(readRawBytes(url.toLocalFile()),
+             QByteArrayLiteral("\xEF\xBB\xBF") + QStringLiteral("你好").toUtf8());
+}
+
+// TC-010 管理器侧：GBK 不可编码保存失败——saveFailed、编码回滚（不误导状态栏）、磁盘不变
+void TestDocumentManager::saveWithEncodingUnencodableFailsAndReverts()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("emoji.txt")));
+    const QByteArray original = QStringLiteral("hi\n\U0001F600").toUtf8(); // UTF-8 带 emoji 的原文件
+    writeRawBytes(url.toLocalFile(), original);
+
+    mgr.openUrls({ url }); // 自动识别为 UTF-8
+    Document *doc = mgr.documents().constFirst();
+
+    QSignalSpy spy(&mgr, &DocumentManager::saveFailed);
+    QCOMPARE(mgr.saveWithEncoding(doc, Document::Encoding::Gbk), false);
+    QCOMPARE(spy.count(), 1);
+    const QString error = spy.at(0).at(1).toString();
+    QVERIFY(error.contains(QStringLiteral("\U0001F600"))); // 错误含不可编码字符
+    QVERIFY(error.contains(QStringLiteral("2")));          // 及行号（第 2 行）
+    QCOMPARE(doc->encoding(), Document::Encoding::Utf8);   // 编码回滚，不产生误导
+    QCOMPARE(readRawBytes(url.toLocalFile()), original);   // 磁盘未被改动
+}
+
+// DEC-005：未命名文档 saveWithEncoding——保留已设编码、返回 false（UI 转另存为）
+void TestDocumentManager::saveWithEncodingUntitledKeepsEncoding()
+{
+    DocumentManager mgr;
+    mgr.newDocument();
+    Document *doc = mgr.activeDocument();
+    doc->setContent(QStringLiteral("你好"));
+
+    QSignalSpy spy(&mgr, &DocumentManager::saveFailed);
+    QCOMPARE(mgr.saveWithEncoding(doc, Document::Encoding::Gbk), false);
+    QCOMPARE(spy.count(), 0);                    // 未命名不是保存失败：不发信号
+    QCOMPARE(doc->encoding(), Document::Encoding::Gbk); // 编码已设置并保留
+}
+
+// 直接保存保持 GBK 编码：打开 GBK 文件修改后 Ctrl+S，磁盘仍为 GBK 字节
+void TestDocumentManager::saveKeepsGbkEncodingOnDisk()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("keep-gbk.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
+
+    mgr.openUrls({ url });
+    Document *doc = mgr.documents().constFirst();
+    doc->setContent(QStringLiteral("\u4E16\u754C")); // 世界
+
+    QCOMPARE(mgr.save(doc), true);
+    QCOMPARE(readRawBytes(url.toLocalFile()), QByteArrayLiteral("\xCA\xC0\xBD\xE7")); // GBK：世界
+    QCOMPARE(doc->modified(), false);
+}
+
+// 另存为携带编码：GBK 文档另存到新路径，新文件为 GBK 字节；被覆盖路径的既有文档按该编码重载
+void TestDocumentManager::saveAsCarriesEncoding()
+{
+    DocumentManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pathA = dir.filePath(QStringLiteral("src-gbk.txt"));
+    const QString pathB = dir.filePath(QStringLiteral("dst-opened.txt"));
+    writeRawBytes(pathA, QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
+    writeRawBytes(pathB, QByteArrayLiteral("old"));
+
+    mgr.openUrls({ QUrl::fromLocalFile(pathA), QUrl::fromLocalFile(pathB) });
+    Document *docA = mgr.documents().at(0);
+    Document *docB = mgr.documents().at(1);
+    QCOMPARE(docA->encoding(), Document::Encoding::Gbk);
+
+    QCOMPARE(mgr.saveAs(docA, QUrl::fromLocalFile(pathB)), true);
+    QCOMPARE(readRawBytes(pathB), QByteArrayLiteral("\xC4\xE3\xBA\xC3")); // 新文件为 GBK 字节
+    QCOMPARE(docA->encoding(), Document::Encoding::Gbk);                  // 编码携带
+    // 被覆盖的 B 按写出的编码（GBK）重载：内容正确、编码同步
+    QCOMPARE(docB->content(), QStringLiteral("\u4F60\u597D"));
+    QCOMPARE(docB->encoding(), Document::Encoding::Gbk);
+    QCOMPARE(docB->modified(), false);
 }
 
 // 格式匹配：未知扩展（.md）与已知扩展（.txt）均兜底为 PlainTextFormat

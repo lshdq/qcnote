@@ -83,6 +83,10 @@ private slots:
     void wordWrapToggleWritesIniAfterFlush();
     void wordWrapRestoredAcrossInstances();
     void legacyIniWithoutEditorSectionIsCompatible();
+    void encodingRememberedAndRestoredAcrossSessions();
+    void forcedUtf8EncodingRememberedForGbkFile();
+    void legacySessionWithoutEncodingFallsBackToAutoDetect();
+    void invalidEncodingValueFallsBackToAutoDetect();
     void resolvePortableIniPath_returnsIniWhenMarkerExists();
     void resolvePortableIniPath_returnsEmptyWhenMarkerMissing();
     void resolvePortableIniPath_returnsEmptyWhenAppDirMissing();
@@ -140,6 +144,18 @@ private:
             QStringLiteral("^wordWrap=%1\\r?$").arg(value ? QStringLiteral("true")
                                                           : QStringLiteral("false")),
             QRegularExpression::MultilineOption);
+        return re.match(content).hasMatch();
+    }
+
+    // 同上，判断 [documents] 中第 index 号文档的 encoding 行是否为指定值
+    // （键形如 "1\encoding=gbk"）
+    static bool sessionFileHasEncoding(const QString &path, int index, const QString &value)
+    {
+        const QString content = QString::fromUtf8(readRawBytes(path));
+        const QString key = QRegularExpression::escape(
+            QString::number(index) + QStringLiteral("\\encoding"));
+        const QRegularExpression re(QStringLiteral("^") + key + QStringLiteral("=%1\\r?$").arg(value),
+                                    QRegularExpression::MultilineOption);
         return re.match(content).hasMatch();
     }
 };
@@ -628,6 +644,117 @@ void TestSessionManager::legacyIniWithoutEditorSectionIsCompatible()
     QCOMPARE(reader.value(QStringLiteral("window/x")).toInt(), 100);
     QCOMPARE(reader.value(QStringLiteral("window/width")).toInt(), 1024);
     QCOMPARE(reader.value(QStringLiteral("window/maximized")).toBool(), false);
+}
+
+// TC-016：编码记忆与恢复——GBK 文件按指定编码打开后 flush，会话记录 encoding=gbk；
+// 新实例恢复按记忆编码打开（doc->encoding() 一致、内容正确）
+void TestSessionManager::encodingRememberedAndRestoredAcrossSessions()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("memo.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3")); // GBK：你好
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath);
+        mgr.openUrlWithEncoding(url, Document::Encoding::Gbk); // 手动指定编码打开
+        session.flush();
+    }
+    QVERIFY(sessionFileHasEncoding(iniPath, 1, QStringLiteral("gbk")));
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath);
+        session.restoreDocuments();
+        QCOMPARE(mgr.documents().size(), 1);
+        QCOMPARE(mgr.documents().constFirst()->encoding(), Document::Encoding::Gbk); // 按记忆编码
+        QCOMPARE(mgr.documents().constFirst()->content(), QStringLiteral("\u4F60\u597D"));
+        // 恢复末尾对齐写盘：编码记忆保持
+        QVERIFY(sessionFileHasEncoding(iniPath, 1, QStringLiteral("gbk")));
+    }
+}
+
+// 自动识别结果同样入会话：GBK 文件自动打开（未手动指定）→ 记录 gbk → 恢复仍按 GBK 打开
+void TestSessionManager::forcedUtf8EncodingRememberedForGbkFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("forced.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath);
+        // 用户纠正：GBK 字节强制按 UTF-8 打开（乱码），会话记录该选择
+        mgr.openUrlWithEncoding(url, Document::Encoding::Utf8);
+        session.flush();
+    }
+    QVERIFY(sessionFileHasEncoding(iniPath, 1, QStringLiteral("utf8")));
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath);
+        session.restoreDocuments();
+        // 重启后仍按记忆的 UTF-8 打开（不重新自动识别为 GBK）
+        QCOMPARE(mgr.documents().constFirst()->encoding(), Document::Encoding::Utf8);
+    }
+}
+
+// 旧会话文件（无 encoding 键）兼容：回退自动识别，文档正常恢复
+void TestSessionManager::legacySessionWithoutEncodingFallsBackToAutoDetect()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("legacy-gbk.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=1\n");
+    ini += QStringLiteral("1\\url=") + url.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("1\\cursor=0\n");
+    ini += QStringLiteral("active=") + url.toString() + QStringLiteral("\n");
+    writeRawBytes(iniPath, ini.toUtf8()); // 无 encoding 键（旧格式）
+
+    DocumentManager mgr;
+    SessionManager session(&mgr, iniPath);
+    QSignalSpy failSpy(&mgr, &DocumentManager::openFailed);
+    session.restoreDocuments();
+    QCOMPARE(failSpy.count(), 0); // 兼容：不报错
+    QCOMPARE(mgr.documents().size(), 1);
+    QCOMPARE(mgr.documents().constFirst()->encoding(), Document::Encoding::Gbk); // 自动识别
+    QCOMPARE(mgr.documents().constFirst()->content(), QStringLiteral("\u4F60\u597D"));
+}
+
+// 非法 encoding 值（损坏数据）静默回退自动识别，不阻断启动
+void TestSessionManager::invalidEncodingValueFallsBackToAutoDetect()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("bogus.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("plain ascii"));
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=1\n");
+    ini += QStringLiteral("1\\url=") + url.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("1\\cursor=0\n");
+    ini += QStringLiteral("1\\encoding=latin1\n"); // 非法值
+    ini += QStringLiteral("active=") + url.toString() + QStringLiteral("\n");
+    writeRawBytes(iniPath, ini.toUtf8());
+
+    DocumentManager mgr;
+    SessionManager session(&mgr, iniPath);
+    QSignalSpy failSpy(&mgr, &DocumentManager::openFailed);
+    session.restoreDocuments();
+    QCOMPARE(failSpy.count(), 0);
+    QCOMPARE(mgr.documents().size(), 1);
+    QCOMPARE(mgr.documents().constFirst()->encoding(), Document::Encoding::Utf8); // 回退自动识别
 }
 
 // 便携模式：标记文件 qcnote.portable 存在 → 返回 appDir/qcnote.ini 的绝对路径

@@ -19,6 +19,10 @@ private slots:
     void cursorPositionDefaultAndSet();
     void sameCursorPositionDoesNotEmitSignal();
     void applyLoadedStateKeepsCursorPosition();
+    void encodingDefaultAndSet();
+    void sameEncodingDoesNotEmitSignal();
+    void hasBomDefaultFalseAndSetByLoadedState();
+    void applyLoadedStateRefreshesEncodingAndClearsModified();
 };
 
 void TestDocument::defaultState()
@@ -30,6 +34,8 @@ void TestDocument::defaultState()
     QCOMPARE(doc.displayName(), QStringLiteral("未命名"));
     QCOMPARE(doc.filePath(), QString());
     QCOMPARE(doc.lineEnding(), Document::LineEnding::Lf);
+    QCOMPARE(doc.encoding(), Document::Encoding::Utf8); // 新建文档默认 UTF-8
+    QCOMPARE(doc.hasBom(), false);                      // 默认无 BOM
 }
 
 // 不同内容写入置脏
@@ -123,15 +129,73 @@ void TestDocument::sameCursorPositionDoesNotEmitSignal()
     QCOMPARE(doc.cursorPosition(), 8);
 }
 
-// applyLoadedState 不改动 cursorPosition（另存覆盖重载不动光标）
+// applyLoadedState 不改动 cursorPosition（另存覆盖重载/按编码重载均不动光标；
+// 重载后的光标钳制由 DocumentManager 负责）
 void TestDocument::applyLoadedStateKeepsCursorPosition()
 {
     Document doc;
     doc.setCursorPosition(15);
 
     doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/x.txt")),
-                         QStringLiteral("loaded"), Document::LineEnding::Crlf);
+                         QStringLiteral("loaded"), Document::LineEnding::Crlf,
+                         Document::Encoding::Gbk, false);
     QCOMPARE(doc.cursorPosition(), 15); // 光标位置保持不变
+}
+
+// TC-011：encoding 默认 Utf8，可设置（供按编码保存/会话记忆使用）
+void TestDocument::encodingDefaultAndSet()
+{
+    Document doc;
+    QCOMPARE(doc.encoding(), Document::Encoding::Utf8);
+
+    QSignalSpy spy(&doc, &Document::encodingChanged);
+    doc.setEncoding(Document::Encoding::Gbk);
+    QCOMPARE(doc.encoding(), Document::Encoding::Gbk);
+    QCOMPARE(spy.count(), 1);
+}
+
+// 同值 setEncoding 不发信号（与 setLineEnding 同构）
+void TestDocument::sameEncodingDoesNotEmitSignal()
+{
+    Document doc;
+    doc.setEncoding(Document::Encoding::Gbk);
+
+    QSignalSpy spy(&doc, &Document::encodingChanged);
+    doc.setEncoding(Document::Encoding::Gbk);
+    QCOMPARE(spy.count(), 0);
+
+    doc.setEncoding(Document::Encoding::Utf8);
+    QCOMPARE(spy.count(), 1);
+}
+
+// TC-011：hasBom 默认 false；由 applyLoadedState 记录（磁盘事实），变化发信号
+void TestDocument::hasBomDefaultFalseAndSetByLoadedState()
+{
+    Document doc;
+    QCOMPARE(doc.hasBom(), false);
+
+    QSignalSpy spy(&doc, &Document::hasBomChanged);
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/bom.txt")),
+                         QStringLiteral("hi"), Document::LineEnding::Lf,
+                         Document::Encoding::Utf8, true);
+    QCOMPARE(doc.hasBom(), true);
+    QCOMPARE(spy.count(), 1);
+}
+
+// TC-011：applyLoadedState 刷新编码/BOM 且不置脏（加载路径语义）
+void TestDocument::applyLoadedStateRefreshesEncodingAndClearsModified()
+{
+    Document doc;
+    doc.setContent(QStringLiteral("dirty")); // 置脏
+    QCOMPARE(doc.modified(), true);
+
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/g.txt")),
+                         QStringLiteral("disk"), Document::LineEnding::Lf,
+                         Document::Encoding::Gbk, false);
+    QCOMPARE(doc.encoding(), Document::Encoding::Gbk);
+    QCOMPARE(doc.hasBom(), false);
+    QCOMPARE(doc.content(), QStringLiteral("disk"));
+    QCOMPARE(doc.modified(), false); // 不置脏（加载后干净）
 }
 
 int runDocumentTests(int argc, char *argv[])

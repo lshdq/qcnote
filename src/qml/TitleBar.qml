@@ -24,6 +24,10 @@ Rectangle {
     signal requestSaveAs()
     signal requestCloseTab(var doc)
     signal requestQuit()
+    /// 按指定编码重新加载（参数为 Document.Encoding 枚举值）
+    signal requestReloadWithEncoding(int encoding)
+    /// 按指定编码保存（编码转换；参数为 Document.Encoding 枚举值）
+    signal requestSaveWithEncoding(int encoding)
 
     readonly property int barHeight: 40
 
@@ -133,6 +137,52 @@ Rectangle {
             keyText: "Ctrl+W"
             enabled: DocumentManager.activeDocument !== null
             onTriggered: root.requestCloseTab(DocumentManager.activeDocument)
+        }
+
+        // 编码子菜单（GBK 与 UTF-8 编码支持）：与文件操作同组（MenuSeparator
+        // 之前）。「通过编码重新加载」对未命名文档（无磁盘内容可重载）整组
+        // 禁用（TC-017）；「通过编码保存」为一步完成编码转换（DEC-005），
+        // 当前文档编码对应项打勾，未命名文档由 Main 转既有另存为流程。
+        Menu {
+            id: encodingMenu
+            title: "编码"
+
+            Menu {
+                id: reloadEncodingMenu
+                title: "通过编码重新加载"
+                enabled: DocumentManager.activeDocument !== null
+                         && DocumentManager.activeDocument.url.toString().length > 0
+
+                MenuItem {
+                    text: "UTF-8"
+                    onTriggered: root.requestReloadWithEncoding(Document.Encoding.Utf8)
+                }
+                MenuItem {
+                    text: "GBK"
+                    onTriggered: root.requestReloadWithEncoding(Document.Encoding.Gbk)
+                }
+            }
+
+            Menu {
+                id: saveEncodingMenu
+                title: "通过编码保存"
+                enabled: DocumentManager.activeDocument !== null
+
+                MenuItem {
+                    text: "UTF-8"
+                    checkable: true
+                    checked: DocumentManager.activeDocument
+                             && DocumentManager.activeDocument.encoding === Document.Encoding.Utf8
+                    onTriggered: root.requestSaveWithEncoding(Document.Encoding.Utf8)
+                }
+                MenuItem {
+                    text: "GBK"
+                    checkable: true
+                    checked: DocumentManager.activeDocument
+                             && DocumentManager.activeDocument.encoding === Document.Encoding.Gbk
+                    onTriggered: root.requestSaveWithEncoding(Document.Encoding.Gbk)
+                }
+            }
         }
 
         MenuSeparator {}

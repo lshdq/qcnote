@@ -15,12 +15,16 @@ qt_add_library(qcnote_core STATIC
     format/plaintextformat.h
     format/plaintextformat.cpp
     storage/documentstorage.h
+    storage/encodingdetector.h
+    storage/encodingdetector.cpp
     storage/localstorage.h
     storage/localstorage.cpp
     editor/multicursorengine.h
     editor/multicursorengine.cpp
     editor/multicursorcontroller.h
     editor/multicursorcontroller.cpp
+    platform/gbkcodec.h
+    platform/gbkcodec.cpp
     platform/shellintegration.h
     platform/shellintegration.cpp
     platform/singleinstance.h

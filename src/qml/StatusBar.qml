@@ -67,7 +67,11 @@ Rectangle {
             visible: root.doc !== null
             font.pointSize: 9
             color: AppTheme.textSecondary
-            text: "UTF-8"
+            text: root.doc
+                   ? (root.doc.encoding === Document.Encoding.Gbk
+                      ? "GBK"
+                      : (root.doc.hasBom ? "UTF-8 BOM" : "UTF-8"))
+                   : "—"
         }
 
         Label {

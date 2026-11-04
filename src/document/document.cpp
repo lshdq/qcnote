@@ -39,6 +39,16 @@ Document::LineEnding Document::lineEnding() const
     return m_lineEnding;
 }
 
+Document::Encoding Document::encoding() const
+{
+    return m_encoding;
+}
+
+bool Document::hasBom() const
+{
+    return m_hasBom;
+}
+
 int Document::cursorPosition() const
 {
     return m_cursorPosition;
@@ -79,6 +89,22 @@ void Document::setLineEnding(LineEnding ending)
     emit lineEndingChanged();
 }
 
+void Document::setEncoding(Encoding encoding)
+{
+    if (m_encoding == encoding)
+        return; // 同值不发信号（与 setLineEnding 同构）
+    m_encoding = encoding;
+    emit encodingChanged();
+}
+
+void Document::setHasBom(bool hasBom)
+{
+    if (m_hasBom == hasBom)
+        return;
+    m_hasBom = hasBom;
+    emit hasBomChanged();
+}
+
 void Document::setCursorPosition(int position)
 {
     // 值域 [0, +∞) 下界保护：负值（会话记录损坏等异常数据）钳为 0；
@@ -90,7 +116,8 @@ void Document::setCursorPosition(int position)
     emit cursorPositionChanged();
 }
 
-void Document::applyLoadedState(const QUrl &url, const QString &content, LineEnding ending)
+void Document::applyLoadedState(const QUrl &url, const QString &content, LineEnding ending,
+                                Encoding encoding, bool hasBom)
 {
     setUrl(url);
     if (m_content != content) {
@@ -98,6 +125,8 @@ void Document::applyLoadedState(const QUrl &url, const QString &content, LineEnd
         emit contentChanged();
     }
     setLineEnding(ending);
+    setEncoding(encoding);
+    setHasBom(hasBom);
     setModified(false);
 }
 

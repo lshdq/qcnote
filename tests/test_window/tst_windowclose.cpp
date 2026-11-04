@@ -199,10 +199,14 @@ Main {}
         QList<QObject *> dialogs;
         collectByQmlType(win, "Dialog", &dialogs);
         for (QObject *d : dialogs) {
-            if (d->property("title").toString() == QStringLiteral("未保存的修改"))
+            const QString t = d->property("title").toString();
+            if (t == QStringLiteral("未保存的修改"))
                 unsavedDlg = d;
+            else if (t == QStringLiteral("添加右键菜单")
+                     || t == QStringLiteral("按编码重新加载"))
+                continue; // 非错误对话框（场景 c 只需任一模态 uiLocked 源）
             else
-                errDlg = d;
+                errDlg = d; // errorDialog（title 绑定 currentError，未打开为空）
         }
         titleBar = findItemByQmlType(win->contentItem(), "TitleBar");
         // TitleBar 内首个 Menu 为 mainMenu（声明在 viewMenu 之前），
