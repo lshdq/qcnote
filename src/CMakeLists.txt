@@ -62,6 +62,7 @@ qt_add_qml_module(qcnote_core
     QML_FILES
         qml/AppTheme.qml
         qml/CaptionButton.qml
+        qml/DialogButton.qml
         qml/DocumentTabs.qml
         qml/EditorArea.qml
         qml/Main.qml

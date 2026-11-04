@@ -49,6 +49,9 @@ QtObject {
     readonly property color closePressed: "#a12316"
     /// 强调底色（关闭按钮悬停/按下红底）上的前景字形；两主题同值（红底上均取白）
     readonly property color closeGlyphForeground: "#ffffff"
+    /// 强调底色（accent 填充按钮等）上的前景字色；两主题同值（强调底上均取白）。
+    /// 语义通用（与 closeGlyphForeground 同值，但后者专属关闭按钮，不复用）
+    readonly property color onAccentForeground: "#ffffff"
     /// 边框 / 分隔线
     readonly property color border: dark ? "#3a4150" : "#c3cad6"
     /// 未保存 ● 标记（形状本身即线索，颜色仅辅助）

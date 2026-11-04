@@ -8,7 +8,7 @@ import QtQuick.Layouts
  * 主窗口：Frameless 四层结构（标题栏 / 工具栏 / 内容区 / 状态栏）。
  *
  * - 快捷键统一为窗口级 Shortcut；菜单仅展示快捷键文本；
- * - 未保存关闭/退出流程：三选（保存 / 放弃 / 取消），取消中止；
+ * - 未保存关闭/退出流程：三选（保存 / 不保存 / 取消），取消中止；
  * - 打开/保存失败统一错误对话框（排队展示），内容不丢失；
  * - 边缘 + 四角隐形命中区触发系统缩放，保留 Win+方向贴靠等原生行为；
  * - 会话恢复：启动时先恢复文档集（含光标/活动标签）再应用窗口几何、
@@ -405,28 +405,31 @@ ApplicationWindow {
         id: unsavedDialog
         modal: true
         focus: true
+        anchors.centerIn: parent
+        closePolicy: Popup.CloseOnEscape
         width: 380
         title: "未保存的修改"
 
         contentItem: Label {
             text: root.closeFlowDoc
-                  ? "是否保存对“" + root.closeFlowDoc.displayName + "”的修改？"
+                  ? "是否要将更改保存到 " + root.closeFlowDoc.displayName + "？"
                   : ""
             wrapMode: Text.Wrap
             width: unsavedDialog.availableWidth
         }
 
         footer: DialogButtonBox {
-            Button {
+            buttonLayout: DialogButtonBox.WinLayout
+            DialogButton {
                 text: "保存"
-                highlighted: true
+                primary: true
                 DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
             }
-            Button {
-                text: "放弃"
+            DialogButton {
+                text: "不保存"
                 DialogButtonBox.buttonRole: DialogButtonBox.DestructiveRole
             }
-            Button {
+            DialogButton {
                 text: "取消"
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
             }
@@ -462,6 +465,8 @@ ApplicationWindow {
         id: errorDialog
         modal: true
         focus: true
+        anchors.centerIn: parent
+        closePolicy: Popup.CloseOnEscape
         width: 440
         title: currentError ? currentError.title : ""
 
@@ -473,7 +478,14 @@ ApplicationWindow {
             width: errorDialog.availableWidth
         }
 
-        standardButtons: Dialog.Ok
+        footer: DialogButtonBox {
+            buttonLayout: DialogButtonBox.WinLayout
+            DialogButton {
+                text: "确定"
+                primary: true
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            }
+        }
 
         onAccepted: showNextError()
         onRejected: showNextError()
@@ -492,6 +504,8 @@ ApplicationWindow {
         id: ctxMenuPromptDialog
         modal: true
         focus: true
+        anchors.centerIn: parent
+        closePolicy: Popup.CloseOnEscape
         width: 380
         title: "添加右键菜单"
 
@@ -502,12 +516,13 @@ ApplicationWindow {
         }
 
         footer: DialogButtonBox {
-            Button {
+            buttonLayout: DialogButtonBox.WinLayout
+            DialogButton {
                 text: "添加"
-                highlighted: true
+                primary: true
                 DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
             }
-            Button {
+            DialogButton {
                 text: "不添加"
                 DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
             }

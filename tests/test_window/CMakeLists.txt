@@ -68,3 +68,27 @@ add_test(NAME test_startupargs COMMAND test_startupargs)
 set_tests_properties(test_startupargs PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# 对话框居中与按钮 Windows 化 QML 集成测试目标（offscreen，架构同上：
+# 单 main）：按标题定位 Main.qml 三个对话框，断言居中（resize 跟随）、
+# closePolicy 仅 Esc、footer WinLayout/右对齐/按钮命名与 primary、
+# 正文文案与错误框排队链路（《测试用例-对话框居中与按钮Windows化》
+# TC-001/002/004/005/006/007/008 的可自动化部分）。
+qt_add_executable(test_dialogstyle
+    tst_dialogstyle.cpp
+)
+
+target_link_libraries(test_dialogstyle PRIVATE
+    Qt6::Test
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(test_dialogstyle)
+
+add_test(NAME test_dialogstyle COMMAND test_dialogstyle)
+# GUI 红线：自动化验证一律 offscreen，无可见窗口
+set_tests_properties(test_dialogstyle PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
