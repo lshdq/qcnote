@@ -94,7 +94,38 @@ Item {
                     id: editor
 
                     textFormat: TextEdit.PlainText
-                    wrapMode: TextEdit.NoWrap
+                    // 自动换行：跟随全局设置 SessionManager.wordWrap（所有文档共享，
+                    // 菜单与工具栏切换）；开启时优先在单词边界断行，超长单词内强制
+                    // 断行（WrapAtWordBoundaryOrAnywhere）；关闭时 NoWrap，与原
+                    // 行为一致（长行水平滚动）
+                    wrapMode: SessionManager.wordWrap ? TextEdit.WrapAtWordBoundaryOrAnywhere : TextEdit.NoWrap
+                    // 切换换行开关后的两个动作：
+                    // 1) 命令式重放 QQuickTextArea 私有内建的 resizeFlickableControl
+                    //    宽度逻辑。TextArea 进入 ScrollView 时被 Qt 自动
+                    //    attachFlickable，此后宽度由 Qt 以命令式 setSize 管理
+                    //    （任何 QML width 绑定都会被其覆盖，实测确认），内建
+                    //    逻辑仅在 Flickable 内容宽/高变化时重跑；NoWrap→Wrap
+                    //    切换时 implicitWidth 已是自然宽（内容宽），内容宽不变、
+                    //    级联不触发，宽度停在数千像素，文本布局宽度不收缩 →
+                    //    长行不折行（P0 缺陷根因）。此处按新 wrapMode 手动重放
+                    //    同款计算：wrap 态收窄到视口宽触发重排折行，NoWrap 态
+                    //    取 max(视口宽, 内容宽) 保持水平滚动（与
+                    //    resizeFlickableControl 的宽度公式同构：wrap 态=视口宽，
+                    //    NoWrap 态=max(视口宽, 内容宽)）。切换后由内建级联
+                    //    自然接管，终值与“创建即 wrap”路径一致（实测存在
+                    //    视口宽 17px 滚动条瞬态差，终值收敛依赖内建级联）。
+                    // 2) contentHeight 骤变（光标上方超长行折为多个可视行），
+                    //    Flickable 仅做边界钳制、不跟随光标，会失去光标位置
+                    //    参照；延迟一拍再滚动回视口：wrapMode 变化后
+                    //    cursorRectangle / 布局需经一次 polish 才最终化，与
+                    //    Component.onCompleted 的 Qt.callLater 同一时序理由。
+                    onWrapModeChanged: {
+                        const flick = editorScroll.contentItem
+                        width = wrapMode === TextEdit.NoWrap
+                                ? Math.max(editorScroll.width, flick ? flick.contentWidth : 0)
+                                : editorScroll.width
+                        Qt.callLater(editor.scrollCursorIntoView)
+                    }
                     font.family: AppTheme.fontFamilyMono
                     font.pointSize: 11
                     // Tab 宽度 = 4 个等宽字符

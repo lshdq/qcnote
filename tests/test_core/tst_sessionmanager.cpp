@@ -60,7 +60,8 @@ private:
 };
 
 // 会话恢复核心行为：文档往返、缺失文件静默跳过、active 丢失回退、空会话无副作用、
-// 损坏数据容错、光标钳制、防抖写盘与 flush、几何校验纯函数、窗口状态往返。
+// 损坏数据容错、光标钳制、防抖写盘与 flush、几何校验纯函数、窗口状态往返、
+// 自动换行设置（默认值 / 写盘 / 重启恢复 / 旧会话兼容，TC-001~TC-004）。
 // 均为 C++ 直接 new（注入 DocumentManager 与临时会话路径），不经 QML 单例工厂。
 class TestSessionManager : public QObject
 {
@@ -78,6 +79,10 @@ private slots:
     void aboutToQuitFlushesPendingDebounce();
     void validateWindowStateClampsAndRejectsOffscreen();
     void windowStateRoundTrip();
+    void wordWrapDefaultsToFalseWithoutDiskWrite();
+    void wordWrapToggleWritesIniAfterFlush();
+    void wordWrapRestoredAcrossInstances();
+    void legacyIniWithoutEditorSectionIsCompatible();
     void resolvePortableIniPath_returnsIniWhenMarkerExists();
     void resolvePortableIniPath_returnsEmptyWhenMarkerMissing();
     void resolvePortableIniPath_returnsEmptyWhenAppDirMissing();
@@ -123,6 +128,18 @@ private:
             QString::number(index) + QStringLiteral("\\cursor"));
         const QRegularExpression re(QStringLiteral("^") + key + QStringLiteral("=%1\\r?$").arg(value),
                                     QRegularExpression::MultilineOption);
+        return re.match(content).hasMatch();
+    }
+
+    // 同上，判断 [editor] 节的 wordWrap 行是否为指定布尔值（QSettings IniFormat
+    // 以 true/false 落盘；wordWrap 键仅存在于 [editor] 节，全文行匹配无歧义）
+    static bool sessionFileHasWordWrap(const QString &path, bool value)
+    {
+        const QString content = QString::fromUtf8(readRawBytes(path));
+        const QRegularExpression re(
+            QStringLiteral("^wordWrap=%1\\r?$").arg(value ? QStringLiteral("true")
+                                                          : QStringLiteral("false")),
+            QRegularExpression::MultilineOption);
         return re.match(content).hasMatch();
     }
 };
@@ -468,6 +485,149 @@ void TestSessionManager::windowStateRoundTrip()
         QCOMPARE(restored.value(QStringLiteral("height")).toInt(), 640);
         QCOMPARE(restored.value(QStringLiteral("maximized")).toBool(), true);
     }
+}
+
+// TC-001 默认关闭（无历史设置）：全新临时 ini（不存在）构造实例 → wordWrap 为
+// false；构造不触发写盘；同值 setWordWrap(false) 不发信号、不启动防抖（等过
+// 防抖窗口后文件仍不存在）；析构兜底 flush 无脏数据，全生命周期零写盘。
+void TestSessionManager::wordWrapDefaultsToFalseWithoutDiskWrite()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini")); // 不存在
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath);
+        QCOMPARE(session.wordWrap(), false); // 默认关闭，与现状一致
+
+        QSignalSpy spy(&session, &SessionManager::wordWrapChanged);
+        session.setWordWrap(false);       // 同值早退
+        QCOMPARE(spy.count(), 0);         // 不发信号
+        QTest::qWait(600);                // 若误触发防抖，此刻早已落盘
+        QVERIFY(!QFile::exists(iniPath)); // 同值不调度写盘：文件不产生
+    } // 析构 flush：无挂起防抖、无脏数据，不落盘
+
+    QVERIFY(!QFile::exists(iniPath)); // 首启无副作用（与 emptySessionIsNoop 同口径）
+}
+
+// TC-002 切换写盘（防抖聚合）：false → true 发 1 次 wordWrapChanged，同值重复
+// 不多发 → flush() 立即落盘，磁盘原文与 QSettings 双重断言 editor/wordWrap == true。
+void TestSessionManager::wordWrapToggleWritesIniAfterFlush()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath);
+        QCOMPARE(session.wordWrap(), false);
+
+        QSignalSpy spy(&session, &SessionManager::wordWrapChanged);
+        session.setWordWrap(false); // 同值：不发信号
+        QCOMPARE(spy.count(), 0);
+        session.setWordWrap(true);  // false → true：发 1 次
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(session.wordWrap(), true);
+        session.setWordWrap(true); // 同值重复：不再多发
+        QCOMPARE(spy.count(), 1);
+
+        session.flush(); // 不等防抖：立即落盘
+        QVERIFY(sessionFileHasWordWrap(iniPath, true)); // 磁盘原文确证已写出
+    }
+
+    QSettings reader(iniPath, QSettings::IniFormat);
+    QCOMPARE(reader.value(QStringLiteral("editor/wordWrap")).toBool(), true);
+}
+
+// TC-003 重启恢复：true 落盘 → 同一路径新实例（构造预读 [editor]）恢复为 true；
+// 再切回 false + flush → 新实例恢复为 false（读盘与实例读取双重断言）。
+void TestSessionManager::wordWrapRestoredAcrossInstances()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath);
+        session.setWordWrap(true);
+        session.flush();
+    }
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath); // 构造预读 [editor]
+        QCOMPARE(session.wordWrap(), true);    // 与落盘值一致
+
+        session.setWordWrap(false);
+        session.flush();
+        QVERIFY(sessionFileHasWordWrap(iniPath, false));
+    }
+
+    {
+        QSettings reader(iniPath, QSettings::IniFormat);
+        QCOMPARE(reader.value(QStringLiteral("editor/wordWrap")).toBool(), false);
+    }
+
+    {
+        DocumentManager mgr;
+        SessionManager session(&mgr, iniPath);
+        QCOMPARE(session.wordWrap(), false); // 与落盘值一致
+    }
+}
+
+// TC-004 旧会话文件兼容（无 editor 节）：手写仅含 [documents]/[window] 的旧格式
+// ini → 新实例 wordWrap 取默认 false；restoreDocuments 正常恢复文档/光标/active
+// 与窗口几何；恢复末尾的对齐写盘补全 [editor] 节且既有节不被破坏。
+void TestSessionManager::legacyIniWithoutEditorSectionIsCompatible()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("legacy.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("legacy"));
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=1\n");
+    ini += QStringLiteral("1\\url=") + url.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("1\\cursor=2\n");
+    ini += QStringLiteral("active=") + url.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("[window]\n");
+    ini += QStringLiteral("x=100\n");
+    ini += QStringLiteral("y=60\n");
+    ini += QStringLiteral("width=1024\n");
+    ini += QStringLiteral("height=768\n");
+    ini += QStringLiteral("maximized=false\n");
+    writeRawBytes(iniPath, ini.toUtf8());
+
+    DocumentManager mgr;
+    SessionManager session(&mgr, iniPath);
+    QCOMPARE(session.wordWrap(), false); // 旧格式无 [editor]：默认 false
+
+    session.restoreDocuments();
+    QCOMPARE(mgr.documents().size(), 1);
+    QCOMPARE(mgr.documents().constFirst()->url(), url);
+    QCOMPARE(mgr.documents().constFirst()->cursorPosition(), 2);
+    QCOMPARE(mgr.activeDocument(), mgr.documents().constFirst());
+    // [window] 预读不受影响（测试进程无屏幕：仅下限钳制，1024×768 均高于下限）
+    const QVariantMap window = session.windowState();
+    QCOMPARE(window.value(QStringLiteral("x")).toInt(), 100);
+    QCOMPARE(window.value(QStringLiteral("width")).toInt(), 1024);
+    QCOMPARE(window.value(QStringLiteral("maximized")).toBool(), false);
+
+    // 恢复末尾对齐写盘：补全 [editor] 节（wordWrap=false），既有节不被破坏
+    QVERIFY(sessionFileHasWordWrap(iniPath, false));
+    QSettings reader(iniPath, QSettings::IniFormat);
+    QCOMPARE(reader.value(QStringLiteral("editor/wordWrap")).toBool(), false);
+    QCOMPARE(reader.value(QStringLiteral("documents/size")).toInt(), 1);
+    QCOMPARE(QUrl(reader.value(QStringLiteral("documents/1/url")).toString()), url);
+    QCOMPARE(reader.value(QStringLiteral("documents/1/cursor")).toInt(), 2);
+    QCOMPARE(reader.value(QStringLiteral("window/x")).toInt(), 100);
+    QCOMPARE(reader.value(QStringLiteral("window/width")).toInt(), 1024);
+    QCOMPARE(reader.value(QStringLiteral("window/maximized")).toBool(), false);
 }
 
 // 便携模式：标记文件 qcnote.portable 存在 → 返回 appDir/qcnote.ini 的绝对路径

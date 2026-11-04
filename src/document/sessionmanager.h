@@ -23,7 +23,8 @@ class QJSEngine;
  *
  * 统一持有会话文件（QSettings，IniFormat）：
  * - [documents]：按编号记录上次打开的文件（URL、光标）与活动文档 URL；
- * - [window]：窗口 normal 几何（x/y/width/height）与最大化标志。
+ * - [window]：窗口 normal 几何（x/y/width/height）与最大化标志；
+ * - [editor]：编辑器全局设置（所有文档共享，如自动换行）。
  *
  * 文档集合、活动文档、各文档 url 与光标的变化经 500ms 防抖统一写盘；
  * 恢复过程中置 m_restoring 屏蔽连锁写，恢复完成统一写一次。
@@ -35,6 +36,8 @@ class SessionManager : public QObject
     Q_OBJECT
     QML_ELEMENT
     QML_SINGLETON
+    /// 自动换行（全局设置，所有文档共享）：开启时长行在可视宽度边缘折行显示
+    Q_PROPERTY(bool wordWrap READ wordWrap WRITE setWordWrap NOTIFY wordWrapChanged)
 
 public:
     /**
@@ -61,6 +64,12 @@ public:
     /// 记录窗口 normal 几何与最大化标志（缓存到成员 + 防抖写盘）
     Q_INVOKABLE void saveWindowState(int x, int y, int width, int height, bool maximized);
 
+    /// 自动换行（全局，所有文档共享）；构造时预读 [editor] 节，无记录取默认 false
+    bool wordWrap() const;
+
+    /// 设置自动换行：同值早退；变化后发 wordWrapChanged 并经既有防抖机制写盘
+    void setWordWrap(bool wrap);
+
     /// 立即写盘（防抖挂起时用；退出经 aboutToQuit 兜底触发）
     void flush();
 
@@ -82,6 +91,10 @@ public:
      * 否则（标记不存在、appDir 不存在、标记是目录而非文件等）返回空 QString()。
      */
     static QString resolvePortableIniPath(const QString &appDir);
+
+signals:
+    /// 自动换行变化（setWordWrap 值真正改变时发出）
+    void wordWrapChanged();
 
 private:
     void scheduleSave();
@@ -106,4 +119,5 @@ private:
     int m_windowHeight = 0;
     bool m_windowMaximized = false;
     bool m_windowValid = false; ///< 本实例是否持有有效窗口几何（决定写或移除 [window] 节）
+    bool m_wordWrap = false;    ///< 自动换行（全局设置，默认关闭）：构造预读 [editor] 节，变化经防抖写盘
 };

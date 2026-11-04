@@ -62,6 +62,10 @@ SessionManager::SessionManager(DocumentManager *manager, const QString &filePath
         m_windowValid = true;
     }
 
+    // 预读 [editor]：编辑器全局设置（自动换行），无记录保持默认 false、不触发写盘
+    if (m_settings->contains(QStringLiteral("editor/wordWrap")))
+        m_wordWrap = m_settings->value(QStringLiteral("editor/wordWrap")).toBool();
+
     // 退出兜底：防抖挂起状态在退出前落盘
     connect(qApp, &QCoreApplication::aboutToQuit, this, &SessionManager::flush);
 }
@@ -170,6 +174,20 @@ void SessionManager::saveWindowState(int x, int y, int width, int height, bool m
     m_windowMaximized = maximized;
     m_windowValid = true;
     scheduleSave();
+}
+
+bool SessionManager::wordWrap() const
+{
+    return m_wordWrap;
+}
+
+void SessionManager::setWordWrap(bool wrap)
+{
+    if (m_wordWrap == wrap)
+        return; // 同值早退：不发信号、不触发写盘
+    m_wordWrap = wrap;
+    emit wordWrapChanged();
+    scheduleSave(); // 复用既有防抖写盘（m_restoring 屏蔽、退出兜底）
 }
 
 void SessionManager::flush()
@@ -282,6 +300,9 @@ void SessionManager::saveNow()
     } else {
         m_settings->remove(QStringLiteral("window"));
     }
+
+    // [editor]：编辑器全局设置（自动换行）；键分组语义与 "documents/size" 一致
+    m_settings->setValue(QStringLiteral("editor/wordWrap"), m_wordWrap);
 
     m_settings->sync(); // 立即落盘：崩溃最多丢最后 500ms 内的变化，文件列表不丢
 }

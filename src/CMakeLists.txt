@@ -74,6 +74,7 @@ qt_add_qml_module(qcnote_core
         qml/icons/new.svg
         qml/icons/open.svg
         qml/icons/save.svg
+        qml/icons/wrap.svg
         # 应用图标 SVG，嵌入资源供运行时窗口图标使用（:/qt/qml/qcnote/icons/qcnote.svg）
         icons/qcnote.svg
 )

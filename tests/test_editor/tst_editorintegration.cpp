@@ -15,6 +15,8 @@
 // 无法自动化的人工项（DPI 视觉、闪烁节奏、真实 IME 组字窗口）见
 // 测试报告"人工待验"清单。
 
+#include <QSettings>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QClipboard>
 #include <QColor>
@@ -389,6 +391,74 @@ EditorArea {
     }
 };
 
+// ==================== tc008b 独立参考实现（朴素逐位扫描） ====================
+//
+// 与 MultiCursorLayer.selectionSegments 的二分实现相互独立：按 tc008 参考
+// 算法思路（逐 position 扫描 positionToRectangle 的 y 跳变切分可视行）扩展到
+// 多逻辑行 + toEdge 兜底语义（规格：折行断点前字符可见 → 段右缘以内容区
+// 右缘兜底；空白 → R(断点前位置).x 即可见文本右缘，精确）。被测实现换算法
+// 时本参考不变，二者输出必须逐段一致（等价性回归）。
+
+struct RefSegment {
+    qreal x = 0;
+    qreal y = 0;
+    qreal w = 0;
+};
+
+// 单逻辑行内选区块 [a, e)（不含 '\n'）→ 可视行段（朴素扫描版）
+void refPushLineChunk(QVector<RefSegment> &out, const Bench &b,
+                      const QString &text, int a, int e, qreal contentRight)
+{
+    if (e <= a)
+        return;
+    int p = a;
+    while (true) {
+        // 同一可视行内 y 恒等：向后扫到该行最后一个光标位置 last
+        int last = p;
+        while (last < e && b.rectOf(last + 1).y() == b.rectOf(p).y())
+            ++last;
+        const QRectF first = b.rectOf(p);
+        if (last == e) {
+            // 末段终点不在折行断点上：行内精确（宽 = 终点 x − 段起 x）
+            const qreal w = b.rectOf(e).x() - first.x();
+            if (w > 0)
+                out.append({first.x(), first.y(), w});
+            return;
+        }
+        // last < e：折行断点。断点前字符可见（中文逐字折行 / 超长词强制
+        // 断行）→ 位置矩形取不到本行精确右缘，以内容区右缘兜底；
+        // 空白 → R(last).x 已是可见文本右缘，精确
+        qreal w = b.rectOf(last).x() - first.x();
+        if (!text.at(last).isSpace() && w < contentRight - first.x())
+            w = contentRight - first.x();
+        if (w > 0)
+            out.append({first.x(), first.y(), w});
+        p = last + 1;
+    }
+}
+
+// 全部选区（controller.selectionPairs 形态）→ 期望段列表：
+// 每对先按 '\n' 拆逻辑行块，块内再按可视行拆段（与被测实现同构、算法独立）
+QVector<RefSegment> referenceSegments(const Bench &b, qreal contentRight)
+{
+    const QString text = b.text();
+    QVector<RefSegment> out;
+    for (const QString &pair : b.selectionPairs()) {
+        const QStringList parts = pair.split(QLatin1Char(':'));
+        const int start = parts.at(0).toInt();
+        const int end = parts.at(1).toInt();
+        int segStart = start;
+        for (int p = start; p < end; ++p) {
+            if (text.at(p) == QLatin1Char('\n')) {
+                refPushLineChunk(out, b, text, segStart, p, contentRight);
+                segStart = p + 1;
+            }
+        }
+        refPushLineChunk(out, b, text, segStart, end, contentRight);
+    }
+    return out;
+}
+
 } // namespace
 
 // ==================== 测试类 ====================
@@ -459,6 +529,22 @@ private slots:
 
     // TC-005：multiSelection 取值不变且与 selection 同值（观感统一）
     void tc005_multiSelection_matchesSelection();
+
+    // ---- 自动换行（需求：自动换行） ----
+
+    // TC-008（可自动化部分）：开启换行后跨可视行选区按可视行拆段渲染，
+    // 关闭换行回到单段；覆盖 wrapMode 切换路径（onWrapModeChanged）
+    void tc008_wordWrap_visualLineSegments();
+
+    // TC-008b（可自动化部分）：中文逐字折行 / 超长 ASCII 词强制断行 / 多逻辑
+    // 行跨 '\n' 选区的拆段回归（补齐 tc008 空白断点未覆盖的 toEdge 兜底分支
+    // 与按逻辑行外层拆分组合，含段右缘上界断言）
+    void tc008b_wordWrap_cjkLongWordMultilineSegments();
+
+private:
+    // tc008b 对拍断言：selectionSegments 与朴素参考实现逐段一致
+    //（段数/x/y/w、y 严格递增、宽高为正、右缘不超内容区右缘 + 1 字符宽）
+    void checkSegmentsAgainstReference(const Bench &b, const QString &phase);
 };
 
 // TC-101：Alt+单击两处加光标（初始光标 + 2 = 3 光标），输入与 Backspace
@@ -1033,10 +1119,310 @@ void TestEditorIntegration::tc005_multiSelection_matchesSelection()
     QCOMPARE(b.themeColor("multiSelection"), b.themeColor("selection"));
 }
 
+// ---- 自动换行（需求：自动换行） ----
+
+// TC-008（可自动化部分）：开启换行后，跨可视行选区高亮按可视行拆段：
+// 段数与独立参考实现（逐 position 扫描 positionToRectangle 的 y，按 y 变化
+// 切分可视行——即修复前的朴素算法思路，与被测二分实现相互独立）一致、
+// 段 y 与可视行对齐且严格递增、宽度全为正（无负宽/漏渲染）；关闭换行后
+// 同一选区回到单段（NoWrap 旧行为零回归）。同时覆盖 wrapMode 切换路径
+// （onWrapModeChanged → Qt.callLater(scrollCursorIntoView)）：切换回调若
+// 抛 QML 运行时错误，QtTest 会因 qWarning 直接判 FAIL。
+void TestEditorIntegration::tc008_wordWrap_visualLineSegments()
+{
+    Bench b;
+    // 200 个 "word "（1000 字符）在 520px 等宽视口下折成多个可视行；
+    // 末尾补第二行短文本，保证长行选区终点不与文档末尾重合
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    const int len = words.size();
+    QVERIFY2(b.open(words + QStringLiteral("\ntail")), "testbench open failed");
+
+    // 显式归零基线：测试进程的 SessionManager 单例读的是用户目录真实 ini
+    // （用户可能已开启 wordWrap），直接驱动 TextArea.wrapMode 与用户配置
+    // 解耦；改 SessionManager.wordWrap 会经防抖写盘污染用户配置，禁走。
+    // 覆盖绑定后 onWrapModeChanged 与 MultiCursorLayer 布局依赖路径不变。
+    b.editor->setProperty("wrapMode", 0); // 0 = TextEdit.NoWrap
+    b.settle();
+    QCOMPARE(b.editor->property("wrapMode").toInt(), 0);
+
+    // ---- 开启换行（4 = TextEdit.WrapAtWordBoundaryOrAnywhere，Qt6 枚举） ----
+    b.editor->setProperty("wrapMode", 4);
+    b.settle();
+    QCOMPARE(b.editor->property("wrapMode").toInt(), 4);
+
+    // 独立参考：选区 [0, len] 逐 position 扫描 y（同一逻辑行内 y 随
+    // position 单调不减），按 y 变化切分可视行——与被测二分实现等价的
+    // 朴素算法，二者输出必须一致（等价性回归）
+    struct VisualLine { qreal y; int firstPos; };
+    QVector<VisualLine> lines;
+    for (int p = 0; p <= len; ++p) {
+        const qreal y = b.rectOf(p).y();
+        if (lines.isEmpty() || lines.last().y != y)
+            lines.append({ y, p });
+    }
+    // 诊断提示：本断言失败（got 1）说明切换 wrap 后长行未折行——
+    // ScrollView 中 TextArea 宽度只增不减，运行中 NoWrap→wrap 切换后
+    // 宽度不回收（详见测试报告缺陷记录）
+    QVERIFY2(lines.size() >= 3,
+             qPrintable(QStringLiteral("expected 3+ visual lines, got %1").arg(lines.size())));
+
+    // 构造跨可视行选区 [0, len)：引擎列选为纯逻辑行列计算（不经鼠标、
+    // 不受可视布局影响），单逻辑行内 anchor→cursor 即一个行内选区
+    b.mc->columnDragBegin(0, len);
+    b.mc->columnDragEnd();
+    b.settle();
+    QVERIFY(b.mc->active());
+    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("0:%1").arg(len));
+
+    // 被测输出：覆盖层分段（MultiCursorLayer.selectionSegments 二分拆段）
+    const QVariantList segs = b.layer->property("selectionSegments").toList();
+    QCOMPARE(segs.size(), lines.size()); // 每可视行恰一段：无漏行、无多余段
+
+    qreal prevY = -1;
+    for (int i = 0; i < segs.size(); ++i) {
+        const QVariantMap seg = segs.at(i).toMap();
+        const qreal x = seg.value("x").toDouble();
+        const qreal y = seg.value("y").toDouble();
+        const qreal w = seg.value("w").toDouble();
+        const qreal h = seg.value("h").toDouble();
+        QVERIFY2(w > 0, qPrintable(QStringLiteral("segment %1 width %2 must be positive")
+                                       .arg(i).arg(w)));
+        QVERIFY(h > 0);
+        // 段落在对应可视行的 y 上（与 positionToRectangle 同源，容差收紧）
+        QVERIFY2(qAbs(y - lines.at(i).y) < 0.01,
+                 qPrintable(QStringLiteral("segment %1 y %2 != visual line y %3")
+                                .arg(i).arg(y).arg(lines.at(i).y)));
+        QVERIFY2(y > prevY, "segment y must strictly increase");
+        prevY = y;
+        if (i == 0)
+            QVERIFY(qAbs(x - b.rectOf(0).x()) < 0.01); // 首段从选区起点开始
+    }
+
+    // 末段终点 len 是行末（非折行断点），宽度精确 = 终点光标 x − 段起 x
+    const QVariantMap lastSeg = segs.last().toMap();
+    const qreal expectedW = b.rectOf(len).x() - b.rectOf(lines.last().firstPos).x();
+    QVERIFY2(qAbs(lastSeg.value("w").toDouble() - expectedW) < 0.01,
+             qPrintable(QStringLiteral("last segment width %1, expected %2")
+                            .arg(lastSeg.value("w").toDouble()).arg(expectedW)));
+
+    // ---- 关闭换行：同一选区回到单段（NoWrap 单逻辑行 = 单段，零回归） ----
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+    QCOMPARE(b.editor->property("wrapMode").toInt(), 0);
+    QCOMPARE(b.layer->property("selectionSegments").toList().size(), 1);
+}
+
+// tc008b 对拍断言：被测 selectionSegments 与朴素参考实现逐段一致。
+// phase 仅用于失败信息前缀定位（①跨 '\n' 单对 / ②超长词 / ③多对列选）
+void TestEditorIntegration::checkSegmentsAgainstReference(const Bench &b,
+                                                          const QString &phase)
+{
+    const qreal contentRight = b.editor->property("width").toDouble()
+                             - b.editor->property("rightPadding").toDouble();
+    // 容差 = 1 个中文字符宽（等宽字体 CJK 全角 advance，R(1).x − R(0).x 实测）。
+    // 原因：toEdge 兜底段宽精确等于 contentRight − 段起 x（理论零超界），非兜底
+    // 段右缘来自 positionToRectangle 的光标位置（恒在内容区内）；容差仅防御
+    // 浮点舍入与字体度量在强制断行处至多一个可见字符的亚像素溢出——
+    // 右缘超出 1 字符宽即为真实超界缺陷
+    const qreal charWidth = b.rectOf(1).x() - b.rectOf(0).x();
+    QVERIFY2(charWidth > 0, "CJK char width must be positive (layout not ready?)");
+
+    const QVector<RefSegment> ref = referenceSegments(b, contentRight);
+    const QVariantList segs = b.layer->property("selectionSegments").toList();
+    QVERIFY2(segs.size() == ref.size(),
+             qPrintable(QStringLiteral("[%1] segment count %2 != reference %3 "
+                                       "(selections: %4)")
+                            .arg(phase).arg(segs.size()).arg(ref.size())
+                            .arg(b.selectionPairs().join(QLatin1Char(',')))));
+
+    qreal prevY = -1;
+    for (int i = 0; i < segs.size(); ++i) {
+        const QVariantMap seg = segs.at(i).toMap();
+        const qreal x = seg.value("x").toDouble();
+        const qreal y = seg.value("y").toDouble();
+        const qreal w = seg.value("w").toDouble();
+        const qreal h = seg.value("h").toDouble();
+        const RefSegment &r = ref.at(i);
+        QVERIFY2(w > 0, qPrintable(QStringLiteral("[%1] segment %2 width %3 must be positive")
+                                       .arg(phase).arg(i).arg(w)));
+        QVERIFY2(h > 0, qPrintable(QStringLiteral("[%1] segment %2 height %3 must be positive")
+                                       .arg(phase).arg(i).arg(h)));
+        QVERIFY2(qAbs(y - r.y) < 0.01,
+                 qPrintable(QStringLiteral("[%1] segment %2 y %3 != reference %4")
+                                .arg(phase).arg(i).arg(y).arg(r.y)));
+        QVERIFY2(y > prevY,
+                 qPrintable(QStringLiteral("[%1] segment %2 y %3 must strictly increase (prev %4)")
+                                .arg(phase).arg(i).arg(y).arg(prevY)));
+        QVERIFY2(qAbs(x - r.x) < 0.01,
+                 qPrintable(QStringLiteral("[%1] segment %2 x %3 != reference %4")
+                                .arg(phase).arg(i).arg(x).arg(r.x)));
+        QVERIFY2(qAbs(w - r.w) < 0.01,
+                 qPrintable(QStringLiteral("[%1] segment %2 width %3 != reference %4")
+                                .arg(phase).arg(i).arg(w).arg(r.w)));
+        QVERIFY2(x + w <= contentRight + charWidth,
+                 qPrintable(QStringLiteral("[%1] segment %2 right edge %3 exceeds content "
+                                           "right %4 (tolerance 1 char width %5)")
+                                .arg(phase).arg(i).arg(x + w).arg(contentRight)
+                                .arg(charWidth)));
+        prevY = y;
+    }
+}
+
+// TC-008b（可自动化部分）：拆段算法的中文/超长词/多逻辑行回归。
+// tc008 的文本（200×"word "）折行断点全落在空白处，导致 MultiCursorLayer
+// 拆段的 toEdge 兜底分支（可见字符处强制断行以内容区右缘兜底）从未执行、
+// 多逻辑行组合（选区跨 '\n' 的外层逻辑行拆分 + 行内可视行拆段）未覆盖、
+// 段宽亦无右缘上界断言。本用例补齐（第 2 轮代码审查发现）：
+// - 文本：3 行 60 字中文长行（无空格 → 逐字折行，断点全在可见字符处）+
+//   1 行超长 ASCII 单词（280 字符，强制断行）+ 中文尾行，4 行均折 ≥2 可视行；
+// - 选区三形态：① Ctrl+D 选词 + Shift+Down×2 → 跨 2 个 '\n' 的单对选区
+//   （外层按逻辑行拆分 + 行内按可视行拆段的组合路径）；② 超长词整词选区
+//   （全部断点为词内强制断行 → 每个中间段走 toEdge 兜底）；③ 跨 3 行列选
+//   （多选区对形态，覆盖选区数组外层循环）；
+// - 断言：段数/段坐标与独立朴素参考实现（逐 position 扫描 y 跳变，与被测
+//   二分实现相互独立）完全一致；段 y 严格递增；宽高全为正；每段右缘
+//   x+w ≤ 内容区右缘 + 1 个中文字符宽（容差原因见对拍函数注释）；
+// - 关闭换行：同一列选区恢复为每逻辑行单段、行内精确宽度（NoWrap 零回归）。
+void TestEditorIntegration::tc008b_wordWrap_cjkLongWordMultilineSegments()
+{
+    Bench b;
+    // 行长按 520px 等宽视口（Consolas 11pt：ASCII ≈8px、CJK 全角 ≈15px）
+    // 预留充分余量保证折 ≥2 可视行（下方前置校验兜底诊断）
+    const QString cjkLine1 = QStringLiteral("春眠不觉晓，处处闻啼鸟。").repeated(5); // 60 字
+    const QString cjkLine2 = QStringLiteral("海内存知己，天涯若比邻。").repeated(5); // 60 字
+    const QString longWord = QStringLiteral("supercalifragilistic").repeated(14);     // 280 字符
+    const QString cjkTail = QStringLiteral("行到水穷处，坐看云起时。").repeated(5);  // 60 字（尾行）
+    const int nl0 = cjkLine1.size();            // 行 1 的 '\n' 位置
+    const int l1Start = nl0 + 1;                // 行 2 起始
+    const int nl1 = l1Start + cjkLine2.size();  // 行 2 的 '\n' 位置
+    const int l2Start = nl1 + 1;                // 行 3（超长词）起始
+    const int nl2 = l2Start + longWord.size();  // 行 3 的 '\n' 位置
+    const int l3Start = nl2 + 1;                // 尾行起始
+    QVERIFY2(b.open(cjkLine1 + QLatin1Char('\n') + cjkLine2 + QLatin1Char('\n')
+                        + longWord + QLatin1Char('\n') + cjkTail),
+             "testbench open failed");
+
+    // 与 tc008 相同：显式驱动 wrapMode，与用户 SessionManager 配置解耦
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+    b.editor->setProperty("wrapMode", 4); // WrapAtWordBoundaryOrAnywhere
+    b.settle();
+    QCOMPARE(b.editor->property("wrapMode").toInt(), 4);
+
+    // 前置校验：4 条逻辑行均折为 ≥2 可视行（失败即 wrap 切换未收窄编辑器
+    // 宽度——同 tc008 记录的 ScrollView 宽度只增不减缺陷）
+    const int lineStarts[4] = { 0, l1Start, l2Start, l3Start };
+    const int lineEnds[4] = { nl0, nl1, nl2, l3Start + int(cjkTail.size()) };
+    for (int li = 0; li < 4; ++li) {
+        int visualLines = 1;
+        for (int p = lineStarts[li] + 1; p <= lineEnds[li]; ++p) {
+            if (b.rectOf(p).y() != b.rectOf(p - 1).y())
+                ++visualLines;
+        }
+        QVERIFY2(visualLines >= 2,
+                 qPrintable(QStringLiteral("logical line %1 wraps into %2 visual "
+                                           "lines, need >= 2")
+                                .arg(li).arg(visualLines)));
+    }
+
+    // ---- 形态 ①：跨 2 个 '\n' 的单对选区（外层逻辑行拆分 + 行内可视行拆段） ----
+    b.setCursorPosition(0);
+    b.settle();
+    b.key(Qt::Key_D, Qt::ControlModifier); // 选词「春眠不觉晓」（标点前截断）→ [0,5)
+    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("0:5"));
+    b.key(Qt::Key_Down, Qt::ShiftModifier); // 游标 → 行 2 列 5（keepAnchor 扩展）
+    b.key(Qt::Key_Down, Qt::ShiftModifier); // 游标 → 行 3 列 5：选区跨 nl0/nl1 两个 '\n'
+    const int phase1End = l2Start + 5;
+    QCOMPARE(b.selectionPairs(),
+             QStringList() << QStringLiteral("0:%1").arg(phase1End));
+    QVERIFY(b.mc->active());
+    // 行 1/行 2 各为完整逻辑行块（各 ≥2 可视行）+ 行 3 词首 5 字符（单可视行）
+    QVERIFY2(b.segmentCount() >= 5,
+             qPrintable(QStringLiteral("phase1 expected >= 5 segments, got %1")
+                            .arg(b.segmentCount())));
+    checkSegmentsAgainstReference(b, QStringLiteral("phase1-crossNewline"));
+
+    // ---- 形态 ②：超长 ASCII 单词整词选区（断点全为词内强制断行 → toEdge 兜底） ----
+    b.key(Qt::Key_Escape);
+    b.setCursorPosition(l2Start + 10); // 词内部
+    b.settle();
+    b.key(Qt::Key_D, Qt::ControlModifier); // 整词 [l2Start, nl2)
+    QCOMPARE(b.selectionPairs(),
+             QStringList() << QStringLiteral("%1:%2").arg(l2Start).arg(nl2));
+    QVERIFY2(b.segmentCount() >= 3,
+             qPrintable(QStringLiteral("phase2 long word should force-break into "
+                                       ">= 3 visual lines, got %1")
+                            .arg(b.segmentCount())));
+    checkSegmentsAgainstReference(b, QStringLiteral("phase2-longWord"));
+
+    // ---- 形态 ③：跨 3 行列选（多选区对形态：ranges 外层循环 + 每行内拆段） ----
+    b.key(Qt::Key_Escape);
+    b.mc->columnDragBegin(0, l2Start + 55); // 列区间 [0,55)，覆盖行 1~3
+    b.mc->columnDragEnd();
+    b.settle();
+    QVERIFY(b.mc->active());
+    QCOMPARE(b.selectionPairs(),
+             QStringList() << QStringLiteral("0:55")
+                           << QStringLiteral("%1:%2").arg(l1Start).arg(l1Start + 55)
+                           << QStringLiteral("%1:%2").arg(l2Start).arg(l2Start + 55));
+    QVERIFY2(b.segmentCount() >= 5,
+             qPrintable(QStringLiteral("phase3 expected >= 5 segments, got %1")
+                            .arg(b.segmentCount())));
+    checkSegmentsAgainstReference(b, QStringLiteral("phase3-columnPairs"));
+
+    // ---- 关闭换行：同一列选区恢复按逻辑行单段（NoWrap 零回归） ----
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+    QCOMPARE(b.editor->property("wrapMode").toInt(), 0);
+    // 选区不变（文档坐标）；每对单逻辑行 = 单可视行 = 单段，宽度为行内精确
+    // 值（无 toEdge 兜底——兜底若在 NoWrap 下误生效会在此暴露）
+    const QVariantList flat = b.layer->property("selectionSegments").toList();
+    QCOMPARE(flat.size(), 3);
+    const int selStarts[3] = { 0, l1Start, l2Start };
+    qreal prevY = -1;
+    for (int i = 0; i < 3; ++i) {
+        const QVariantMap seg = flat.at(i).toMap();
+        const qreal x = seg.value("x").toDouble();
+        const qreal y = seg.value("y").toDouble();
+        const qreal w = seg.value("w").toDouble();
+        const int selStart = selStarts[i];
+        const qreal expectedW = b.rectOf(selStart + 55).x() - b.rectOf(selStart).x();
+        QVERIFY2(w > 0,
+                 qPrintable(QStringLiteral("no-wrap segment %1 width %2 must be positive")
+                                .arg(i).arg(w)));
+        QVERIFY2(qAbs(y - b.rectOf(selStart).y()) < 0.01,
+                 qPrintable(QStringLiteral("no-wrap segment %1 y %2 != logical line y %3")
+                                .arg(i).arg(y).arg(b.rectOf(selStart).y())));
+        QVERIFY2(y > prevY,
+                 qPrintable(QStringLiteral("no-wrap segment %1 y %2 must strictly "
+                                           "increase across logical lines (prev %3)")
+                                .arg(i).arg(y).arg(prevY)));
+        QVERIFY2(qAbs(x - b.rectOf(selStart).x()) < 0.01,
+                 qPrintable(QStringLiteral("no-wrap segment %1 x %2 != line start x %3")
+                                .arg(i).arg(x).arg(b.rectOf(selStart).x())));
+        QVERIFY2(qAbs(w - expectedW) < 0.01,
+                 qPrintable(QStringLiteral("no-wrap segment %1 width %2 != inline "
+                                           "exact %3 (toEdge must not apply)")
+                                .arg(i).arg(w).arg(expectedW)));
+        prevY = y;
+    }
+}
+
 int main(int argc, char *argv[])
 {
     // GUI 红线：自动化验证一律 offscreen，禁止可见窗口
     qputenv("QT_QPA_PLATFORM", "offscreen");
+    // 副作用隔离：EditorArea.qml 引用 SessionManager（QML 单例），加载该组件
+    // 会实例化 SessionManager，newDocument 等操作经防抖落盘到用户目录的
+    // 真实 qcnote.ini，导致测试运行清空开发机 [documents] 节。在任何
+    // QML 引擎/组件加载之前，把 UserScope ini 重定向到测试临时目录
+    // （QTemporaryDir 为 main 局部变量，生命周期覆盖整个测试运行）。
+    // 便携模式检测依赖 exe 旁 qcnote.portable 标记，测试环境无此标记，不受影响。
+    QTemporaryDir settingsDir;
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                       settingsDir.path());
     // offscreen 平台字体数据库需显式字体目录（Qt 不再自带字体），
     // 指向 Windows 系统字体，保证文本布局（positionToRectangle）有效
     static const char kWinFonts[] = "C:/Windows/Fonts";

@@ -147,6 +147,15 @@ Rectangle {
                 checked: AppTheme.dark
                 onTriggered: AppTheme.dark = !AppTheme.dark
             }
+
+            // 自动换行：全局编辑器设置（SessionManager 跨会话持久化），
+            // 与工具栏右侧切换按钮共用同一数据源，两处状态始终一致
+            MenuItem {
+                text: "自动换行"
+                checkable: true
+                checked: SessionManager.wordWrap
+                onTriggered: SessionManager.wordWrap = !SessionManager.wordWrap
+            }
         }
 
         MenuSeparator {}
