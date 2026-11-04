@@ -95,6 +95,21 @@ QQuickItem *findItem(QQuickItem *root, const char *needle)
     return found;
 }
 
+// ScrollView.contentItem 取内部 Flickable（EditorArea 的 scrollCursorIntoView
+// 依赖同一路径）：非空且类名含 Flickable 时返回，否则 nullptr（调用方
+// QVERIFY2 诊断实际类名）
+QQuickItem *contentFlickable(QQuickItem *scroll)
+{
+    if (!scroll)
+        return nullptr;
+    QQuickItem *flick = scroll->property("contentItem").value<QQuickItem *>();
+    if (!flick)
+        return nullptr;
+    if (!classNameMatches(flick, "Flickable"))
+        return nullptr;
+    return flick;
+}
+
 /**
  * @brief 每个测试用例独立的测试台：真实 EditorArea + 一份新文档。
  *
@@ -540,6 +555,14 @@ private slots:
     // 行跨 '\n' 选区的拆段回归（补齐 tc008 空白断点未覆盖的 toEdge 兜底分支
     // 与按逻辑行外层拆分组合，含段右缘上界断言）
     void tc008b_wordWrap_cjkLongWordMultilineSegments();
+
+    // ---- 滚动边界反弹（需求：编辑器滚动边界反弹） ----
+
+    // TC-004（可自动化部分）：编辑器 ScrollView（id: editorScroll）内部
+    // Flickable 的 boundsBehavior == Flickable.StopAtBounds（0）；
+    // Binding 按 delegate 实例化（多文档各自生效），且 wrapMode 切换
+    // （onWrapModeChanged 读写 contentItem 的既有链路）后仍保持
+    void tcSB004_scrollBounds_stopAtBounds();
 
 private:
     // tc008b 对拍断言：selectionSegments 与朴素参考实现逐段一致
@@ -1407,6 +1430,83 @@ void TestEditorIntegration::tc008b_wordWrap_cjkLongWordMultilineSegments()
                                            "exact %3 (toEdge must not apply)")
                                 .arg(i).arg(w).arg(expectedW)));
         prevY = y;
+    }
+}
+
+// ==================== 滚动边界反弹（需求：编辑器滚动边界反弹） ====================
+//
+// TC-004 可自动化部分：offscreen 下断言活动编辑器 ScrollView（id:
+// editorScroll）的 contentItem（即内部 Flickable，类名 QQuickFlickable）
+// boundsBehavior == Flickable.StopAtBounds（枚举数值 0；默认
+// DragAndOvershootBounds 为 3，是滚轮到边界过冲回弹的根源）。
+// 修复方式为 EditorArea.qml 中对 contentItem 挂 Binding——若 Binding 的
+// 目标/属性写错，QML 会输出告警且属性保持默认 3，本用例两侧任一都会
+// FAIL（QtTest 将未忽略的 qWarning 直接判 FAIL，同时覆盖用例"无 QML
+// 告警"的预期）。TC-001/002/003 的边界回弹动画为视觉/手感行为，
+// offscreen 无法断言，人工待验（见测试报告）。
+
+// TC-004：内部 Flickable boundsBehavior == StopAtBounds（0）；Binding 按
+// delegate 实例化（多文档各自生效）；wrapMode 切换（onWrapModeChanged 读写
+// contentItem 的 contentWidth 与 Qt.callLater(scrollCursorIntoView) 写
+// contentY/contentX 的既有链路）后仍保持，即修复不干扰既有滚动行为
+// （兼作 TC-005"换行切换后光标可见"链路的不回归验证）
+void TestEditorIntegration::tcSB004_scrollBounds_stopAtBounds()
+{
+    // 长文本：内容远高于视口，保证 ScrollView 内部 Flickable 处于可滚动的
+    // 真实状态（而非内容不足时的高度钳制路径）
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    // 收集可视树中全部编辑器 ScrollView（Bench 只实例化 EditorArea，
+    // 不含 DocumentTabs 等其他组件，单文档时应恰一个）
+    const auto collectScrollViews = [&b](QList<QQuickItem *> &out) {
+        out.clear();
+        visitItems(b.root, [&](QQuickItem *it) {
+            if (classNameMatches(it, "ScrollView"))
+                out.append(it);
+        });
+    };
+    QList<QQuickItem *> scrolls;
+    collectScrollViews(scrolls);
+    QVERIFY2(scrolls.size() == 1,
+             qPrintable(QStringLiteral("expected 1 editor ScrollView, got %1")
+                            .arg(scrolls.size())));
+
+    QQuickItem *flick = contentFlickable(scrolls.at(0));
+    QVERIFY2(flick != nullptr,
+             "ScrollView.contentItem is not a Flickable (or is null)");
+    const QVariant behavior = flick->property("boundsBehavior");
+    QVERIFY(behavior.isValid());
+    QCOMPARE(behavior.toInt(), 0); // Flickable::StopAtBounds
+
+    // wrapMode 切换链路（与 tc008 相同显式驱动，与用户配置解耦）：
+    // NoWrap → Wrap → NoWrap 后 Binding 仍生效
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+    b.editor->setProperty("wrapMode", 4);
+    b.settle();
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+    QCOMPARE(flick->property("boundsBehavior").toInt(), 0);
+
+    // 多文档：Repeater 为第二文档新建 delegate，Binding 逐实例生效
+    //（若 Binding 只在首个 delegate 或 contentItem 上一次性挂载，此处会暴露）
+    b.manager()->newDocument();
+    b.settle();
+    collectScrollViews(scrolls);
+    QVERIFY2(scrolls.size() == 2,
+             qPrintable(QStringLiteral("expected 2 editor ScrollViews, got %1")
+                            .arg(scrolls.size())));
+    for (int i = 0; i < scrolls.size(); ++i) {
+        QQuickItem *f = contentFlickable(scrolls.at(i));
+        QVERIFY2(f != nullptr,
+                 qPrintable(QStringLiteral("ScrollView %1 contentItem is not "
+                                           "a Flickable (or is null)")
+                                .arg(i)));
+        QCOMPARE(f->property("boundsBehavior").toInt(), 0);
     }
 }
 

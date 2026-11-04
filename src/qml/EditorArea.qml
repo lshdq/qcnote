@@ -90,6 +90,19 @@ Item {
                 id: editorScroll
                 anchors.fill: parent
 
+                // 滚轮到顶/底（及 NoWrap 长行水平到左/右）不做过冲回弹：
+                // ScrollView 内部 Flickable 默认 DragAndOvershootBounds，滚轮越过
+                // 边界会过冲再回弹；桌面编辑器应停在边界（与 DocumentTabs 标签栏
+                // 的 boundsBehavior: Flickable.StopAtBounds 同款修复）。内部
+                // Flickable 只能经 contentItem 访问（见下方 scrollCursorIntoView
+                // 注释，Qt 6.11.2 实测其为 Flickable）；用 Binding 而非一次性
+                // 赋值，contentItem 变化时自动重挂
+                Binding {
+                    target: editorScroll.contentItem
+                    property: "boundsBehavior"
+                    value: Flickable.StopAtBounds
+                }
+
                 TextArea {
                     id: editor
 
