@@ -117,3 +117,29 @@ add_test(NAME test_encodingmenu COMMAND test_encodingmenu)
 set_tests_properties(test_encodingmenu PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# 查找替换菜单入口 QML 集成测试目标（offscreen，架构同上：单 main）：
+# 按标题定位 文件/搜索/视图 子菜单与查找对话框，对菜单项直发 triggered()
+# 驱动 TitleBar → Main → SearchDialog/SearchController 信号链，断言主菜单
+# 重组结构、搜索四项置灰条件、查找…/替换…入口（预填/焦点/高亮）、
+# 下一个/上一个关闭态跳转（环绕、不恢复高亮）与无匹配无操作，附文件/
+# 编码/视图/退出代表性回归（《测试用例-查找替换菜单入口》TC-001 至
+# TC-006、TC-008 的可自动化部分）。
+qt_add_executable(test_searchmenu
+    tst_searchmenu.cpp
+)
+
+target_link_libraries(test_searchmenu PRIVATE
+    Qt6::Test
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(test_searchmenu)
+
+add_test(NAME test_searchmenu COMMAND test_searchmenu)
+# GUI 红线：自动化验证一律 offscreen，无可见窗口
+set_tests_properties(test_searchmenu PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)

@@ -11,7 +11,9 @@ import QtQuick.Layouts
  * - 空白区拖拽移动窗口（阈值触发 startSystemMove，保证双击仍可最大化/还原）、
  *   双击最大化/还原；最大化时拖拽先还原窗口（标题栏吸附光标下）再继续系统拖拽；
  * - 菜单项快捷键通过自绘右对齐文本显示（Qt Quick Controls 2 的 MenuItem
- *   无 shortcut 属性，按键由窗口级 Shortcut 统一处理）。
+ *   无 shortcut 属性，按键由窗口级 Shortcut 统一处理）；
+ * - 主菜单分组：文件（含编码三级级联子菜单）→ 搜索（查找/替换/上一个/
+ *   下一个，仅转发既有动作）→ 视图 → 退出。
  */
 Rectangle {
     id: root
@@ -28,6 +30,37 @@ Rectangle {
     signal requestReloadWithEncoding(int encoding)
     /// 按指定编码保存（编码转换；参数为 Document.Encoding 枚举值）
     signal requestSaveWithEncoding(int encoding)
+    /// 打开查找对话框（同 Ctrl+F）
+    signal requestFind()
+    /// 打开替换对话框（同 Ctrl+H）
+    signal requestReplace()
+    /// 跳转下一个匹配（对话框关闭态 F3 语义）
+    signal requestFindNext()
+    /// 跳转上一个匹配（对话框关闭态 Shift+F3 语义）
+    signal requestFindPrev()
+
+    /// 自绘右对齐快捷键文本的菜单项：Qt Quick Controls 2 的 MenuItem 无
+    /// shortcut 属性，按键由窗口级 Shortcut 统一处理，这里仅显示文本。
+    /// 提升至根作用域，供主菜单与各子菜单复用。
+    component KeyMenuItem: MenuItem {
+        id: keyItem
+        property string keyText: ""
+        contentItem: RowLayout {
+            spacing: 12
+            Label {
+                text: keyItem.text
+                font: keyItem.font
+                color: keyItem.enabled ? AppTheme.textPrimary : AppTheme.textDisabled
+            }
+            Item { Layout.fillWidth: true }
+            Label {
+                visible: keyItem.keyText !== ""
+                text: keyItem.keyText
+                font: keyItem.font
+                color: AppTheme.textSecondary
+            }
+        }
+    }
 
     readonly property int barHeight: 40
 
@@ -90,98 +123,121 @@ Rectangle {
         id: mainMenu
         title: "主菜单"
 
-        component KeyMenuItem: MenuItem {
-            id: keyItem
-            property string keyText: ""
-            contentItem: RowLayout {
-                spacing: 12
-                Label {
-                    text: keyItem.text
-                    font: keyItem.font
-                    color: keyItem.enabled ? AppTheme.textPrimary : AppTheme.textDisabled
-                }
-                Item { Layout.fillWidth: true }
-                Label {
-                    visible: keyItem.keyText !== ""
-                    text: keyItem.keyText
-                    font: keyItem.font
-                    color: AppTheme.textSecondary
-                }
-            }
-        }
+        // 主菜单分组结构：文件（含编码子菜单）→ 搜索 → 视图 → 退出。
+        // 各子菜单条目仅转发既有动作，快捷键仍由 Main.qml 窗口级 Shortcut 统一处理。
 
-        KeyMenuItem {
-            text: "新建"
-            keyText: "Ctrl+N"
-            onTriggered: root.requestNew()
-        }
-        KeyMenuItem {
-            text: "打开…"
-            keyText: "Ctrl+O"
-            onTriggered: root.requestOpen()
-        }
-        KeyMenuItem {
-            text: "保存"
-            keyText: "Ctrl+S"
-            enabled: DocumentManager.activeDocument !== null
-            onTriggered: root.requestSave()
-        }
-        KeyMenuItem {
-            text: "另存为…"
-            keyText: "Ctrl+Shift+S"
-            enabled: DocumentManager.activeDocument !== null
-            onTriggered: root.requestSaveAs()
-        }
-        KeyMenuItem {
-            text: "关闭标签页"
-            keyText: "Ctrl+W"
-            enabled: DocumentManager.activeDocument !== null
-            onTriggered: root.requestCloseTab(DocumentManager.activeDocument)
-        }
-
-        // 编码子菜单（GBK 与 UTF-8 编码支持）：与文件操作同组（MenuSeparator
-        // 之前）。「通过编码重新加载」对未命名文档（无磁盘内容可重载）整组
-        // 禁用（TC-017）；「通过编码保存」为一步完成编码转换（DEC-005），
-        // 当前文档编码对应项打勾，未命名文档由 Main 转既有另存为流程。
         Menu {
-            id: encodingMenu
-            title: "编码"
+            id: fileMenu
+            title: "文件"
 
-            Menu {
-                id: reloadEncodingMenu
-                title: "通过编码重新加载"
+            KeyMenuItem {
+                text: "新建"
+                keyText: "Ctrl+N"
+                onTriggered: root.requestNew()
+            }
+            KeyMenuItem {
+                text: "打开…"
+                keyText: "Ctrl+O"
+                onTriggered: root.requestOpen()
+            }
+            KeyMenuItem {
+                text: "保存"
+                keyText: "Ctrl+S"
                 enabled: DocumentManager.activeDocument !== null
-                         && DocumentManager.activeDocument.url.toString().length > 0
-
-                MenuItem {
-                    text: "UTF-8"
-                    onTriggered: root.requestReloadWithEncoding(Document.Encoding.Utf8)
-                }
-                MenuItem {
-                    text: "GBK"
-                    onTriggered: root.requestReloadWithEncoding(Document.Encoding.Gbk)
-                }
+                onTriggered: root.requestSave()
+            }
+            KeyMenuItem {
+                text: "另存为…"
+                keyText: "Ctrl+Shift+S"
+                enabled: DocumentManager.activeDocument !== null
+                onTriggered: root.requestSaveAs()
+            }
+            KeyMenuItem {
+                text: "关闭标签页"
+                keyText: "Ctrl+W"
+                enabled: DocumentManager.activeDocument !== null
+                onTriggered: root.requestCloseTab(DocumentManager.activeDocument)
             }
 
+            // 编码子菜单（GBK 与 UTF-8 编码支持）：与文件操作同组。
+            // 「通过编码重新加载」对未命名文档（无磁盘内容可重载）整组
+            // 禁用（TC-017）；「通过编码保存」为一步完成编码转换（DEC-005），
+            // 当前文档编码对应项打勾，未命名文档由 Main 转既有另存为流程。
             Menu {
-                id: saveEncodingMenu
-                title: "通过编码保存"
-                enabled: DocumentManager.activeDocument !== null
+                id: encodingMenu
+                title: "编码"
 
-                MenuItem {
-                    text: "UTF-8"
-                    checkable: true
-                    checked: DocumentManager.activeDocument
-                             && DocumentManager.activeDocument.encoding === Document.Encoding.Utf8
-                    onTriggered: root.requestSaveWithEncoding(Document.Encoding.Utf8)
+                Menu {
+                    id: reloadEncodingMenu
+                    title: "通过编码重新加载"
+                    enabled: DocumentManager.activeDocument !== null
+                             && DocumentManager.activeDocument.url.toString().length > 0
+
+                    MenuItem {
+                        text: "UTF-8"
+                        onTriggered: root.requestReloadWithEncoding(Document.Encoding.Utf8)
+                    }
+                    MenuItem {
+                        text: "GBK"
+                        onTriggered: root.requestReloadWithEncoding(Document.Encoding.Gbk)
+                    }
                 }
-                MenuItem {
-                    text: "GBK"
-                    checkable: true
-                    checked: DocumentManager.activeDocument
-                             && DocumentManager.activeDocument.encoding === Document.Encoding.Gbk
-                    onTriggered: root.requestSaveWithEncoding(Document.Encoding.Gbk)
+
+                Menu {
+                    id: saveEncodingMenu
+                    title: "通过编码保存"
+                    enabled: DocumentManager.activeDocument !== null
+
+                    MenuItem {
+                        text: "UTF-8"
+                        checkable: true
+                        checked: DocumentManager.activeDocument
+                                 && DocumentManager.activeDocument.encoding === Document.Encoding.Utf8
+                        onTriggered: root.requestSaveWithEncoding(Document.Encoding.Utf8)
+                    }
+                    MenuItem {
+                        text: "GBK"
+                        checkable: true
+                        checked: DocumentManager.activeDocument
+                                 && DocumentManager.activeDocument.encoding === Document.Encoding.Gbk
+                        onTriggered: root.requestSaveWithEncoding(Document.Encoding.Gbk)
+                    }
                 }
+            }
+        }
+
+        // 搜索子菜单：仅转发既有动作，快捷键仍由 Main.qml 窗口级 Shortcut
+        // 统一处理（不新增按键绑定）。「下一个/上一个」为对话框关闭态 F3
+        // 语义：沿用上次查找参数与控制器保留的匹配状态，不恢复全部高亮，
+        // 无匹配时无操作。查找对话框为模态、打开期间菜单不可达，故无需
+        // 处理对话框打开分支。四项均要求有活动文档，欢迎页时置灰。
+        Menu {
+            id: searchMenu
+            title: "搜索"
+
+            KeyMenuItem {
+                text: "查找…"
+                keyText: "Ctrl+F"
+                enabled: DocumentManager.activeDocument !== null
+                onTriggered: root.requestFind()
+            }
+            KeyMenuItem {
+                text: "替换…"
+                keyText: "Ctrl+H"
+                enabled: DocumentManager.activeDocument !== null
+                onTriggered: root.requestReplace()
+            }
+            KeyMenuItem {
+                text: "下一个"
+                keyText: "F3"
+                enabled: DocumentManager.activeDocument !== null
+                onTriggered: root.requestFindNext()
+            }
+            KeyMenuItem {
+                text: "上一个"
+                keyText: "Shift+F3"
+                enabled: DocumentManager.activeDocument !== null
+                onTriggered: root.requestFindPrev()
             }
         }
 
@@ -189,7 +245,7 @@ Rectangle {
 
         Menu {
             id: viewMenu
-            title: "查看"
+            title: "视图"
 
             MenuItem {
                 text: "深色主题"

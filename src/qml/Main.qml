@@ -408,6 +408,10 @@ ApplicationWindow {
             onRequestQuit: root.doQuit()
             onRequestReloadWithEncoding: (encoding) => root.doReloadWithEncoding(encoding)
             onRequestSaveWithEncoding: (encoding) => root.doSaveWithEncoding(encoding)
+            onRequestFind: root.doFind()
+            onRequestReplace: root.doReplace()
+            onRequestFindNext: root.searchJumpGlobal(true)
+            onRequestFindPrev: root.searchJumpGlobal(false)
         }
 
         Toolbar {
