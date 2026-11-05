@@ -69,11 +69,15 @@ set_tests_properties(test_startupargs PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
-# 对话框居中与按钮 Windows 化 QML 集成测试目标（offscreen，架构同上：
-# 单 main）：按标题定位 Main.qml 三个对话框，断言居中（resize 跟随）、
-# closePolicy 仅 Esc、footer WinLayout/右对齐/按钮命名与 primary、
-# 正文文案与错误框排队链路（《测试用例-对话框居中与按钮Windows化》
-# TC-001/002/004/005/006/007/008 的可自动化部分）。
+# 对话框样式与弹窗拖动 QML 集成测试目标（offscreen，架构同上：
+# 单 main）：按 QML 类型短名 MovableDialog + dialogTitle 属性定位
+# Main.qml 四个对话框，断言默认位置居中（未拖动 resize 跟随）、
+# header 把手合成鼠标拖动精确位移、四方向超界 clamp（把手不丢失）、
+# 关闭重开复位、拖动后窗口 resize 重新 clamp、SearchDialog 拖动后
+# 功能正常，以及 closePolicy 仅 Esc、footer WinLayout/右对齐/按钮
+# 命名与 primary、正文文案与错误框排队链路（《测试用例-对话框居中与
+# 按钮Windows化》TC-001/002/004/005/006/007/008 与《测试用例-弹窗
+# 拖动》TC-002/003/004/006/009 的可自动化部分）。
 qt_add_executable(test_dialogstyle
     tst_dialogstyle.cpp
 )

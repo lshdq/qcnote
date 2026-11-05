@@ -207,7 +207,8 @@ struct Bench
     DocumentManager *dm = nullptr;    // QML 单例的同一 C++ 实例
     QQuickItem *titleBar = nullptr;   // TitleBar 实例
     QObject *unsavedDlg = nullptr;    // unsavedDialog（标题"未保存的修改"）
-    QObject *errDlg = nullptr;        // errorDialog
+    QObject *errDlg = nullptr;        // errorDialog（Main.qml 四对话框经
+                                      // MovableDialog 接入，按 dialogTitle 定位）
     QObject *mainMenu = nullptr;      // TitleBar.mainMenu（TitleBar 内首个 Menu）
 
     Bench()
@@ -242,16 +243,16 @@ Main {}
             dm->closeDocument(d);
 
         QList<QObject *> dialogs;
-        collectByQmlType(win, "Dialog", &dialogs);
+        collectByQmlType(win, "MovableDialog", &dialogs);
         for (QObject *d : dialogs) {
-            const QString t = d->property("title").toString();
+            const QString t = d->property("dialogTitle").toString();
             if (t == QStringLiteral("未保存的修改"))
                 unsavedDlg = d;
             else if (t == QStringLiteral("添加右键菜单")
                      || t == QStringLiteral("按编码重新加载"))
                 continue; // 非错误对话框（场景 c 只需任一模态 uiLocked 源）
             else
-                errDlg = d; // errorDialog（title 绑定 currentError，未打开为空）
+                errDlg = d; // errorDialog（dialogTitle 绑定 currentError，未打开为空）
         }
         titleBar = findItemByQmlType(win->contentItem(), "TitleBar");
         // TitleBar 内首个 Menu 为 mainMenu（声明在 viewMenu 之前），

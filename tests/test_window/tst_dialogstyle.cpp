@@ -1,11 +1,17 @@
-// 对话框居中与按钮 Windows 化 QML 集成测试（测试用例文档
-// 《测试用例-对话框居中与按钮Windows化》TC-001/002/004/005/006/007/008
-// 的可自动化部分）。
+// 对话框样式与弹窗拖动 QML 集成测试（覆盖两份测试用例文档的可自动化
+// 部分：《测试用例-对话框居中与按钮Windows化》TC-001/002/004/005/006/
+// 007/008，弹窗拖动需求引入的《测试用例-弹窗拖动》TC-002/003/004/006/
+// 008/009）。
 //
-// 测试方式：offscreen 平台下实例化完整 Main.qml，按标题定位四个对话框
-// （unsavedDialog / errorDialog / ctxMenuPromptDialog / reloadConfirmDialog），
-// 断言：
-// - 居中：anchors.centerIn 生效，x/y 与窗口中心差 ≤1px，resize 后跟随；
+// 测试方式：offscreen 平台下实例化完整 Main.qml，按 QML 类型短名
+// MovableDialog + dialogTitle 属性定位四个对话框（unsavedDialog /
+// errorDialog / ctxMenuPromptDialog / reloadConfirmDialog），断言：
+// - 默认位置：MovableDialog 的 x/y 绑定居中（与窗口中心差 ≤1px），
+//   未拖动时 resize 后跟随；
+// - 拖动（弹窗拖动需求）：合成鼠标（左键 press → 分步 move → release，
+//   直投窗口走 DragHandler 真实抓取路径）拖 header 把手，x/y 精确位移；
+//   四方向超界拖动被 clamp（把手不丢失）；关闭重开复位默认位置；拖动后
+//   窗口 resize 重新 clamp；SearchDialog 拖动后查找/替换功能正常；
 // - footer：DialogButtonBox 为 WinLayout、右对齐，按钮自左向右为
 //   保存/不保存/取消（unsaved）、确定（error）、添加/不添加（ctxPrompt），
 //   primary 标记正确，「放弃」不再出现；
@@ -15,14 +21,20 @@
 // - 正文文案精确为「是否要将更改保存到 <displayName>？」；
 // - 打开失败真实链路：errorDialog 弹出居中，队列逐个展示。
 //
-// 用例分派：TC-003（三按钮角色接线）由 test_window（tst_windowclose 的
-// TC-005~008 accept/discarded/reject 分支）回归覆盖；TC-009（构建与全量
-// 测试）由 ctest 总体覆盖；TC-010（人工视觉验收）无法 offscreen 覆盖，
-// 见测试报告"未执行"清单。
+// 用例分派：弹窗拖动 TC-001（默认位置）由本文件 tc001 覆盖；TC-005
+// （未拖动 resize 跟随）由 tc001 的 resize 段覆盖；TC-007（模态回归）
+// 由既有 tc004/tc002/tc005 覆盖；TC-008（键盘路径）的 Enter/Esc 分支
+// 由既有 tc005 覆盖、"拖拽把手不进入焦点链"由 drag008 覆盖；TC-010
+// 由 ctest 总体覆盖；
+// TC-011（人工视觉验收）无法 offscreen 覆盖，见测试报告"未执行"清单。
+// 弹窗拖动的 TC-012（skill 文档验证）不属本目标。
 //
-// 对象定位说明：与 tst_windowclose 相同，按 QML 类型短名匹配
-// （"Dialog"、"DialogButton"）；errorDialog 的 title 绑定 currentError，
-// 未打开时为空串，按排除法定位（另两个对话框按固定标题精确匹配）。
+// 对象定位说明：与 tst_windowclose 相同，按 QML 类型短名匹配；Main.qml
+// 四对话框经 MovableDialog（继承 Dialog，自绘 header 把手）接入，实例
+// 类型短名为 "MovableDialog"，标题属性为 dialogTitle（Dialog.title 保持
+// 空）；errorDialog 的 dialogTitle 绑定 currentError，未打开时为空串，
+// 按排除法定位（另三个对话框按固定标题精确匹配）。SearchDialog.qml 根
+// 类型同为 MovableDialog，但实例类型短名仍为文件组件名 "SearchDialog"。
 // ctxMenuPromptDialog 的首启真实链路被 QCNOTE_TEST_SHELL_NOOP 隔离
 // （contextMenuPromptNeeded 恒 false），采用直接 open() 的等价模式。
 //
@@ -35,7 +47,6 @@
 #include <QGuiApplication>
 #include <QList>
 #include <QMetaObject>
-#include <QMouseEvent>
 #include <QObject>
 #include <QQmlComponent>
 #include <QQmlEngine>
@@ -124,9 +135,11 @@ struct Bench
     QQuickWindow *win = nullptr;        // Main.qml 根（ApplicationWindow）
     DocumentManager *dm = nullptr;      // QML 单例的同一 C++ 实例
     QObject *unsavedDlg = nullptr;      // unsavedDialog（标题「未保存的修改」）
-    QObject *errDlg = nullptr;          // errorDialog（title 绑定 currentError，未打开为空）
+    QObject *errDlg = nullptr;          // errorDialog（dialogTitle 绑定 currentError，未打开为空）
     QObject *ctxPromptDlg = nullptr;    // ctxMenuPromptDialog（标题「添加右键菜单」）
     QObject *reloadDlg = nullptr;       // reloadConfirmDialog（标题「按编码重新加载」）
+    QObject *searchDlg = nullptr;       // SearchDialog（DEC-002 顶部对齐，drag009 用）
+    QQuickItem *editorArea = nullptr;   // EditorArea（查找控制器持有者，drag009 用）
 
     Bench()
     {
@@ -157,11 +170,12 @@ Main {}
         for (Document *d : docs)
             dm->closeDocument(d);
 
-        // 四个对话框按标题定位；errorDialog 未打开时 title 为空串走排除法
+        // 四个对话框按 QML 类型短名 MovableDialog + dialogTitle 属性定位；
+        // errorDialog 未打开时 dialogTitle 为空串走排除法
         QList<QObject *> dialogs;
-        collectByQmlType(win, "Dialog", &dialogs);
+        collectByQmlType(win, "MovableDialog", &dialogs);
         for (QObject *d : dialogs) {
-            const QString t = d->property("title").toString();
+            const QString t = d->property("dialogTitle").toString();
             if (t == QStringLiteral("未保存的修改"))
                 unsavedDlg = d;
             else if (t == QStringLiteral("添加右键菜单"))
@@ -177,6 +191,19 @@ Main {}
                        << "err:" << (errDlg != nullptr)
                        << "ctxPrompt:" << (ctxPromptDlg != nullptr)
                        << "reload:" << (reloadDlg != nullptr);
+            return false;
+        }
+
+        // SearchDialog（独立文件组件，类型短名 "SearchDialog"）与 EditorArea
+        QList<QObject *> sd;
+        collectByQmlType(win, "SearchDialog", &sd);
+        searchDlg = sd.isEmpty() ? nullptr : sd.first();
+        QList<QObject *> ea;
+        collectByQmlType(win, "EditorArea", &ea);
+        editorArea = ea.isEmpty() ? nullptr : qobject_cast<QQuickItem *>(ea.first());
+        if (!searchDlg || !editorArea) {
+            qWarning() << "[bench] missing:" << (!searchDlg ? "searchDlg" : "")
+                       << (!editorArea ? "editorArea" : "");
             return false;
         }
         return true;
@@ -260,18 +287,52 @@ bool isCentered(QQuickWindow *win, QObject *dlg, QString *why = nullptr)
     return true;
 }
 
-// 合成鼠标点击窗口内对话框外部坐标（press + release 直投窗口，
+// 合成鼠标点击窗口内对话框外部坐标（QTest::mouseClick 经
+// QWindowSystemInterface::handleMouseEvent 模拟真实窗口系统投递，
 // 走 QQuickPopup 对遮罩点击的真实派发路径，验证 closePolicy 行为）
 void clickOutside(QQuickWindow *win, qreal x, qreal y)
 {
-    const QPointF local(x, y);
-    const QPointF global = win->mapToGlobal(local.toPoint());
-    QMouseEvent press(QEvent::MouseButtonPress, local, global,
-                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-    QMouseEvent release(QEvent::MouseButtonRelease, local, global,
-                        Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-    QGuiApplication::sendEvent(win, &press);
-    QGuiApplication::sendEvent(win, &release);
+    QTest::mouseClick(win, Qt::LeftButton, Qt::NoModifier, QPoint(qRound(x), qRound(y)));
+}
+
+// ---- 弹窗拖动（《测试用例-弹窗拖动》）辅助 ----
+
+// MovableDialog 自绘 header 把手（Dialog.header 属性，QQuickItem）
+QQuickItem *dialogHeader(QObject *dlg)
+{
+    const QVariant h = dlg->property("header");
+    return h.canConvert<QQuickItem *>() ? h.value<QQuickItem *>() : nullptr;
+}
+
+// header 把手中心的窗口坐标（mapToScene：Popup 内容项以窗口为场景），
+// 钳制在窗口内：弹窗右/下越出窗口的部分不可接收事件，取把手在窗口内
+// 的可见部分（弹窗被 clamp 后把手中心可能位于窗口外）
+QPointF headerGrabPoint(QQuickWindow *win, QObject *dlg)
+{
+    QQuickItem *hdr = dialogHeader(dlg);
+    if (!hdr || hdr->width() <= 0 || hdr->height() <= 0)
+        return QPointF();
+    QPointF c = hdr->mapToScene(QPointF(hdr->width() / 2.0, hdr->height() / 2.0));
+    c.setX(qBound(10.0, c.x(), win->width() - 10.0));
+    c.setY(qBound(10.0, c.y(), win->height() - 10.0));
+    return c;
+}
+
+// 合成鼠标拖动（左键）：press 于 from → 分步 move 至 to → release。
+// 必须经 QTest::mouse*（内部走 QWindowSystemInterface::handleMouseEvent，
+// 模拟窗口系统投递且 mouseMove 携带 mousePress 登记的按键状态）：
+// DragHandler 的 move 送达依赖该路径的点状态跟踪（pressPosition /
+// 抓取簿记），直接 sendEvent 自构 QMouseEvent 无法驱动 move 送达
+void mouseDrag(QQuickWindow *win, const QPointF &from, const QPointF &to, int steps = 8)
+{
+    QTest::mousePress(win, Qt::LeftButton, Qt::NoModifier, from.toPoint());
+    for (int i = 1; i <= steps; ++i) {
+        const QPointF p = from + (to - from) * (i / qreal(steps));
+        QTest::mouseMove(win, p.toPoint());
+        QTest::qWait(10);
+    }
+    QTest::mouseRelease(win, Qt::LeftButton, Qt::NoModifier, to.toPoint());
+    QTest::qWait(10);
 }
 
 } // namespace
@@ -308,6 +369,28 @@ private slots:
     // GBK 编码支持 TC-018 关联：按编码重载确认框的样式惯例
     // （居中、WinLayout、按钮 重新加载(primary)/取消）与正文文案
     void tc010_reloadConfirm_layoutText();
+
+    // ---- 弹窗拖动（《测试用例-弹窗拖动》可自动化部分）----
+
+    // TC-002: header 把手合成鼠标拖动 → x/y 精确位移（±1px）
+    void drag002_headerDrag_movesDialog();
+
+    // TC-003: 四方向超界拖动被 clamp（把手不丢失，不等式成立）
+    void drag003_clampFourDirections();
+
+    // TC-004: 拖离默认位置后关闭重开 → 复位默认位置（居中）
+    void drag004_reopen_resetsPosition();
+
+    // TC-006: 拖到边界后窗口 resize → 重新 clamp（不等式仍成立）
+    void drag006_resizeAfterDrag_reclamps();
+
+    // TC-008: 拖拽把手不进入焦点链：Tab/Shift+Tab 遍历中 header 始终
+    //         不持有焦点，模态焦点不逃逸出弹窗
+    void drag008_focusChain_handleNotInTabChain();
+
+    // TC-009: SearchDialog 拖动后查找/替换功能正常（输入实时查找、Enter
+    //         跳转、Esc 关闭、重开复位 y=96）
+    void drag009_searchDialog_afterDrag();
 };
 
 // TC-001: 有未保存修改触发关闭 → 确认框弹出且居中；窗口 resize 后保持居中。
@@ -325,7 +408,7 @@ void TestDialogStyle::tc001_unsavedDialog_centered()
     QTest::qWait(50);
     QVERIFY2(isCentered(b.win, b.unsavedDlg, &why), qPrintable(why));
 
-    // resize 后仍保持居中（anchors.centerIn 跟随窗口尺寸变化）
+    // resize 后仍保持居中（未拖动：x/y 绑定跟随窗口尺寸变化）
     b.win->resize(QSize(1200, 760));
     QTRY_VERIFY2(isCentered(b.win, b.unsavedDlg, &why), qPrintable(why));
 
@@ -425,13 +508,13 @@ void TestDialogStyle::tc005_escCancel()
 
 // TC-005（Enter 部分）: Enter（「保存」按钮持有焦点）→ 保存分支：写盘后
 // 关闭退出。
-// ⚠ 已知缺陷（Qt 源码级根因，详见测试报告）：QQuickAbstractButton 的
-// 键盘激活键来自平台主题 ButtonPressKeys（QPlatformTheme 默认仅
-// Space/Select，QWindowsTheme::themeHint 未覆盖该提示），Enter/Return 不
-// 在激活键内——按钮持有焦点按 Enter 无效果（对照实验：同一焦点下按
-// Space 可正常触发保存写盘退出）。本断言按测试用例 TC-005 预期
-// （Enter=触发保存分支）保留，待主流程修复（如 DialogButton 内显式
-// 处理 Return/Enter 键）后转绿。
+// 历史缺陷（Qt 源码级根因，已修复）：QQuickAbstractButton 的键盘激活键
+// 来自平台主题 ButtonPressKeys（QPlatformTheme 默认仅 Space/Select，
+// QWindowsTheme::themeHint 未覆盖该提示），Enter/Return 不在激活键内——
+// 按钮持有焦点按 Enter 无效果（对照实验：同一焦点下按 Space 可正常触发
+// 保存写盘退出）。已由 DialogButton.qml 组件内显式处理 Return/Enter
+// （触发 click()，补齐 Windows 对话框回车惯例）修复，本用例现为常绿
+// 回归保护。
 void TestDialogStyle::tc005_enterSave()
 {
     Bench b;
@@ -490,7 +573,7 @@ void TestDialogStyle::tc007_errorDialog_centeredOkQueue()
     // 真实链路：openUrls 失败 → openFailed → queueError → 错误框弹出
     b.dm->openUrls({ QUrl::fromLocalFile(a) });
     QTRY_VERIFY(b.errDlg->property("visible").toBool());
-    QCOMPARE(b.errDlg->property("title").toString(), QStringLiteral("打开失败"));
+    QCOMPARE(b.errDlg->property("dialogTitle").toString(), QStringLiteral("打开失败"));
     QVERIFY(dialogText(b.errDlg).contains(a));
 
     // 居中 + footer 单「确定」primary 按钮 + WinLayout
@@ -591,6 +674,318 @@ void TestDialogStyle::tc010_reloadConfirm_layoutText()
     // 正文文案（按触发编码 GBK 呈现）
     QCOMPARE(dialogText(b.reloadDlg),
              QStringLiteral("通过 GBK 重新加载将丢弃未保存的修改"));
+}
+
+// ==================== 弹窗拖动（《测试用例-弹窗拖动》） ====================
+
+// 弹窗拖动 TC-002: 打开未保存确认框，合成鼠标左键拖 header 把手中心
+// 移动 (60, -30) → 弹窗 x/y 精确增加同位移（±1px 容差），拖动不触发
+// 关闭（模态行为不变）。
+void TestDialogStyle::drag002_headerDrag_movesDialog()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    b.newDoc(QStringLiteral("dirty"));
+
+    QVERIFY(!b.win->close());
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+    QTest::qWait(50); // 等布局 polish（header 几何就位）
+
+    const qreal x0 = b.unsavedDlg->property("x").toReal();
+    const qreal y0 = b.unsavedDlg->property("y").toReal();
+    const QPointF start = headerGrabPoint(b.win, b.unsavedDlg);
+    QVERIFY2(!start.isNull(), "header handle not found or not polished");
+
+    const QPointF delta(60, -30); // 普通窗口内位移（不触边界）
+    mouseDrag(b.win, start, start + delta);
+    QTest::qWait(50);
+
+    const qreal x1 = b.unsavedDlg->property("x").toReal();
+    const qreal y1 = b.unsavedDlg->property("y").toReal();
+    QVERIFY2(qAbs(x1 - (x0 + delta.x())) <= 1.0,
+             qPrintable(QString("dx moved %1, expected %2 (x0=%3 x1=%4)")
+                            .arg(x1 - x0).arg(delta.x()).arg(x0).arg(x1)));
+    QVERIFY2(qAbs(y1 - (y0 + delta.y())) <= 1.0,
+             qPrintable(QString("dy moved %1, expected %2 (y0=%3 y1=%4)")
+                            .arg(y1 - y0).arg(delta.y()).arg(y0).arg(y1)));
+    // 拖动不改变模态行为：对话框保持打开
+    QVERIFY(b.unsavedDlg->property("visible").toBool());
+}
+
+// 弹窗拖动 TC-003: 分别向左 / 右 / 上 / 下大幅超界拖动：位置被 clamp
+// 在把手不丢失的范围内。Qt 对 Item 型 Popup 强制 effective x/y ≥ 0
+// （左/上不可越出窗口，MovableDialog.clampX/Y 下界已对齐取 0）；右/下
+// 允许身体部分移出窗口：
+//   x ∈ [0, parent.width - keepWidth]、y ∈ [0, parent.height - headerHeight]
+// （keepWidth = 80）；不等式成立且把手始终在窗口内可抓回。
+void TestDialogStyle::drag003_clampFourDirections()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    b.newDoc(QStringLiteral("dirty"));
+
+    QVERIFY(!b.win->close());
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+    // 几何取确定值：进程内会话文件可能携带此前用例写入的窗口几何
+    //（SessionManager 防抖落盘，Component.onCompleted 会恢复），
+    // 统一复位到默认 1000x640 再断言
+    b.win->resize(QSize(1000, 640));
+    QTest::qWait(50);
+
+    QObject *dlg = b.unsavedDlg;
+    const qreal w = dlg->property("width").toReal(); // 380
+    const int keep = dlg->property("keepWidth").toInt();
+    QCOMPARE(keep, 80);
+    QQuickItem *hdr = dialogHeader(dlg);
+    QVERIFY2(hdr && hdr->height() > 0, "header handle not found");
+    const qreal hdrH = hdr->height();
+
+    const auto x = [dlg]() { return dlg->property("x").toReal(); };
+    const auto y = [dlg]() { return dlg->property("y").toReal(); };
+
+    // 左：x 下限 = 0（Qt 对 Item 型 Popup 的框架级强制，见 MovableDialog
+    // clampX 注释；原设计的 -(width-keepWidth) 负值不可达）
+    QPointF c = headerGrabPoint(b.win, dlg);
+    QVERIFY(!c.isNull());
+    mouseDrag(b.win, c, c + QPointF(-2000, 0));
+    QTest::qWait(30);
+    QVERIFY2(qAbs(x() - 0.0) <= 1.0,
+             qPrintable(QString("left clamp: x=%1 expected 0").arg(x())));
+
+    // 右：x 上限 = parent.width - keepWidth（身体允许部分移出右边界）
+    c = headerGrabPoint(b.win, dlg);
+    mouseDrag(b.win, c, c + QPointF(2000, 0));
+    QTest::qWait(30);
+    QVERIFY2(qAbs(x() - (b.win->width() - keep)) <= 1.0,
+             qPrintable(QString("right clamp: x=%1 expected %2")
+                            .arg(x()).arg(b.win->width() - keep)));
+
+    // 上：y 下限 = 0
+    c = headerGrabPoint(b.win, dlg);
+    mouseDrag(b.win, c, c + QPointF(0, -2000));
+    QTest::qWait(30);
+    QVERIFY2(qAbs(y() - 0.0) <= 1.0,
+             qPrintable(QString("top clamp: y=%1 expected 0").arg(y())));
+
+    // 下：y 上限 = parent.height - headerHeight（身体允许部分移出下边界）
+    c = headerGrabPoint(b.win, dlg);
+    mouseDrag(b.win, c, c + QPointF(0, 2000));
+    QTest::qWait(30);
+    QVERIFY2(qAbs(y() - (b.win->height() - hdrH)) <= 1.0,
+             qPrintable(QString("bottom clamp: y=%1 expected %2 (winH=%3 hdrH=%4)")
+                            .arg(y()).arg(b.win->height() - hdrH)
+                            .arg(b.win->height()).arg(hdrH)));
+
+    // 全部不等式仍成立（把手在窗口内；含测试用例文档 TC-003 的
+    // x ≥ -(width - keepWidth) 下界，框架 0 下界强于文档下界）
+    QVERIFY(x() >= -(w - keep) - 1.0 && x() <= b.win->width() - keep + 1.0);
+    QVERIFY(x() >= -1.0);
+    QVERIFY(y() >= -1.0 && y() <= b.win->height() - hdrH + 1.0);
+    QVERIFY(dlg->property("visible").toBool());
+}
+
+// 弹窗拖动 TC-004: 拖离默认位置 → Esc 关闭 → 再次触发打开：位置复位
+// 默认（居中，TC-001 断言重新成立）。拖动仅当次打开期间生效。
+void TestDialogStyle::drag004_reopen_resetsPosition()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    b.newDoc(QStringLiteral("dirty"));
+
+    // 打开并拖离默认位置
+    QVERIFY(!b.win->close());
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+    QTest::qWait(50);
+    const QPointF c = headerGrabPoint(b.win, b.unsavedDlg);
+    QVERIFY(!c.isNull());
+    mouseDrag(b.win, c, c + QPointF(120, 80));
+    QTest::qWait(30);
+    QString why;
+    QVERIFY2(!isCentered(b.win, b.unsavedDlg, &why),
+             qPrintable("precondition: dialog should be off-center, " + why));
+
+    // Esc 关闭（文档仍为脏）→ 再次关闭窗口重新弹确认框
+    QTest::keyClick(b.win, Qt::Key_Escape);
+    QTRY_VERIFY(!b.unsavedDlg->property("visible").toBool());
+    QVERIFY(!b.win->close());
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+    QTest::qWait(50);
+
+    // 重开复位默认位置（居中）
+    QVERIFY2(isCentered(b.win, b.unsavedDlg, &why), qPrintable(why));
+}
+
+// 弹窗拖动 TC-006: 拖到右下边界后缩小窗口 → 已拖动的可见弹窗被重新
+// clamp，把手仍在窗口内（TC-003 不等式全部成立）。
+void TestDialogStyle::drag006_resizeAfterDrag_reclamps()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    b.newDoc(QStringLiteral("dirty"));
+
+    QVERIFY(!b.win->close());
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+    QTest::qWait(50);
+
+    QObject *dlg = b.unsavedDlg;
+    const qreal w = dlg->property("width").toReal();
+    const int keep = dlg->property("keepWidth").toInt();
+    QQuickItem *hdr = dialogHeader(dlg);
+    QVERIFY2(hdr && hdr->height() > 0, "header handle not found");
+    const qreal hdrH = hdr->height();
+
+    // 拖到右下边界（1000x640 窗口下的 clamp 上限）
+    const QPointF c = headerGrabPoint(b.win, dlg);
+    QVERIFY(!c.isNull());
+    mouseDrag(b.win, c, c + QPointF(2000, 2000));
+    QTest::qWait(30);
+    QVERIFY2(qAbs(dlg->property("x").toReal() - (b.win->width() - keep)) <= 1.0,
+             "precondition: dragged to right bound");
+    QVERIFY2(qAbs(dlg->property("y").toReal() - (b.win->height() - hdrH)) <= 1.0,
+             "precondition: dragged to bottom bound");
+
+    // 缩窗至最小尺寸 800x500：原 clamp 上限越界 → 重新 clamp
+    b.win->resize(QSize(800, 500));
+    QTest::qWait(50);
+    QVERIFY2(qAbs(dlg->property("x").toReal() - (800 - keep)) <= 1.0,
+             qPrintable(QString("reclamp x=%1 expected %2")
+                            .arg(dlg->property("x").toReal()).arg(800 - keep)));
+    QVERIFY2(qAbs(dlg->property("y").toReal() - (500 - hdrH)) <= 1.0,
+             qPrintable(QString("reclamp y=%1 expected %2")
+                            .arg(dlg->property("y").toReal()).arg(500 - hdrH)));
+
+    // 不等式全部成立（把手在窗口内）
+    const qreal x = dlg->property("x").toReal();
+    const qreal y = dlg->property("y").toReal();
+    QVERIFY(x >= -(w - keep) - 1.0 && x <= 800 - keep + 1.0);
+    QVERIFY(y >= -1.0 && y <= 500 - hdrH + 1.0);
+    QVERIFY(dlg->property("visible").toBool());
+}
+
+// 弹窗拖动 TC-008: 拖拽把手不进入焦点链：MovableDialog 自绘 header 为
+// Label（非可聚焦控件），弹窗打开后反复 Tab / Shift+Tab 遍历，header
+// 始终不持有焦点；模态（modal: true）焦点不逃逸出弹窗（activeFocusItem
+// 沿 QObject parent 链可达弹窗）。Enter/Esc 键盘分支由 tc005 覆盖。
+void TestDialogStyle::drag008_focusChain_handleNotInTabChain()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    b.newDoc(QStringLiteral("dirty"));
+
+    QVERIFY(!b.win->close());
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+    QTest::qWait(50); // 等布局 polish 与初始焦点落位（footer 主按钮）
+
+    QQuickItem *hdr = dialogHeader(b.unsavedDlg);
+    QVERIFY2(hdr && hdr->height() > 0, "header handle not found");
+    QVERIFY(b.win->activeFocusItem() != nullptr); // 模态弹窗打开即有初始焦点
+
+    // 把手从不持有焦点（打开瞬间）
+    QVERIFY2(!hdr->property("activeFocus").toBool(),
+             "drag handle must not take focus on open");
+
+    // 焦点项是否属于弹窗（沿 QObject parent 链向上查找；模态焦点约束）
+    const auto focusInsideDialog = [&b]() {
+        QObject *it = b.win->activeFocusItem();
+        while (it) {
+            if (it == b.unsavedDlg)
+                return true;
+            it = it->parent();
+        }
+        return false;
+    };
+
+    // 正向 Tab 遍历若干轮（footer 3 按钮循环，contentItem Label 不可聚焦）
+    for (int i = 0; i < 8; ++i) {
+        QTest::keyClick(b.win, Qt::Key_Tab);
+        QTest::qWait(10);
+        QVERIFY2(!hdr->property("activeFocus").toBool(),
+                 "drag handle must never gain focus in Tab chain");
+        QVERIFY2(focusInsideDialog(),
+                 qPrintable(QString("focus escaped modal dialog at Tab #%1: %2")
+                                .arg(i)
+                                .arg(QString::fromLatin1(b.win->activeFocusItem()
+                                        ? b.win->activeFocusItem()->metaObject()->className()
+                                        : "<null>"))));
+    }
+
+    // 反向 Shift+Tab 同样成立
+    for (int i = 0; i < 4; ++i) {
+        QTest::keyClick(b.win, Qt::Key_Tab, Qt::ShiftModifier);
+        QTest::qWait(10);
+        QVERIFY(!hdr->property("activeFocus").toBool());
+        QVERIFY(focusInsideDialog());
+    }
+
+    // 遍历不触发关闭或默认按钮（弹窗保持打开，流程未中止）
+    QVERIFY(b.unsavedDlg->property("visible").toBool());
+    QVERIFY(b.win->isVisible());
+}
+
+// 弹窗拖动 TC-009: SearchDialog 拖动到新位置后查找/替换功能正常：
+// 输入即实时查找计数、Enter 跳转（原生选区）、Esc 关闭并交还焦点/
+// 关高亮、重开复位默认位置（水平居中、y=96，DEC-002）。与 tst_searchui
+// 的 TC-201 有重叠，此处从简（拖动 + Enter/Esc 主路径）。
+void TestDialogStyle::drag009_searchDialog_afterDrag()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    b.newDoc(QStringLiteral("hello world hello"));
+
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doFind"));
+    QTRY_VERIFY(b.searchDlg->property("visible").toBool());
+    QTest::qWait(50);
+
+    // 初始默认位置：水平居中、y=96（DEC-002 顶部对齐）
+    const qreal x0 = b.searchDlg->property("x").toReal();
+    const qreal y0 = b.searchDlg->property("y").toReal();
+    const qreal w0 = b.searchDlg->property("width").toReal();
+    QVERIFY2(qAbs(x0 - (b.win->width() - w0) / 2.0) <= 1.0, "initial x centered");
+    QVERIFY2(qAbs(y0 - 96.0) <= 1.0,
+             qPrintable(QString("initial y=%1 expected 96").arg(y0)));
+
+    // 拖动到新位置（+120, +60）：位置精确跟随
+    const QPointF c = headerGrabPoint(b.win, b.searchDlg);
+    QVERIFY2(!c.isNull(), "search dialog header not found");
+    mouseDrag(b.win, c, c + QPointF(120, 60));
+    QTest::qWait(30);
+    QVERIFY2(qAbs(b.searchDlg->property("x").toReal() - (x0 + 120)) <= 1.0, "dragged x");
+    QVERIFY2(qAbs(b.searchDlg->property("y").toReal() - (y0 + 60)) <= 1.0, "dragged y");
+    QVERIFY(b.searchDlg->property("visible").toBool());
+
+    // 拖动后功能正常：查找框持有焦点，输入即实时查找（2 处匹配）。
+    // 文本输入沿用 tst_searchui 的模式：直接设查找框 text 属性
+    // （onTextChanged → 控制器 pattern，真实接线）
+    QObject *ctl = b.editorArea->property("searchController").value<QObject *>();
+    QVERIFY(ctl);
+    QList<QObject *> fields;
+    collectByQmlType(b.searchDlg, "TextField", &fields);
+    QVERIFY2(!fields.isEmpty(), "find field not found");
+    QVERIFY(fields.first()->property("activeFocus").toBool()); // 打开即聚焦查找框
+    QVERIFY(QMetaObject::invokeMethod(fields.first(), "forceActiveFocus"));
+    QVERIFY(fields.first()->setProperty("text", QStringLiteral("hello")));
+    QTest::qWait(50);
+    QCOMPARE(ctl->property("matchCount").toInt(), 2);
+
+    // Enter：首跳定位当前匹配（索引 0，无崩溃、状态正常）
+    QTest::keyClick(b.win, Qt::Key_Return);
+    QTRY_COMPARE(ctl->property("currentIndex").toInt(), 0);
+    QVERIFY(b.searchDlg->property("visible").toBool()); // 查找类惯例：不关闭
+
+    // Esc：关闭，高亮层收起（searchActive false）
+    QTest::keyClick(b.win, Qt::Key_Escape);
+    QTRY_VERIFY(!b.searchDlg->property("visible").toBool());
+    QVERIFY(!b.editorArea->property("searchActive").toBool());
+
+    // 重开：复位默认位置（水平居中、y=96）
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doFind"));
+    QTRY_VERIFY(b.searchDlg->property("visible").toBool());
+    QTest::qWait(50);
+    QVERIFY2(qAbs(b.searchDlg->property("x").toReal() - (b.win->width() - w0) / 2.0) <= 1.0,
+             "reopened x centered");
+    QVERIFY2(qAbs(b.searchDlg->property("y").toReal() - 96.0) <= 1.0,
+             qPrintable(QString("reopened y=%1 expected 96")
+                            .arg(b.searchDlg->property("y").toReal())));
 }
 
 int main(int argc, char *argv[])

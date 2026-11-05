@@ -187,7 +187,7 @@ struct Bench
     QObject *reloadMenu = nullptr;      // 「通过编码重新加载」三级菜单
     QObject *saveMenu = nullptr;        // 「通过编码保存」三级菜单
     QObject *reloadDlg = nullptr;       // reloadConfirmDialog（标题「按编码重新加载」）
-    QObject *errDlg = nullptr;          // errorDialog（title 绑定 currentError，未打开为空）
+    QObject *errDlg = nullptr;          // errorDialog（dialogTitle 绑定 currentError，未打开为空）
     QQuickItem *statusBar = nullptr;    // StatusBar 实例（可视树）
 
     Bench()
@@ -224,11 +224,12 @@ Main {}
         reloadMenu = findMenuByTitle(win, QStringLiteral("通过编码重新加载"));
         saveMenu = findMenuByTitle(win, QStringLiteral("通过编码保存"));
 
-        // 对话框按标题定位；errorDialog 未打开时 title 为空串走排除法
+        // 对话框按 QML 类型短名 MovableDialog + dialogTitle 定位；
+        // errorDialog 未打开时 dialogTitle 为空串走排除法
         QList<QObject *> dialogs;
-        collectByQmlType(win, "Dialog", &dialogs);
+        collectByQmlType(win, "MovableDialog", &dialogs);
         for (QObject *d : dialogs) {
-            const QString t = d->property("title").toString();
+            const QString t = d->property("dialogTitle").toString();
             if (t == QStringLiteral("按编码重新加载"))
                 reloadDlg = d;
             else if (t.isEmpty())
@@ -575,7 +576,7 @@ void TestEncodingMenu::tc0xx_saveGbkUnencodable_errorDialog()
     QVERIFY2(b.triggerItem(b.saveMenu, QStringLiteral("GBK")),
              "failed to trigger save-as-GBK menu item");
     QTRY_VERIFY(b.errDlg->property("visible").toBool());
-    QCOMPARE(b.errDlg->property("title").toString(), QStringLiteral("保存失败"));
+    QCOMPARE(b.errDlg->property("dialogTitle").toString(), QStringLiteral("保存失败"));
     QVERIFY(dialogText(b.errDlg).contains(path)); // 错误目标为该文件路径
 
     // 有 url：不误入另存为分支（saveAsTarget 保持空）

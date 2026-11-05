@@ -17,9 +17,11 @@ import QtQuick.Layouts
  * - 状态行以文本表达状态（错误 / 无匹配 / 计数 / 已替换 N 处），错误文本
  *   另取 AppTheme.error 着色，颜色仅是辅助线索；
  * - 「查找下一个 / 替换 / 全部替换」为 ActionRole：点击不触发对话框
- *   accepted/rejected，对话框保持打开（查找类对话框惯例）。
+ *   accepted/rejected，对话框保持打开（查找类对话框惯例）；
+ * - 可拖动（MovableDialog header 把手拖拽 + 边界约束），重开复位回
+ *   默认位置；标题经 dialogTitle 渲染于自绘 header 把手。
  */
-Dialog {
+MovableDialog {
     id: root
 
     /// 查找控制器（EditorArea 会话级单实例，查找参数与匹配状态的唯一持有者）
@@ -46,13 +48,12 @@ Dialog {
     focus: true
     closePolicy: Popup.CloseOnEscape
     width: 520
-    title: "查找与替换"
+    dialogTitle: "查找与替换"
 
-    // DEC-002：顶部对齐于窗口（Popup 不支持任意 anchors，仅 centerIn 有
-    // 特殊支持，故以 x/y 绑定计算）；y 取 标题栏 40 + 工具栏 44 + 间距 12，
-    // 落在编辑区上方
-    x: (parent.width - width) / 2
-    y: 96
+    // DEC-002：顶部对齐于窗口（y 取 标题栏 40 + 工具栏 44 + 间距 12，
+    // 落在编辑区上方）；水平居中沿用 MovableDialog 默认。经 defaultY
+    // 覆写 MovableDialog 默认位置（居中），拖动后重开复位回此位置
+    defaultY: 96
 
     contentItem: ColumnLayout {
         spacing: 8

@@ -94,15 +94,17 @@ void visitObjects(QObject *root, const F &fn)
         visitObjects(kid, fn);
 }
 
-// 按标题定位 Dialog（Main.qml 有多个 Dialog，标题唯一）
+// 按标题定位 Dialog（Main.qml 内弹窗经 MovableDialog 接入：标题在
+// dialogTitle 属性，Dialog.title 保持空；SearchDialog 实例类名含
+// "SearchDialog"，同样满足包含匹配）
 QObject *findDialogByTitle(QQuickWindow *win, const QString &title)
 {
     QObject *found = nullptr;
     visitObjects(win, [&](QObject *o) {
         if (found || !classNameMatches(o, "Dialog"))
             return;
-        // QQuickDialog 自身或 QML Dialog 包装均可：按 title 属性匹配
-        if (o->property("title").toString() == title)
+        // QQuickDialog 自身或 QML Dialog 包装均可：按 dialogTitle 属性匹配
+        if (o->property("dialogTitle").toString() == title)
             found = o;
     });
     return found;

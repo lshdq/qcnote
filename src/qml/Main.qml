@@ -536,14 +536,13 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    MovableDialog {
         id: unsavedDialog
         modal: true
         focus: true
-        anchors.centerIn: parent
         closePolicy: Popup.CloseOnEscape
         width: 380
-        title: "未保存的修改"
+        dialogTitle: "未保存的修改"
 
         contentItem: Label {
             text: root.closeFlowDoc
@@ -596,14 +595,13 @@ ApplicationWindow {
         onRejected: root.resetCloseFlow()
     }
 
-    Dialog {
+    MovableDialog {
         id: errorDialog
         modal: true
         focus: true
-        anchors.centerIn: parent
         closePolicy: Popup.CloseOnEscape
         width: 440
-        title: currentError ? currentError.title : ""
+        dialogTitle: currentError ? currentError.title : ""
 
         property var currentError: null
 
@@ -635,14 +633,13 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    MovableDialog {
         id: ctxMenuPromptDialog
         modal: true
         focus: true
-        anchors.centerIn: parent
         closePolicy: Popup.CloseOnEscape
         width: 380
-        title: "添加右键菜单"
+        dialogTitle: "添加右键菜单"
 
         contentItem: Label {
             text: "是否将『用qcnote打开』加入资源管理器右键菜单？"
@@ -677,14 +674,13 @@ ApplicationWindow {
 
     // 按编码重新加载的未保存修改确认（DEC-008：确认在 QML 层；
     // 确认后 C++ 以磁盘内容覆盖内存未保存修改，取消则不动作）
-    Dialog {
+    MovableDialog {
         id: reloadConfirmDialog
         modal: true
         focus: true
-        anchors.centerIn: parent
         closePolicy: Popup.CloseOnEscape
         width: 380
-        title: "按编码重新加载"
+        dialogTitle: "按编码重新加载"
 
         contentItem: Label {
             text: "通过 "

@@ -75,6 +75,7 @@ qt_add_qml_module(qcnote_core
         qml/EditorArea.qml
         qml/HighlightSegments.js
         qml/Main.qml
+        qml/MovableDialog.qml
         qml/MultiCursorLayer.qml
         qml/SearchDialog.qml
         qml/SearchHighlightLayer.qml
