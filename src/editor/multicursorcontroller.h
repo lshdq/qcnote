@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QQuickItem>
 #include <QQuickTextDocument>
+#include <QRectF>
 #include <QString>
 #include <QVariantList>
 
@@ -33,7 +34,8 @@ namespace qcnote {
  *   event.accepted = true；
  * - active 为 false 时在 cursorPosition/selection 变化时调
  *   syncNativeCursor(...)；
- * - Alt+单击 / Alt+Shift+拖拽分别调 altClick / columnDragBegin-Update-End；
+ * - Alt+单击 / Alt+Shift+拖拽分别调 altClick / columnDragBeginAt-
+ *   UpdateAt-End（拖拽传原始坐标，控制器经布局逐行命中）；
  * - 文档内容被外部重置或关闭文档时调 reset()。
  *
  * 所有属性共用同一个 stateChanged 通知信号：任何命令执行后统一发射，
@@ -85,9 +87,11 @@ public:
     /// Alt+单击加光标
     Q_INVOKABLE void altClick(int position);
 
-    /// Alt+Shift+鼠标拖拽列选（position 均为文档坐标）
-    Q_INVOKABLE void columnDragBegin(int anchorPos, int cursorPos);
-    Q_INVOKABLE void columnDragUpdate(int cursorPos);
+    /// Alt+Shift+鼠标拖拽列选（视觉列选：x/y 为 TextArea 子项坐标系原始
+    /// 坐标，由控制器经真实布局逐行命中，中文/全角宽度与短行钳制均由
+    /// 布局保证；旧位置式接口已移除，位置语义无法表达视觉对齐）
+    Q_INVOKABLE void columnDragBeginAt(qreal x, qreal y);
+    Q_INVOKABLE void columnDragUpdateAt(qreal x, qreal y);
     Q_INVOKABLE void columnDragEnd();
 
     /// 多光标剪贴板操作（active 时有效；copy 无任何选区时不写剪贴板）
@@ -117,6 +121,18 @@ private:
     /// Ctrl+Alt+Shift+方向键：键盘列选（首次进入列选模式，之后逐格扩展）
     void keyboardColumnSelect(int key, const QString &text);
 
+    /// 布局查询：经 QMetaObject 按名称调用 target（Controls TextArea）的
+    /// positionAt/positionToRectangle（均为 Qt 文档化 QML 方法）。不直接
+    /// include QQuickTextEdit 头（该公共头未随安装布局转发，编译期不可依赖）
+    int layoutPositionAt(qreal x, qreal y) const;   // 失败返回 -1 并 qWarning
+    QRectF layoutCursorRect(int position) const;    // 失败返回空 QRectF() 并 qWarning
+
+    /// 视觉列选的逐行命中：对 [yTop, yBottom] 覆盖的每个可视行，以行中心
+    /// y 对 x1/x2 各做一次 positionAt 命中，归一为正向区间对 [min,max)。
+    /// 短行命中天然钳制行末（不越界到下一行）；查询失败返回空表（DEC-002）
+    QList<QPair<int, int>> visualColumnPairs(qreal x1, qreal x2,
+                                             qreal yTop, qreal yBottom) const;
+
     /// active = 多光标或存在选区（任一引擎命令实际改变光标/选区状态即接管）
     void syncActiveFromEngine();
 
@@ -138,11 +154,16 @@ private:
     /// contentsChange 钳制跳过（避免干扰批次应用）
     bool m_applyingBatch = false;
 
-    // 键盘列选会话：控制器侧记录固定锚点与当前游标角点
-    // （引擎只保存锚点，扩展方向由这两点推算）
-    bool m_kbColumnActive = false;
-    int m_kbColumnAnchor = 0;
-    int m_kbColumnCursor = 0;
+    // 视觉列选会话状态（鼠标与键盘共用同一套逐行命中，量均为 TextArea
+    // 子项坐标系视觉量）：矩形两边由“锚点视觉 x + 活动点期望视觉 x”决定，
+    // 期望 x 粘性——垂直移动不改，经过短行再移出后自动恢复
+    bool m_kbColumnActive = false;  // 键盘列选会话进行中
+    qreal m_colDragAnchorX = 0;     // 鼠标列选锚点视觉 x（按下点）
+    qreal m_colDragAnchorY = 0;     // 鼠标列选锚点行顶 y（命中位光标矩形归一）
+    qreal m_kbAnchorX = 0;          // 键盘列选锚点视觉 x
+    qreal m_kbAnchorY = 0;          // 键盘列选锚点行顶 y
+    qreal m_kbCursorX = 0;          // 键盘活动点期望视觉 x（粘性）
+    qreal m_kbCursorY = 0;          // 键盘活动点行顶 y
 };
 
 } // namespace qcnote

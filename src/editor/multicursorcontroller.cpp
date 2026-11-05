@@ -4,6 +4,7 @@
 #include <QEvent>
 #include <QGuiApplication>
 #include <QInputMethodEvent>
+#include <QMetaObject>
 #include <QQuickItem>
 #include <QQuickTextDocument>
 #include <QTextCursor>
@@ -13,50 +14,70 @@
 #include <utility>
 
 namespace qcnote {
-namespace {
 
-// ==================== 键盘列选的行/列移动辅助（纯文本坐标计算） ====================
+// ==================== 布局查询（经 QMetaObject 按名称调用，DEC-001） ====================
 
-// p 所在行的起始偏移（不含换行符）
-int lineStartOf(const QString &text, int p)
+// target 恒为真实 TextArea（QML 绑定保证），positionAt/positionToRectangle
+// 为其 Qt 文档化 Q_INVOKABLE。QQuickTextEdit 公共头未随安装布局转发，
+// 按名称调用避免编译期依赖；失败仅属防御分支（DEC-002：保守无操作 + qWarning）
+int MultiCursorController::layoutPositionAt(qreal x, qreal y) const
 {
-    if (p <= 0)
-        return 0;
-    if (p > text.length())
-        p = text.length();
-    return int(text.lastIndexOf(QLatin1Char('\n'), p - 1)) + 1;
-}
-
-// p 所在行的行末（该行 '\n' 位置或文档末，不含换行符）
-int lineEndOf(const QString &text, int p)
-{
-    const int ls = lineStartOf(text, p);
-    const int nl = int(text.indexOf(QLatin1Char('\n'), ls));
-    return nl < 0 ? int(text.length()) : nl;
-}
-
-// 行移动：保持字符列，短行钳制行末；direction 为 -1/+1；越界（首/末行）不动
-int posRowStep(const QString &text, int p, int direction)
-{
-    p = qBound(0, p, int(text.length()));
-    const int ls = lineStartOf(text, p);
-    const int le = lineEndOf(text, p);
-    const int col = p - ls;
-    if (direction < 0) {
-        if (ls == 0)
-            return p; // 首行
-        const int prevEnd = ls - 1;                    // 上一行末（不含 '\n'）
-        const int prevStart = lineStartOf(text, prevEnd);
-        return qMin(prevStart + col, prevEnd);
+    if (!m_target) {
+        qWarning("MultiCursorController: layout query without target");
+        return -1;
     }
-    if (le >= text.length())
-        return p; // 末行
-    const int nextStart = le + 1;
-    const int nextEnd = lineEndOf(text, nextStart);
-    return qMin(nextStart + col, nextEnd);
+    int pos = -1;
+    if (!QMetaObject::invokeMethod(m_target, "positionAt",
+                                   Q_RETURN_ARG(int, pos),
+                                   Q_ARG(qreal, x), Q_ARG(qreal, y))
+            || pos < 0) {
+        qWarning("MultiCursorController: positionAt(%.1f, %.1f) failed",
+                 double(x), double(y));
+        return -1;
+    }
+    return pos;
 }
 
-} // namespace
+QRectF MultiCursorController::layoutCursorRect(int position) const
+{
+    if (!m_target) {
+        qWarning("MultiCursorController: layout query without target");
+        return QRectF();
+    }
+    QRectF rect;
+    if (!QMetaObject::invokeMethod(m_target, "positionToRectangle",
+                                   Q_RETURN_ARG(QRectF, rect),
+                                   Q_ARG(int, position))) {
+        qWarning("MultiCursorController: positionToRectangle(%d) failed", position);
+        return QRectF();
+    }
+    return rect;
+}
+
+// ==================== 视觉列选的逐行命中（鼠标/键盘共用） ====================
+
+QList<QPair<int, int>> MultiCursorController::visualColumnPairs(
+        qreal x1, qreal x2, qreal yTop, qreal yBottom) const
+{
+    // 行高取主光标位光标矩形的高度：等宽字体单一行高（自动换行的同一
+    // 文档内所有可视行同高），任意合法位置取值等价；<=0 视为布局不可用
+    const qreal lineH = layoutCursorRect(primaryPosition()).height();
+    if (lineH <= 0)
+        return {};
+    QList<QPair<int, int>> pairs;
+    // 从 yTop 按行高步进；上限附加 1/4 行高浮点余量：yTop==yBottom 时恰好
+    // 命中一行，且行高的小数舍入误差不会提前截断末行
+    for (qreal y = yTop; y <= yBottom + lineH * 0.25; y += lineH) {
+        // 行中心 y 命中：对 y 向取整/半像素偏差稳健（顶/底缘易命中邻行）
+        const qreal yc = y + lineH / 2;
+        const int s = layoutPositionAt(x1, yc);
+        const int e = layoutPositionAt(x2, yc);
+        if (s < 0 || e < 0)
+            return {}; // 任一查询失败：保守放弃本次更新，不产生错误选区（DEC-002）
+        pairs.append(qMakePair(qMin(s, e), qMax(s, e))); // 归一正向（反向拖拽等价）
+    }
+    return pairs;
+}
 
 // ==================== 构造 / 目标与文档 ====================
 
@@ -210,6 +231,8 @@ void MultiCursorController::endKbColumnSession()
 void MultiCursorController::reset()
 {
     m_kbColumnActive = false;
+    if (m_engine.isColumnSelecting())
+        m_engine.finishColumnSelect(); // 状态机所有入口自洽；pre-existing 残留，一轮审查发现 4
     // 重置为文档起点单光标（而非保留旧的末光标位置）：reset 用于文档内容
     // 被外部整体替换 / 关闭文档等场景，旧位置对随后的新文本可能越界；
     // 归 0 对任意后续文本恒合法，覆盖层经 positionToRectangle 重算时不会
@@ -313,32 +336,74 @@ void MultiCursorController::applyBatch(const McEditBatch &batch)
 void MultiCursorController::keyboardColumnSelect(int key, const QString &text)
 {
     if (!m_kbColumnActive) {
-        // 首次：以当前主光标（active==false 时即原生光标）为锚进入列选模式
+        // 首次：以当前主光标（active==false 时即原生光标）为锚进入列选模式；
+        // 锚点记录为视觉量（光标矩形 x / 行顶 y），后续全部按真实布局逐行命中
         const int start = primaryPosition();
-        m_kbColumnAnchor = start;
-        m_kbColumnCursor = start;
+        const QRectF rect = layoutCursorRect(start);
+        if (rect.height() <= 0) {
+            qWarning("MultiCursorController: keyboard column select "
+                     "layout unavailable");
+            return; // 布局不可用：不进入会话（DEC-002）
+        }
         m_engine.startColumnSelect(text, start, start);
+        m_kbAnchorX = m_kbCursorX = rect.x();
+        m_kbAnchorY = m_kbCursorY = rect.y();
         m_kbColumnActive = true;
     }
-    int next = m_kbColumnCursor;
+    // 行高取主光标位光标矩形高度（等宽单一行高；<=0 为布局不可用）
+    const qreal lineH = layoutCursorRect(primaryPosition()).height();
+    if (lineH <= 0)
+        return;
     switch (key) {
     case Qt::Key_Up:
-        next = posRowStep(text, m_kbColumnCursor, -1);
+    case Qt::Key_Down: {
+        const qreal step = key == Qt::Key_Up ? -lineH : lineH;
+        const qreal newY = m_kbCursorY + step;
+        // 钳制到文档首/末可视行顶：越界取边界值——活动点已在首/末行时
+        // newY 钳回同值，随后的逐行重算无变化，等价既有“首行 Up /
+        // 末行 Down 无操作”；期望 x 不改（粘性）
+        const QRectF firstRect = layoutCursorRect(0);
+        const QRectF lastRect = layoutCursorRect(int(text.length()));
+        if (firstRect.height() <= 0 || lastRect.height() <= 0)
+            return; // 部分失败保守不更新（DEC-002）；同一布局引擎上实际不可达，防御性闭环
+        m_kbCursorY = qBound(firstRect.y(), newY, lastRect.y());
         break;
-    case Qt::Key_Down:
-        next = posRowStep(text, m_kbColumnCursor, +1);
-        break;
+    }
     case Qt::Key_Left:
-        next = qMax(lineStartOf(text, m_kbColumnCursor), m_kbColumnCursor - 1); // 不跨行
-        break;
-    case Qt::Key_Right:
-        next = qMin(lineEndOf(text, m_kbColumnCursor), m_kbColumnCursor + 1); // 不跨行
-        break;
+    case Qt::Key_Right: {
+        // 活动行上按字符步进（DEC-005）：先以（粘性的）期望 x 在活动行
+        // 中心命中——期望 x 超出短行行末时命中钳制到行末，以钳制位为
+        // 基准 ±1 字符（Left 退到行内最后字符左缘；Right 越过行末即跨行）
+        const int pos = layoutPositionAt(m_kbCursorX, m_kbCursorY + lineH / 2);
+        if (pos < 0)
+            return;
+        const int delta = key == Qt::Key_Left ? -1 : +1;
+        const int np = qBound(0, pos + delta, int(text.length()));
+        // 实际步进（np!=pos）且仍在同一可视行（行顶差为 0）时才移动期望 x：
+        // 跨行不动（Left/Right 不跨行——行首 Left / 行末 Right 无操作）；
+        // np==pos（文档边界）同样无操作，防止把粘性期望 x 塌缩到行末
+        if (np != pos) {
+            const QRectF pr = layoutCursorRect(pos);
+            const QRectF nr = layoutCursorRect(np);
+            // 任一矩形无效视为跨行（不动期望 x）：部分失败保守不更新
+            //（DEC-002）；同一布局引擎上实际不可达，防御性闭环
+            if (pr.height() <= 0 || nr.height() <= 0)
+                break;
+            if (qAbs(nr.y() - pr.y()) <= lineH / 2)
+                m_kbCursorX = nr.x();
+        }
+        break; // 活动行 y 不变
+    }
     default:
         break;
     }
-    m_kbColumnCursor = next;
-    m_engine.updateColumnSelect(text, next); // 矩形取锚点与角点的行列 min/max
+    // 与鼠标列选完全相同的逐行命中重算选区（锚点行 → 活动行）
+    const QList<QPair<int, int>> pairs = visualColumnPairs(
+                m_kbAnchorX, m_kbCursorX,
+                qMin(m_kbAnchorY, m_kbCursorY), qMax(m_kbAnchorY, m_kbCursorY));
+    if (pairs.isEmpty())
+        return;
+    m_engine.updateColumnSelectPairs(pairs);
     syncActiveFromEngine();
     emit stateChanged();
 }
@@ -404,7 +469,7 @@ bool MultiCursorController::handleKey(int key, int modifiers, const QString &tex
         endKbColumnSession();
         // 列选拖拽中触发：先结束列选会话（与 applyBatch 内同法）。
         // 引擎 endOfLines 不清除列选状态，若残留 columnSelecting，
-        // 后续拖拽 move 事件会经 columnDragUpdate 用旧锚点重算列选区，
+        // 后续拖拽 move 事件会经 columnDragUpdateAt 用旧锚点重算列选区，
         // 覆盖掉刚生成的行尾光标
         if (m_engine.isColumnSelecting())
             m_engine.finishColumnSelect();
@@ -526,24 +591,44 @@ void MultiCursorController::altClick(int position)
     emit stateChanged();
 }
 
-void MultiCursorController::columnDragBegin(int anchorPos, int cursorPos)
+void MultiCursorController::columnDragBeginAt(qreal x, qreal y)
 {
     if (!m_doc)
         return;
-    endKbColumnSession();
+    endKbColumnSession(); // 先结束残留键盘列选会话（含引擎列选状态收尾）
+    const int pos = layoutPositionAt(x, y);
+    if (pos < 0)
+        return; // 命中失败：保守不进入列选（DEC-002，layoutPositionAt 已告警）
     const QString text = m_doc->toPlainText();
-    const int len = text.length();
-    m_engine.startColumnSelect(text, qBound(0, anchorPos, len), qBound(0, cursorPos, len));
+    m_engine.startColumnSelect(text, pos, pos); // 锚 = 游标 = 按下点，进入列选状态机
+    // 锚点记录为视觉 x 与归一行顶 y：行顶取命中位光标矩形（与逐行命中
+    // 的“按行顶步进”同基准），此后拖拽期间的行覆盖范围恒由布局决定
+    const QRectF rect = layoutCursorRect(pos);
+    m_colDragAnchorX = x;
+    m_colDragAnchorY = rect.y();
     syncActiveFromEngine();
     emit stateChanged();
 }
 
-void MultiCursorController::columnDragUpdate(int cursorPos)
+void MultiCursorController::columnDragUpdateAt(qreal x, qreal y)
 {
     if (!m_doc || !m_engine.isColumnSelecting())
         return;
-    const QString text = m_doc->toPlainText();
-    m_engine.updateColumnSelect(text, qBound(0, cursorPos, text.length()));
+    const int cPos = layoutPositionAt(x, y);
+    if (cPos < 0)
+        return; // 命中失败：保守无操作，选区停留上一次有效状态（DEC-002）
+    const QRectF cRect = layoutCursorRect(cPos); // 当前行顶（归一基准）
+    if (cRect.height() <= 0)
+        return; // 部分失败保守不更新（DEC-002）；同一布局引擎上实际不可达，防御性闭环
+    const qreal cTopY = cRect.y();
+    // 锚点行 → 当前行逐可视行命中：矩形两边即锚点 x 与当前 x，反向
+    // 拖拽（锚点在下）与正向等价（qMin/qMax 归一行范围，行内区间已归一）
+    const QList<QPair<int, int>> pairs = visualColumnPairs(
+                m_colDragAnchorX, x,
+                qMin(m_colDragAnchorY, cTopY), qMax(m_colDragAnchorY, cTopY));
+    if (pairs.isEmpty())
+        return;
+    m_engine.updateColumnSelectPairs(pairs);
     syncActiveFromEngine();
     emit stateChanged();
 }

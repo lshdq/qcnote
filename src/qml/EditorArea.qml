@@ -315,7 +315,11 @@ Item {
                     }
 
                     // 鼠标拦截：仅 Alt 系交互接管；其余一律 accepted=false
-                    // 放行，原生单击定位 / 拖拽选择 / 滚动完全不变
+                    // 放行，原生单击定位 / 拖拽选择 / 滚动完全不变。
+                    // Alt+Shift 列选拖拽为坐标驱动：MouseArea 与 TextArea
+                    // 同坐标系（anchors.fill: parent），mouse.x/y 原样交
+                    // 控制器，由其经真实布局逐行视觉命中（中文/全角宽度、
+                    // 短行钳制均由布局保证，QML 层不做位置换算）
                     MouseArea {
                         anchors.fill: parent
                         acceptedButtons: Qt.LeftButton
@@ -328,15 +332,15 @@ Item {
                         preventStealing: true
 
                         onPressed: (mouse) => {
-                            const pos = editor.positionAt(mouse.x, mouse.y)
                             if ((mouse.modifiers & Qt.AltModifier)
                                     && (mouse.modifiers & Qt.ShiftModifier)) {
-                                // Alt+Shift：矩形列选拖拽（锚 = 游标 = 按下点）
+                                // Alt+Shift：视觉列选拖拽（锚 = 游标 = 按下点）
                                 editor.forceActiveFocus()
-                                mc.columnDragBegin(pos, pos)
+                                mc.columnDragBeginAt(mouse.x, mouse.y)
                                 mouse.accepted = true
                             } else if (mouse.modifiers & Qt.AltModifier) {
                                 // Alt：单击加光标
+                                const pos = editor.positionAt(mouse.x, mouse.y)
                                 editor.forceActiveFocus()
                                 mc.altClick(pos)
                                 mouse.accepted = true
@@ -350,7 +354,7 @@ Item {
                         }
                         onPositionChanged: (mouse) => {
                             if (mc.columnSelecting)
-                                mc.columnDragUpdate(editor.positionAt(mouse.x, mouse.y))
+                                mc.columnDragUpdateAt(mouse.x, mouse.y)
                         }
                         onReleased: {
                             if (mc.columnSelecting)

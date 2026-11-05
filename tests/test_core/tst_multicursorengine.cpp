@@ -85,6 +85,7 @@ private slots:
     void tc021_undoAtomicity();
     void tc022_emptyAndSingleLineDocs();
     void tc023_selectNextOccurrence_overlapSkip();
+    void tc024_columnSelectPairsUpdate();
 };
 
 // TC-001：等长行列选区：3 行各覆盖 0 基列 [1,3)，并验证列选交互流程与后续编辑
@@ -759,6 +760,45 @@ void TestMultiCursorEngine::tc023_selectNextOccurrence_overlapSkip()
     mixed.setCursors(cs({{0, 2}, {7, 7}}));
     QVERIFY(mixed.selectNextOccurrence(QStringLiteral("aa aa aa")));
     QCOMPARE(fmt(mixed.cursors()), QStringLiteral("0:2 3:5 7:7"));
+}
+
+// TC-V001（tc024）：视觉列选路径的逐行区间对更新 updateColumnSelectPairs——
+// 仅列选状态中生效、转光标后按 position 升序去重、不改变列选状态机；
+// finishColumnSelect 定格后不再生效（产物即普通多选区，可正常编辑）
+void TestMultiCursorEngine::tc024_columnSelectPairsUpdate()
+{
+    const QString text = QStringLiteral("aaaa\nbbbb\ncccc");
+
+    // ---- 未进入列选状态：无操作（光标保持、不置列选标志）----
+    MultiCursorEngine idle;
+    idle.setCursors(cs({{0, 0}}));
+    idle.updateColumnSelectPairs({{1, 3}, {6, 8}});
+    QVERIFY(!idle.isColumnSelecting());
+    QCOMPARE(fmt(idle.cursors()), QStringLiteral("0:0"));
+
+    // ---- 列选中：乱序输入按 position 排序；同对重复去重；空区间（s==e）
+    // 与相邻区间（前对 end==后对 start）保留为独立光标；列选状态不变 ----
+    MultiCursorEngine engine;
+    engine.startColumnSelect(text, 1, 1); // 锚 = 游标 = 1（进入状态机）
+    QVERIFY(engine.isColumnSelecting());
+    engine.updateColumnSelectPairs(
+                {{6, 8}, {1, 3}, {6, 8}, {3, 5}, {11, 11}});
+    QVERIFY(engine.isColumnSelecting()); // 区间对更新不改变状态机
+    QCOMPARE(fmt(engine.cursors()), QStringLiteral("1:3 3:5 6:8 11:11"));
+
+    // ---- 结束：定格为普通多选区，此后区间对更新不再生效 ----
+    engine.finishColumnSelect();
+    QVERIFY(!engine.isColumnSelecting());
+    engine.updateColumnSelectPairs({{0, 15}});
+    QCOMPARE(fmt(engine.cursors()), QStringLiteral("1:3 3:5 6:8 11:11"));
+
+    // 定格产物可正常编辑：每选区（含空区间插入点）替换为 "="。
+    // [11,11) 为行 3 第 2 字符前的空区间（插入点），在 "cccc" 前插出 "c=ccc"
+    McEditBatch batch = engine.insertText(QStringLiteral("="));
+    verifyBatchInvariants(batch);
+    QCOMPARE(applyEdits(text, batch.edits), QStringLiteral("a==b=b\nc=ccc"));
+    // 各选区替换后光标均落在其 "=" 之后：前序编辑累计平移 −2/−3 字符
+    QCOMPARE(fmt(batch.cursors), QStringLiteral("2:2 3:3 5:5 9:9"));
 }
 
 int runMultiCursorEngineTests(int argc, char *argv[])

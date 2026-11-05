@@ -413,6 +413,20 @@ void MultiCursorEngine::updateColumnSelect(const QString &text, int cursorPositi
     m_cursors = columnCursors(text, m_columnAnchor, cursorPosition);
 }
 
+void MultiCursorEngine::updateColumnSelectPairs(const QList<QPair<int, int>> &pairs)
+{
+    if (!m_columnSelecting)
+        return; // 仅列选拖拽/键盘列选会话中生效（与 updateColumnSelect 同守卫）
+    QList<McCursor> cursors;
+    cursors.reserve(pairs.size());
+    for (const QPair<int, int> &p : pairs) {
+        // 每行选区统一正向（anchor=左端）；契约保证 start<=end，此间不再归一
+        cursors.append(McCursor{p.first, p.second});
+    }
+    sortAndDedup(cursors); // 与 setCursors 同构：按 position 升序去重
+    m_cursors = cursors;
+}
+
 void MultiCursorEngine::finishColumnSelect()
 {
     m_columnSelecting = false; // 光标集合定格为普通多选区

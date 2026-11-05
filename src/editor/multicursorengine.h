@@ -4,6 +4,7 @@
 #include <QString>
 #include <QStringList>
 #include <QList>
+#include <QPair>
 
 namespace qcnote {
 
@@ -43,6 +44,12 @@ public:
     bool addCursorBelow(const QString &text);        // Ctrl+Alt+Down：同理
     void startColumnSelect(const QString &text, int anchorPosition, int cursorPosition); // 进入列选模式，锚点+当前点确定矩形
     void updateColumnSelect(const QString &text, int cursorPosition); // 拖拽中更新
+    // 视觉列选路径的更新：按逐行区间对设置列选区（pairs 为原文档坐标
+    // [start,end)、start<=end，控制器经真实布局逐行命中后归一传入）。
+    // 仅在列选状态中生效；内部转 McCursor 后排序去重；不改变
+    // columnSelecting 状态（字符列矩形无法表达中文/全角宽度与各行独立
+    // 钳制的视觉对齐语义，改由调用方逐行给出精确区间）
+    void updateColumnSelectPairs(const QList<QPair<int, int>> &pairs);
     void finishColumnSelect();                       // 结束拖拽，定格为普通多选区（之后可正常编辑）
     bool isColumnSelecting() const;                  // 是否处于列选拖拽中（控制器查询用）
     bool selectNextOccurrence(const QString &text);  // Ctrl+D：无选区→选中光标处单词（连续的字母/数字/下划线，中文按连续非空白非标点）；有选区→以最后一个有选区光标的选区（末位为空光标的混合状态回退；全部无选区走选词分支）为目标向后找完全相同文本（大小写敏感、不含换行），环绕查找，跳过与任一现有选区区间相交（含边界相接的内含/交叠）的出现；无可追加出现时返回 false 且无变化

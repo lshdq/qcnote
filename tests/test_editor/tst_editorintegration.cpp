@@ -144,6 +144,26 @@ struct Bench
         return ret;
     }
 
+    // TextEdit.positionAt(x, y)（Q_INVOKABLE，TextArea 子项坐标系）：与
+    // 控制器视觉列选的逐行命中同源，测试用它计算各行的期望区间
+    int positionAt(qreal x, qreal y) const
+    {
+        int pos = -1;
+        QMetaObject::invokeMethod(const_cast<QQuickItem *>(editor),
+                                  "positionAt",
+                                  Q_RETURN_ARG(int, pos),
+                                  Q_ARG(qreal, x), Q_ARG(qreal, y));
+        return pos;
+    }
+
+    // 行中心 y：该行任一位置光标矩形的垂直中心（行顶 y + 行高/2），
+    // 与控制器逐行命中的行中心同基准
+    qreal rowCenterY(int pos) const
+    {
+        const QRectF r = rectOf(pos);
+        return r.y() + r.height() / 2;
+    }
+
     // 从当前 view 的 QML 引擎取 DocumentManager 单例：必须与 QML 侧实际
     // 使用的实例一致（EditorArea 的 Repeater 绑定其模型），不能绕开引擎
     // 直接 create()，否则可能得到与 QML 不同的实例
@@ -321,15 +341,17 @@ EditorArea {
         settle();
     }
 
-    // Alt+Shift 拖拽列选
+    // Alt+Shift 拖拽列选（坐标驱动：文档位置经 positionToRectangle 换算为
+    // TextArea 本地坐标，直接驱动控制器的视觉列选接口——与 QML MouseArea
+    // 传原始坐标同源；不再合成鼠标事件，等长 ASCII 文本上与旧位置驱动
+    // 结果一致）
     void columnDrag(int from, int to)
     {
-        const auto mods = Qt::AltModifier | Qt::ShiftModifier;
-        const QPoint p0 = pointOf(from);
-        const QPoint p1 = pointOf(to);
-        sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton, mods);
-        sendMouse(QEvent::MouseMove, p1, Qt::NoButton, Qt::LeftButton, mods);
-        sendMouse(QEvent::MouseButtonRelease, p1, Qt::LeftButton, Qt::NoButton, mods);
+        const QRectF r1 = rectOf(from);
+        const QRectF r2 = rectOf(to);
+        mc->columnDragBeginAt(r1.x(), r1.y() + r1.height() / 2);
+        mc->columnDragUpdateAt(r2.x(), r2.y() + r2.height() / 2);
+        mc->columnDragEnd();
         settle();
     }
 
@@ -403,6 +425,18 @@ EditorArea {
     int segmentCount() const
     {
         return layer->property("selectionSegments").toList().size();
+    }
+
+    // 引擎全部光标 position 升序：空选区（start==end）不进 selectionRanges，
+    // 竖直窄矩形等“全空选区”形态经此断言（与 selectionPairs 互补）
+    QList<int> cursorPositionList() const
+    {
+        QList<int> out;
+        const QVariantList raw = mc->cursorPositions();
+        out.reserve(raw.size());
+        for (const QVariant &v : raw)
+            out.append(v.toInt());
+        return out;
     }
 };
 
@@ -563,6 +597,38 @@ private slots:
     // Binding 按 delegate 实例化（多文档各自生效），且 wrapMode 切换
     // （onWrapModeChanged 读写 contentItem 的既有链路）后仍保持
     void tcSB004_scrollBounds_stopAtBounds();
+
+    // ---- 列选区视觉对齐（需求：列选区视觉对齐；TC-V003 至 TC-V013） ----
+
+    // TC-V003（P0）：鼠标列选——中文混排视觉对齐（各行起点视觉 x 一致，
+    // 区间按各行实际布局命中，非字符列复制）
+    void tc114_columnDrag_cjkVisualAlignment();
+
+    // TC-V004（P0）：鼠标列选——短行不塌缩（竖直窄矩形：全空选区，
+    // 旧行为会得宽区间）
+    void tc115_columnDrag_shortLine_verticalNarrow();
+
+    // TC-V005（P0）：鼠标列选——短行不塌缩（水平端点：锚行宽度不因
+    // 短行端点变窄）
+    void tc116_columnDrag_shortLine_horizontalEnd();
+
+    // TC-V006（P0）：键盘列选——短行不塌缩 + 期望 x 粘性
+    void tc117_keyboardColumn_shortLine_stickyX();
+
+    // TC-V007（P1）：键盘列选——Left/Right 全角整字步进与不跨行
+    void tc118_keyboardColumn_leftRight_fullWidth();
+
+    // TC-V008（P1）：键盘列选——中文混排视觉对齐
+    void tc119_keyboardColumn_cjkVisualAlignment();
+
+    // TC-V009（P1）：列选——自动换行可视行分段（同一逻辑行多段选区）
+    void tc120_columnSelect_wordWrap_visualRowSegments();
+
+    // TC-V010（P1）：鼠标列选——反向拖拽等价
+    void tc121_columnDrag_reverseDrag();
+
+    // TC-V013（P1）：边界与状态机（单行/空文档/越界 y/Esc 退出）
+    void tc122_columnSelect_boundaries_stateMachine();
 
 private:
     // tc008b 对拍断言：selectionSegments 与朴素参考实现逐段一致
@@ -1170,6 +1236,21 @@ void TestEditorIntegration::tc008_wordWrap_visualLineSegments()
     b.settle();
     QCOMPARE(b.editor->property("wrapMode").toInt(), 0);
 
+    // 构造跨可视行选区 [0, len)：视觉列选在 NoWrap 下先行构造——
+    // 单逻辑行 = 单可视行，锚点（rect(0) 中心）与终点（rect(len) 中心）
+    // 同行逐对命中，恰为整行区间 [0, len)（等长 ASCII 上与旧位置驱动
+    // columnDragBegin(0, len) 结果一致）；随后开启 wrap，选区为文档坐标、
+    // 保持不变，覆盖层照常按可视行拆段。原位置式接口已移除（DEC-003），
+    // wrap 下视觉列选按可视行逐行命中、无法表达单逻辑行整行区间
+    const QRectF r0 = b.rectOf(0);
+    const QRectF r1 = b.rectOf(len);
+    b.mc->columnDragBeginAt(r0.x(), r0.y() + r0.height() / 2);
+    b.mc->columnDragUpdateAt(r1.x(), r1.y() + r1.height() / 2);
+    b.mc->columnDragEnd();
+    b.settle();
+    QVERIFY(b.mc->active());
+    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("0:%1").arg(len));
+
     // ---- 开启换行（4 = TextEdit.WrapAtWordBoundaryOrAnywhere，Qt6 枚举） ----
     b.editor->setProperty("wrapMode", 4);
     b.settle();
@@ -1190,14 +1271,6 @@ void TestEditorIntegration::tc008_wordWrap_visualLineSegments()
     // 宽度不回收（详见测试报告缺陷记录）
     QVERIFY2(lines.size() >= 3,
              qPrintable(QStringLiteral("expected 3+ visual lines, got %1").arg(lines.size())));
-
-    // 构造跨可视行选区 [0, len)：引擎列选为纯逻辑行列计算（不经鼠标、
-    // 不受可视布局影响），单逻辑行内 anchor→cursor 即一个行内选区
-    b.mc->columnDragBegin(0, len);
-    b.mc->columnDragEnd();
-    b.settle();
-    QVERIFY(b.mc->active());
-    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("0:%1").arg(len));
 
     // 被测输出：覆盖层分段（MultiCursorLayer.selectionSegments 二分拆段）
     const QVariantList segs = b.layer->property("selectionSegments").toList();
@@ -1382,8 +1455,17 @@ void TestEditorIntegration::tc008b_wordWrap_cjkLongWordMultilineSegments()
 
     // ---- 形态 ③：跨 3 行列选（多选区对形态：ranges 外层循环 + 每行内拆段） ----
     b.key(Qt::Key_Escape);
-    b.mc->columnDragBegin(0, l2Start + 55); // 列区间 [0,55)，覆盖行 1~3
-    b.mc->columnDragEnd();
+    // 原位置式接口 columnDragBegin(0, l2Start + 55) 已移除（DEC-003）：
+    // 本用例行 1/2 为中文（全角 ≈15px/字）、行 3 为 ASCII（≈8px/字），
+    // 视觉列选在同一 x 下的各行命中字符数必然不同，无法再现字符列
+    // [0,55) 的三对选区。改用“Alt+单击 3 行行首光标 + Shift+Right 逐格
+    // 扩展 55 次”构造逐位相同的三对选区（keepAnchor 锚点恒为行首）
+    b.setCursorPosition(0);
+    b.settle();
+    b.altClick(l1Start);
+    b.altClick(l2Start);
+    for (int i = 0; i < 55; ++i)
+        b.key(Qt::Key_Right, Qt::ShiftModifier);
     b.settle();
     QVERIFY(b.mc->active());
     QCOMPARE(b.selectionPairs(),
@@ -1507,6 +1589,452 @@ void TestEditorIntegration::tcSB004_scrollBounds_stopAtBounds()
                                            "a Flickable (or is null)")
                                 .arg(i)));
         QCOMPARE(f->property("boundsBehavior").toInt(), 0);
+    }
+}
+
+// ==================== 列选区视觉对齐（TC-V003 至 TC-V013） ====================
+//
+// 需求：列选区视觉对齐。鼠标 Alt+Shift 拖拽与 Ctrl+Alt+Shift+方向键共用
+// 控制器的“视觉列选会话”：矩形两边 = 锚点视觉 x 与活动点期望视觉 x，
+// 对覆盖的每个可视行用 positionAt(边 x, 行中心 y) 逐行命中（区间归一
+// 正向、短行各自钳制行末；键盘期望 x 粘性；反向拖拽等价）。
+// 断言约定：坐标一律经 editor 的 positionToRectangle / positionAt 换算，
+// 不写死像素常量（字体度量不可移植）；视觉对齐容差 ±2.0（验收标准 3）。
+// 注意：空选区不进 selectionRanges（控制器只报非空区间），竖直窄矩形
+// 等“全空选区”形态以 cursorPositionList 断言。
+
+// TC-V003（P0）：鼠标列选——中文混排视觉对齐。
+// 文本 3 行（中文/ASCII/中文混排）；两边取行 1 位置 2（`你好` 之后）与
+// 位置 5（`wor` 之后）的光标矩形 x，跨 3 行拖拽。断言：
+// - 恰 3 个选区（每行一段）；
+// - 各行选区起点视觉 x 与行 1 起点一致（±2.0，验收标准 3）；
+// - 各行字符区间 = positionAt(同 x, 行中心) 命中（按各行实际布局），
+//   非把行 1 的字符列复制到所有行：行 1 起点为 2，行 2 全 ASCII 同一
+//   视觉 x 命中约 4 个字符之后，既 ≠ 2，也 ≠ 旧行为复制的 8+2=10。
+void TestEditorIntegration::tc114_columnDrag_cjkVisualAlignment()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("你好world\nabcdefgh\n中文xyzabc")),
+             "testbench open failed");
+
+    const qreal x1 = b.rectOf(2).x();   // `你好` 之后（CJK 边界）
+    const qreal x2 = b.rectOf(5).x();   // `wor` 之后（混排边界）
+    QVERIFY2(x2 - x1 > 10.0,
+             qPrintable(QStringLiteral("layout sanity: x2-x1=%1").arg(x2 - x1)));
+
+    // 锚点行 1 → 活动点行 3；行中心 y 取各逻辑行首位置的光标矩形
+    b.mc->columnDragBeginAt(x1, b.rowCenterY(0));
+    b.mc->columnDragUpdateAt(x2, b.rowCenterY(17));
+    b.mc->columnDragEnd();
+    b.settle();
+
+    QVERIFY(b.mc->active());
+    QVERIFY(!b.mc->columnSelecting());
+    const QStringList pairs = b.selectionPairs();
+    QCOMPARE(pairs.size(), 3);
+
+    const int lineStarts[3] = { 0, 8, 17 };
+    int rowStarts[3] = { -1, -1, -1 };
+    for (int i = 0; i < 3; ++i) {
+        const QStringList se = pairs.at(i).split(QLatin1Char(':'));
+        const int s = se.at(0).toInt();
+        const int e = se.at(1).toInt();
+        rowStarts[i] = s;
+        // 区间端点 = 同 x 在该行中心的 positionAt 命中（逐行命中语义）
+        const qreal yc = b.rowCenterY(lineStarts[i]);
+        const int expS = b.positionAt(x1, yc);
+        const int expE = b.positionAt(x2, yc);
+        QVERIFY2(s == expS && e == expE,
+                 qPrintable(QStringLiteral("row %1 pair [%2,%3) != layout hit "
+                                           "[%4,%5)")
+                                .arg(i).arg(s).arg(e).arg(expS).arg(expE)));
+        // 起点视觉对齐行 1 起点（±2.0）
+        QVERIFY2(qAbs(b.rectOf(s).x() - x1) <= 2.0,
+                 qPrintable(QStringLiteral("row %1 start x %2 vs anchor x %3 "
+                                           "(diff %4)")
+                                .arg(i).arg(b.rectOf(s).x()).arg(x1)
+                                .arg(b.rectOf(s).x() - x1)));
+    }
+    // 非“字符列复制”：行 2（全 ASCII）同一视觉 x 命中的起点既不同于行 1
+    // 起点字符位置 2，也不同于旧行为直接套用的字符列 8+2=10
+    QVERIFY2(rowStarts[1] != 2 && rowStarts[1] != 8 + 2,
+             qPrintable(QStringLiteral("row 2 start %1 must be layout-hit "
+                                       "(not 2, not char-column copy 10)")
+                            .arg(rowStarts[1])));
+}
+
+// TC-V004（P0）：鼠标列选——短行不塌缩（竖直窄矩形）。
+// `aaaaaaaaaa\nbb\ncccccccccc`：行 1 位置 8 的光标 x 竖直拖到行 3 同 x。
+// 期望 3 个空选区光标（文档坐标按实际行偏移计算）：行 1 命中列 8（8:8）、
+// 行 2 钳制行末（`bb` 之后 = 13:13）、行 3 命中列 22（22:22）。旧行为把
+// 锚行字符列矩形套到所有行，短行钳制列参与 min/max 后会产生宽区间
+// （如 [2,8)），绝不能出现——空选区不进 selectionRanges，故
+// selectionPairs 必为空、光标集合恰为上述三点。
+void TestEditorIntegration::tc115_columnDrag_shortLine_verticalNarrow()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("aaaaaaaaaa\nbb\ncccccccccc")),
+             "testbench open failed");
+
+    const qreal x = b.rectOf(8).x();   // 行 1 位置 8 的光标 x
+    b.mc->columnDragBeginAt(x, b.rowCenterY(0));
+    b.mc->columnDragUpdateAt(x, b.rowCenterY(14));   // 行 3 首字符位置
+    b.mc->columnDragEnd();
+    b.settle();
+
+    QVERIFY(b.mc->active());
+    QCOMPARE(b.mc->cursorCount(), 3);
+    QVERIFY(!b.mc->columnSelecting());
+    // 绝不能出现宽区间（旧行为 [2,8) 类塌缩矩形）
+    QCOMPARE(b.selectionPairs().size(), 0);
+    QCOMPARE(b.root->property("selectionLength").toInt(), 0);
+    // 各行独立钳制：行 1 命中列 8、行 2 行末 13、行 3 命中列 22
+    QCOMPARE(b.cursorPositionList(), QList<int>() << 8 << 13 << 22);
+}
+
+// TC-V005（P0）：鼠标列选——短行不塌缩（水平端点）。
+// 同 TC-V004 文本：锚点行 1 位置 2，活动点拖到行 2、x 超出行 2 行末
+// （取行 1 位置 8 的 x）。期望：行 1 保持完整 [2,8)（宽度不因短行端点
+// 变窄）；行 2 钳制行末 13（空选区）。
+void TestEditorIntegration::tc116_columnDrag_shortLine_horizontalEnd()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("aaaaaaaaaa\nbb\ncccccccccc")),
+             "testbench open failed");
+
+    const qreal xA = b.rectOf(2).x();  // 锚点：行 1 位置 2
+    const qreal x8 = b.rectOf(8).x();  // 活动点 x：行 1 位置 8（远超行 2 行末）
+    b.mc->columnDragBeginAt(xA, b.rowCenterY(0));
+    b.mc->columnDragUpdateAt(x8, b.rowCenterY(11));  // 行 2 首字符位置
+    b.mc->columnDragEnd();
+    b.settle();
+
+    QVERIFY(b.mc->active());
+    QCOMPARE(b.mc->cursorCount(), 2);
+    // 行 1 完整 [2,8)；行 2 钳制行末 13（空选区不进 selectionRanges）
+    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("2:8"));
+    QCOMPARE(b.root->property("selectionLength").toInt(), 6);
+    QCOMPARE(b.cursorPositionList(), QList<int>() << 8 << 13);
+}
+
+// TC-V006（P0）：键盘列选——短行不塌缩 + 期望 x 粘性。
+// 同 TC-V004 文本；光标行 1 列 8（位置 8）。Ctrl+Alt+Shift+Down：
+// 第一次 → 行 1-2，行 1 恒空选区 8（不塌缩）、行 2 钳制行末 13；
+// 第二次 → 行 1-3，行 3 恢复粘性列 22（行 1 视觉 x 在行 3 的命中），
+// 而非短行钳制列 16（= 行 3 起始 14 + 行 2 行末列 2）。
+void TestEditorIntegration::tc117_keyboardColumn_shortLine_stickyX()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("aaaaaaaaaa\nbb\ncccccccccc")),
+             "testbench open failed");
+
+    b.setCursorPosition(8);
+    b.settle();
+    const auto sel = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+
+    // 第一次 Down：行 1-2，全部空选区（无宽区间、行 1 不塌缩）
+    b.key(Qt::Key_Down, sel);
+    QVERIFY(b.mc->active());
+    QCOMPARE(b.selectionPairs().size(), 0);
+    QCOMPARE(b.cursorPositionList(), QList<int>() << 8 << 13);
+
+    // 第二次 Down：行 3 恢复期望 x 粘性列 22（非短行钳制列 16）
+    b.key(Qt::Key_Down, sel);
+    QCOMPARE(b.selectionPairs().size(), 0);
+    QCOMPARE(b.mc->cursorCount(), 3);
+    QCOMPARE(b.cursorPositionList(), QList<int>() << 8 << 13 << 22);
+}
+
+// TC-V007（P1）：键盘列选——Left/Right 全角整字步进与不跨行。
+// `你好world\nabcdefgh`：
+// - 行首光标 Ctrl+Alt+Shift+Right 一次 → 选区 [0,1)（整字跨过 `你`，
+//   期望 x 更新为其右缘）；再一次 → [0,2)；
+// - Down 扩展到行 2：行 2 选区起点 = 行首（视觉对齐 x(0)），终点 =
+//   positionAt(x(2), 行 2 中心) 命中（非字符列复制的 8+2=10）；
+// - 行末（文档末）继续 Right：实际步进防护（DEC-006）→ 严格无操作，
+//   选区区间不变；
+// - 行首 Left：跨行被拒（Left/Right 不跨行，DEC-005）→ 无操作。
+void TestEditorIntegration::tc118_keyboardColumn_leftRight_fullWidth()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("你好world\nabcdefgh")),
+             "testbench open failed");
+    const auto sel = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+
+    // ---- 全角整字步进 ----
+    b.setCursorPosition(0);
+    b.settle();
+    b.key(Qt::Key_Right, sel);
+    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("0:1"));
+    b.key(Qt::Key_Right, sel);
+    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("0:2"));
+
+    // ---- Down 扩展到行 2（视觉对齐起点：x(0) 即行首左缘，字符位置不同） ----
+    b.key(Qt::Key_Down, sel);
+    const QStringList pairs = b.selectionPairs();
+    QCOMPARE(pairs.size(), 2);
+    QCOMPARE(pairs.at(0), QStringLiteral("0:2"));   // 行 1 选区不变
+    const QStringList p2 = pairs.at(1).split(QLatin1Char(':'));
+    QCOMPARE(p2.at(0).toInt(), 8);                  // 行 2 起点 = 行首
+    const int row2End = p2.at(1).toInt();
+    QCOMPARE(row2End, b.positionAt(b.rectOf(2).x(), b.rowCenterY(8)));
+    QVERIFY2(row2End != 8 + 2,
+             qPrintable(QStringLiteral("row 2 end %1 must be layout-hit, not "
+                                       "char-column copy (8+2=10)")
+                            .arg(row2End)));
+
+    // ---- 行末（文档末）Right 无操作：步进到底后继续按，选区不变 ----
+    for (int i = 0; i < 30; ++i)   // 远超行 2 剩余字符数，到底后余下均无操作
+        b.key(Qt::Key_Right, sel);
+    const QStringList atEnd = b.selectionPairs();
+    QCOMPARE(atEnd.size(), 2);
+    QCOMPARE(atEnd.at(1).split(QLatin1Char(':')).at(1).toInt(), 16);  // 到文档末
+    for (int i = 0; i < 3; ++i)
+        b.key(Qt::Key_Right, sel);
+    QCOMPARE(b.selectionPairs(), atEnd);   // 越界 Right：严格无操作
+
+    // ---- 行首 Left 无操作：新会话锚在行 2 行首（位置 8），Left 跨行被拒 ----
+    b.key(Qt::Key_Escape);
+    b.setCursorPosition(8);
+    b.settle();
+    b.key(Qt::Key_Left, sel);
+    b.key(Qt::Key_Left, sel);
+    b.key(Qt::Key_Left, sel);
+    QCOMPARE(b.selectionPairs().size(), 0);      // 无选区变化（无操作）
+    QCOMPARE(b.cursorPositionList(), QList<int>() << 8);
+    QCOMPARE(b.mc->cursorCount(), 1);
+}
+
+// TC-V008（P1）：键盘列选——中文混排视觉对齐。
+// `你好world\nabcdefgh`：光标行 1 位置 4（`你好` 之后的混排边界）；
+// Ctrl+Alt+Shift+Right×2 后 Down 扩展到行 2。断言：行 2 选区起点视觉 x
+// 与行 1 起点一致（±2.0）；字符位置按行 2 布局命中（全 ASCII 行同一
+// 视觉 x 命中更多字符），既 ≠ 行 1 起点字符位置 4，也 ≠ 字符列复制的
+// 8+4=12——即不是同字符列复制。
+void TestEditorIntegration::tc119_keyboardColumn_cjkVisualAlignment()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("你好world\nabcdefgh")),
+             "testbench open failed");
+    const auto sel = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+
+    b.setCursorPosition(4);
+    b.settle();
+    b.key(Qt::Key_Right, sel);
+    b.key(Qt::Key_Right, sel);
+    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("4:6"));
+    b.key(Qt::Key_Down, sel);
+    b.settle();
+
+    const QStringList pairs = b.selectionPairs();
+    QCOMPARE(pairs.size(), 2);
+    QCOMPARE(pairs.at(0), QStringLiteral("4:6"));   // 行 1 选区不变
+    const QStringList p2 = pairs.at(1).split(QLatin1Char(':'));
+    const int row2Start = p2.at(0).toInt();
+    // 行内区间 = 布局命中
+    QCOMPARE(row2Start, b.positionAt(b.rectOf(4).x(), b.rowCenterY(8)));
+    QCOMPARE(p2.at(1).toInt(), b.positionAt(b.rectOf(6).x(), b.rowCenterY(8)));
+    // 非字符列复制：≠ 行 1 起点字符位置 4，≠ 旧行为套用的 8+4=12
+    QVERIFY2(row2Start != 4 && row2Start != 8 + 4,
+             qPrintable(QStringLiteral("row 2 start %1 must be layout-hit "
+                                       "(not 4, not char-column copy 12)")
+                            .arg(row2Start)));
+    // 视觉对齐：行 2 起点视觉 x 与行 1 起点（锚 x）一致（±2.0）
+    const qreal anchorX = b.rectOf(4).x();
+    QVERIFY2(qAbs(b.rectOf(row2Start).x() - anchorX) <= 2.0,
+             qPrintable(QStringLiteral("row 2 start x %1 vs anchor x %2 "
+                                       "(diff %3)")
+                            .arg(b.rectOf(row2Start).x()).arg(anchorX)
+                            .arg(b.rectOf(row2Start).x() - anchorX)));
+}
+
+// TC-V009（P1）：列选——自动换行可视行分段。
+// 单逻辑行长文本（120×"word "，600 字符）在 wrap 下折为 ≥3 可视行；
+// 键盘列选（行首锚点 Right×5 后逐可视行 Down）：同一逻辑行按可视行
+// 产生多段选区（每段在各自段内命中），覆盖层段数同步增加（选区与
+// 拆段渲染链路一致，参考 tc008 的 segmentCount 断言）。
+void TestEditorIntegration::tc120_columnSelect_wordWrap_visualRowSegments()
+{
+    QString words;
+    for (int i = 0; i < 120; ++i)
+        words += QStringLiteral("word ");
+    Bench b;
+    QVERIFY2(b.open(words), "testbench open failed");
+
+    // 显式驱动 wrapMode（与用户配置解耦，同 tc008 模式）：NoWrap → Wrap
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+    b.editor->setProperty("wrapMode", 4);   // WrapAtWordBoundaryOrAnywhere
+    b.settle();
+    QCOMPARE(b.editor->property("wrapMode").toInt(), 4);
+
+    // 前置校验 + 期望数据：逐 position 扫描 y 跳变切分可视行（tc008 的
+    // 朴素参考法），取各可视行首个 position（文本全 ASCII，各行同网格）
+    QVector<int> rowFirst;
+    rowFirst.append(0);
+    for (int p = 1; p <= words.size(); ++p) {
+        if (b.rectOf(p).y() != b.rectOf(p - 1).y())
+            rowFirst.append(p);
+    }
+    QVERIFY2(rowFirst.size() >= 3,
+             qPrintable(QStringLiteral("expected >= 3 visual lines, got %1")
+                            .arg(rowFirst.size())));
+
+    const auto sel = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+    b.setCursorPosition(0);
+    b.settle();
+    for (int i = 0; i < 5; ++i)
+        b.key(Qt::Key_Right, sel);
+    QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("0:5"));
+
+    // Down 一次：同一逻辑行的前两个可视行各产生一段选区
+    b.key(Qt::Key_Down, sel);
+    const int r2 = rowFirst.at(1);
+    QStringList pairs = b.selectionPairs();
+    QCOMPARE(pairs,
+             QStringList() << QStringLiteral("0:5")
+                           << QStringLiteral("%1:%2").arg(r2).arg(r2 + 5));
+    QCOMPARE(b.segmentCount(), 2);
+
+    // 再 Down 一次：第三个可视行再增一段（选区与段数同步增长）
+    b.key(Qt::Key_Down, sel);
+    const int r3 = rowFirst.at(2);
+    pairs = b.selectionPairs();
+    QCOMPARE(pairs,
+             QStringList() << QStringLiteral("0:5")
+                           << QStringLiteral("%1:%2").arg(r2).arg(r2 + 5)
+                           << QStringLiteral("%1:%2").arg(r3).arg(r3 + 5));
+    QCOMPARE(b.segmentCount(), 3);
+
+    // 每段选区各落在单一可视行内（起/终点同 y），且逐段对应第 i 个可视行
+    for (int i = 0; i < pairs.size(); ++i) {
+        const QStringList se = pairs.at(i).split(QLatin1Char(':'));
+        const qreal sy = b.rectOf(se.at(0).toInt()).y();
+        QVERIFY2(qAbs(sy - b.rectOf(se.at(1).toInt()).y()) < 0.01,
+                 qPrintable(QStringLiteral("pair %1 [%2] spans multiple visual "
+                                           "lines")
+                                .arg(i).arg(pairs.at(i))));
+        QVERIFY2(qAbs(sy - b.rectOf(rowFirst.at(i)).y()) < 0.01,
+                 qPrintable(QStringLiteral("pair %1 [%2] not on visual line %3")
+                                .arg(i).arg(pairs.at(i)).arg(i)));
+    }
+}
+
+// TC-V010（P1）：鼠标列选——反向拖拽等价。
+// 与 tc114（TC-V003）同文本同矩形，自下而上拖拽（BeginAt 在下行 3、
+// UpdateAt 在上行 1）：行范围与行内区间均 qMin/qMax 归一，选区集合与
+// 正向拖拽完全相同。
+void TestEditorIntegration::tc121_columnDrag_reverseDrag()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("你好world\nabcdefgh\n中文xyzabc")),
+             "testbench open failed");
+
+    const qreal x1 = b.rectOf(2).x();
+    const qreal x2 = b.rectOf(5).x();
+
+    // 正向：行 1 (x1) → 行 3 (x2)
+    b.mc->columnDragBeginAt(x1, b.rowCenterY(0));
+    b.mc->columnDragUpdateAt(x2, b.rowCenterY(17));
+    b.mc->columnDragEnd();
+    b.settle();
+    const QStringList forward = b.selectionPairs();
+    QCOMPARE(forward.size(), 3);
+
+    // 反向：同一矩形，锚点在行 3 (x2)，活动点拖到行 1 (x1)
+    b.mc->columnDragBeginAt(x2, b.rowCenterY(17));
+    b.mc->columnDragUpdateAt(x1, b.rowCenterY(0));
+    b.mc->columnDragEnd();
+    b.settle();
+
+    QCOMPARE(b.mc->cursorCount(), 3);
+    QCOMPARE(b.selectionPairs(), forward);   // 与正向拖拽完全相同
+}
+
+// TC-V013（P1）：边界与状态机。
+// - 单行文档：键盘列选 Up/Down 收敛回锚行（首/末行为同一行：无操作、
+//   不塌陷、不报错）；
+// - 空文档：拖拽与键盘列选不崩溃、不产生越界位置；
+// - 拖拽 y 越出文本上/下边界：positionAt 钳制到文档边界，区间对收敛、
+//   端点不越界（需求“边界与约束”）；
+// - Esc 退出：恢复单光标（保留末光标），列选状态结束。
+void TestEditorIntegration::tc122_columnSelect_boundaries_stateMachine()
+{
+    const auto sel = Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier;
+
+    // ---- 单行文档：Up/Down 均收敛（无操作，不塌陷不报错） ----
+    {
+        Bench b;
+        QVERIFY2(b.open(QStringLiteral("hello")), "testbench open failed");
+        b.setCursorPosition(2);
+        b.settle();
+        b.key(Qt::Key_Up, sel);    // 首行 Up：钳制回锚行（首行即末行）
+        QCOMPARE(b.mc->cursorCount(), 1);
+        QVERIFY(!b.mc->active());
+        QCOMPARE(b.selectionPairs().size(), 0);
+        QCOMPARE(b.cursorPositionList(), QList<int>() << 2);
+        b.key(Qt::Key_Down, sel);  // 末行 Down：同样钳制回锚行
+        QCOMPARE(b.mc->cursorCount(), 1);
+        QCOMPARE(b.selectionPairs().size(), 0);
+        QCOMPARE(b.cursorPositionList(), QList<int>() << 2);
+    }
+
+    // ---- 空文档：拖拽/键盘列选不崩溃、无越界位置 ----
+    {
+        Bench b;
+        QVERIFY2(b.open(QString()), "testbench open failed");
+        b.mc->columnDragBeginAt(10.0, 4.0);
+        b.mc->columnDragUpdateAt(60.0, 4.0);
+        b.mc->columnDragEnd();
+        b.settle();
+        QCOMPARE(b.mc->cursorCount(), 1);
+        QVERIFY(!b.mc->active());
+        QVERIFY(!b.mc->columnSelecting());
+        QCOMPARE(b.cursorPositionList(), QList<int>() << 0);
+
+        b.key(Qt::Key_Down, sel);
+        b.key(Qt::Key_Up, sel);
+        QCOMPARE(b.mc->cursorCount(), 1);
+        QCOMPARE(b.cursorPositionList(), QList<int>() << 0);
+    }
+
+    // ---- 拖拽 y 越界：钳制收敛、区间不越界；Esc 退出恢复 ----
+    {
+        Bench b;
+        QVERIFY2(b.open(QStringLiteral("aaaa\nbbbb\ncccc")), "testbench open failed");
+        const int len = 14;
+        const qreal x1 = b.rectOf(1).x();
+        const qreal x2 = b.rectOf(3).x();
+        b.mc->columnDragBeginAt(x1, b.rowCenterY(0));
+
+        // y 越出文本上方（y=-50）：positionAt 钳制到首行 → 收敛为单行区间
+        b.mc->columnDragUpdateAt(x2, -50.0);
+        b.settle();
+        QCOMPARE(b.selectionPairs(), QStringList() << QStringLiteral("1:3"));
+
+        // y 越出文末下方（远超文末）：钳制到末行 → 三行全区间
+        b.mc->columnDragUpdateAt(x2, 10000.0);
+        b.settle();
+        const QStringList pairs = b.selectionPairs();
+        QCOMPARE(pairs, QStringList() << QStringLiteral("1:3")
+                                      << QStringLiteral("6:8")
+                                      << QStringLiteral("11:13"));
+        // 收敛不越界：全部区间端点在 [0, len]
+        for (const QString &p : pairs) {
+            const QStringList se = p.split(QLatin1Char(':'));
+            QVERIFY2(se.at(0).toInt() >= 0 && se.at(1).toInt() <= len,
+                     qPrintable(QStringLiteral("pair %1 out of range [0,%2]")
+                                    .arg(p).arg(len)));
+        }
+        b.mc->columnDragEnd();
+        b.settle();
+        QVERIFY(b.mc->active());
+
+        // Esc：退出多光标（保留末光标），列选状态结束
+        b.key(Qt::Key_Escape);
+        QCOMPARE(b.mc->cursorCount(), 1);
+        QVERIFY(!b.mc->active());
+        QVERIFY(!b.mc->columnSelecting());
     }
 }
 

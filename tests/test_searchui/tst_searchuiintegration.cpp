@@ -28,6 +28,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QRectF>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
@@ -183,6 +184,17 @@ Main {}
     {
         return qobject_cast<MultiCursorController *>(
                     editorArea->property("activeMc").value<QObject *>());
+    }
+
+    // TextArea.positionToRectangle（Q_INVOKABLE；QQuickTextEdit 为 Qt 私有
+    // 头禁用，经 QMetaObject 按名称调用——与 tst_editorintegration 的
+    // rectOf 同模式）：文档位置 → TextArea 本地坐标光标矩形
+    QRectF rectOf(QQuickItem *editor, int pos) const
+    {
+        QRectF ret;
+        QMetaObject::invokeMethod(editor, "positionToRectangle",
+                                  Q_RETURN_ARG(QRectF, ret), Q_ARG(int, pos));
+        return ret;
     }
 
     // 新建文档并写入初始内容（setContent 会置 modified = true）
@@ -993,10 +1005,18 @@ void TestSearchUiIntegration::tc205_multicursorMutex_and_uiLocked()
     b.dm->setActiveDocument(b.dm->documents().constFirst());
     b.settle();
 
-    // 激活多光标（列选跨行，与 test_editor 同驱动的控制器接口）
+    // 激活多光标（视觉列选，与 test_editor 的坐标驱动同法：rect(0) 中心
+    // 按下 → rect(8) 中心拖动 → 结束。等长 ASCII 上与旧位置驱动
+    // columnDragBegin(0, 5) 等价——两行各一对选区；该步骤只用于激活
+    // 多光标状态）
     MultiCursorController *mc = b.activeMc();
     QVERIFY(mc != nullptr);
-    mc->columnDragBegin(0, 5);
+    QQuickItem *ed = b.activeEditor();
+    QVERIFY(ed != nullptr);
+    const QRectF r0 = b.rectOf(ed, 0);
+    const QRectF r8 = b.rectOf(ed, 8);
+    mc->columnDragBeginAt(r0.x(), r0.y() + r0.height() / 2);
+    mc->columnDragUpdateAt(r8.x(), r8.y() + r8.height() / 2);
     mc->columnDragEnd();
     b.settle();
     QVERIFY(mc->active());
