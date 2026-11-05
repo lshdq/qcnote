@@ -25,6 +25,21 @@ import QtQuick.Controls
  *   接管期反向同步主光标并清原生选区（见下方防循环说明）；
  * - 状态栏光标数（cursorCount）随活动编辑器的控制器状态更新；
  *   接管期“已选 N 字符”改取各多光标选区长度之和（syncSelectionLength）。
+ *
+ * 查找替换集成（见 SearchDialog / SearchController / SearchHighlightLayer）：
+ * - 会话级 SearchController 单实例：target/textDocument 绑活动编辑器
+ *   （activeEditor 由活动 delegate 维护），活动文档切换时重绑 → 控制器
+ *   对新文档 restartSearch 重算（旧文档匹配区间不残留、索引归零），查找
+ *   串/选项保留（会话内）；查找参数与匹配状态的唯一持有者是控制器，
+ *   对话框只做输入与展示；
+ * - 每编辑器一个 SearchHighlightLayer（TextArea 子 Item，与
+ *   MultiCursorLayer 同位）：仅活动编辑器实例激活，可见性由 searchActive
+ *   控制（对话框关闭即隐藏，DEC-009：不清控制器匹配状态，F3 可继续跳转）；
+ * - 跳转滚动：监听控制器 stateChanged，currentIndex 变化时对活动编辑器
+ *   调 scrollCursorIntoView（findNext/findPrev 已先把当前匹配设为原生
+ *   选区；此处只读滚动，不改任何状态，无循环）；
+ * - 多光标互斥（DEC-008）：对话框打开前经 exitMultiCursor() 退出活动
+ *   编辑器的多光标。
  */
 Item {
     id: root
@@ -36,10 +51,62 @@ Item {
     // 光标数：>1 时状态栏显示“光标 ×N”（多光标 / 列选激活时由控制器更新）
     property int cursorCount: 1
 
+    // ---- 查找替换集成状态 ----
+    /// 查找功能是否激活（对话框打开期间为真）：各编辑器的
+    /// SearchHighlightLayer 以 searchActive && isActive 决定是否渲染匹配
+    /// 高亮；Main.qml 在打开时置真、对话框 rejected 时置假（DEC-009）
+    property bool searchActive: false
+    /// 活动编辑器（活动 delegate 维护；查找控制器 target/textDocument、
+    /// 选区预填读取、关闭后回焦均经此引用；delegate 销毁时置空）
+    property TextArea activeEditor: null
+    /// 活动编辑器的多光标控制器（exitMultiCursor 用，随 activeEditor 维护）
+    property MultiCursorController activeMc: null
+    /// 查找跳转滚动去重：上次已滚动到的 currentIndex（-2 保证首个匹配
+    /// （索引 0）也会触发一次滚动）
+    property int lastSearchScrollIndex: -2
+
     signal newRequested()
     signal openRequested()
 
     readonly property var documentsModel: DocumentManager.documentsModel
+
+    // ---- 查找控制器（会话级单实例） ----
+    // target/textDocument 绑活动编辑器：活动文档切换时重绑 → 控制器
+    // setTextDocument 对新文档 restartSearch 重算（旧文档区间不残留、
+    // 索引归零），查找串/替换串/选项保留（会话内，需求）。
+    // 查找参数变更即重算并归零索引；文档 contentsChange（外部键入/撤销/
+    // 重置，及本控制器替换编辑之外的修改）由控制器重算并钳制索引。
+    SearchController {
+        id: searchCtl
+        target: root.activeEditor
+        textDocument: root.activeEditor ? root.activeEditor.textDocument : null
+    }
+
+    /// 查找控制器（Main.qml 查找对话框的参数/状态/动作入口）
+    readonly property alias searchController: searchCtl
+
+    // 跳转滚动：控制器把当前匹配经 select 设为原生选区（findNext/
+    // findPrev/replaceCurrent 内先 select 后发 stateChanged），光标随选区
+    // 落到匹配末端；此处监听 stateChanged 在 currentIndex 变化时对活动
+    // 编辑器滚动到可见。只读滚动（不改匹配/选区/文档状态），无循环；
+    // Qt.callLater 等本轮 polish 布局稳定后执行（与既有滚动调用同时序）
+    Connections {
+        target: searchCtl
+
+        function onStateChanged() {
+            const idx = searchCtl.currentIndex
+            if (idx < 0 || idx === root.lastSearchScrollIndex)
+                return
+            root.lastSearchScrollIndex = idx
+            if (root.activeEditor) {
+                Qt.callLater(function() {
+                    // 活动编辑器或索引在此期间又变化时交给后续通知处理
+                    if (root.activeEditor && searchCtl.currentIndex === idx)
+                        root.activeEditor.scrollCursorIntoView()
+                })
+            }
+        }
+    }
 
     FontMetrics {
         id: monoMetrics
@@ -66,6 +133,30 @@ Item {
             visible: isActive
             anchors.fill: parent
 
+            // 活动编辑器引用上移到 EditorArea 根（查找控制器绑定源）；
+            // 失活/销毁时若仍指向自己则置空（确定性清理，不依赖引擎
+            // 对已销毁对象的置空行为）
+            onIsActiveChanged: {
+                if (isActive) {
+                    root.activeEditor = editor
+                    root.activeMc = mc
+                    editor.forceActiveFocus()
+                    editor.syncStatus()
+                } else {
+                    if (root.activeEditor === editor)
+                        root.activeEditor = null
+                    if (root.activeMc === mc)
+                        root.activeMc = null
+                }
+            }
+
+            Component.onDestruction: {
+                if (root.activeEditor === editor)
+                    root.activeEditor = null
+                if (root.activeMc === mc)
+                    root.activeMc = null
+            }
+
             // 初始光标：delegate 创建时 doc.cursorPosition 可能已非 0
             // （如会话恢复路径 restoreDocuments 先 openUrls 后写光标，
             // 创建早于写光标时由下方 Connections 兜底，两路径互补）；
@@ -77,13 +168,6 @@ Item {
                 // 计算失真），Qt.callLater 等布局稳定后执行；Qt 原生 attach
                 // 滚动为兜底，此处消除对兜底的时序依赖
                 Qt.callLater(editor.scrollCursorIntoView)
-            }
-
-            onIsActiveChanged: {
-                if (isActive) {
-                    editor.forceActiveFocus()
-                    editor.syncStatus()
-                }
             }
 
             ScrollView {
@@ -166,6 +250,19 @@ Item {
                     MultiCursorLayer {
                         textEditor: editor
                         controller: mc
+                    }
+
+                    // 搜索匹配高亮覆盖层（纯视觉，不消费事件）：全部匹配
+                    // 半透明底色 + 当前匹配描边（DEC-007 形状线索）。数据来
+                    // 自 EditorArea 会话级查找控制器；仅活动编辑器实例激活，
+                    // 可见性由 searchActive 控制（对话框关闭即隐藏，DEC-009）。
+                    // overflowed 时不再传入全部区间（DEC-004：全部底色停止
+                    // 绘制；当前匹配描边仅 1 段，开销可忽略，保留）
+                    SearchHighlightLayer {
+                        textEditor: editor
+                        matchRanges: searchCtl.overflowed ? [] : searchCtl.matchRanges
+                        currentRange: searchCtl.currentRange
+                        active: root.searchActive && editorHolder.isActive
                     }
 
                     // 按键拦截：控制器消费触发键（Ctrl+D / Ctrl+Alt+方向等）
@@ -447,6 +544,33 @@ Item {
                 }
             }
         }
+    }
+
+    // ---- 查找集成接口（供 Main.qml 的打开/关闭流程调用） ----
+
+    /// 退出活动编辑器的多光标（DEC-008：查找对话框打开前调用，互斥；
+    /// 单光标时无操作，既有行为零变化）
+    function exitMultiCursor() {
+        if (activeMc && activeMc.active)
+            activeMc.reset()
+    }
+
+    /// 活动编辑器当前选区文本（无选区返回 null）。调用方（Main 预填逻辑）
+    /// 自行判断含换行不预填；不在此处过滤，保持取值语义纯粹
+    function activeSelectionText() {
+        if (!activeEditor)
+            return null
+        const s = activeEditor.selectionStart
+        const e = activeEditor.selectionEnd
+        if (e <= s)
+            return null
+        return activeEditor.getText(s, e)
+    }
+
+    /// 焦点回活动编辑器（查找对话框关闭后调用；无活动编辑器无操作）
+    function focusActiveEditor() {
+        if (activeEditor)
+            activeEditor.forceActiveFocus()
     }
 
     WelcomePage {

@@ -6,6 +6,7 @@ int runLocalStorageTests(int argc, char *argv[]);
 int runDocumentTests(int argc, char *argv[]);
 int runDocumentManagerTests(int argc, char *argv[]);
 int runMultiCursorEngineTests(int argc, char *argv[]);
+int runSearchTests(int argc, char *argv[]);
 int runSessionManagerTests(int argc, char *argv[]);
 int runShellIntegrationTests(int argc, char *argv[]);
 int runSingleInstanceTests(int argc, char *argv[]);
@@ -23,6 +24,8 @@ int main(int argc, char *argv[])
         return runDocumentManagerTests(argc, argv);
     if (only == "mcengine")
         return runMultiCursorEngineTests(argc, argv);
+    if (only == "search")
+        return runSearchTests(argc, argv);
     if (only == "session")
         return runSessionManagerTests(argc, argv);
     if (only == "shell")
@@ -39,6 +42,7 @@ int main(int argc, char *argv[])
     failed += runDocumentTests(argc, argv);
     failed += runDocumentManagerTests(argc, argv);
     failed += runMultiCursorEngineTests(argc, argv);
+    failed += runSearchTests(argc, argv);
     failed += runSessionManagerTests(argc, argv);
     failed += runShellIntegrationTests(argc, argv);
     failed += runSingleInstanceTests(argc, argv);

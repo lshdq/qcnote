@@ -23,6 +23,10 @@ qt_add_library(qcnote_core STATIC
     editor/multicursorengine.cpp
     editor/multicursorcontroller.h
     editor/multicursorcontroller.cpp
+    editor/searchengine.h
+    editor/searchengine.cpp
+    editor/searchcontroller.h
+    editor/searchcontroller.cpp
     platform/gbkcodec.h
     platform/gbkcodec.cpp
     platform/shellintegration.h
@@ -69,8 +73,11 @@ qt_add_qml_module(qcnote_core
         qml/DialogButton.qml
         qml/DocumentTabs.qml
         qml/EditorArea.qml
+        qml/HighlightSegments.js
         qml/Main.qml
         qml/MultiCursorLayer.qml
+        qml/SearchDialog.qml
+        qml/SearchHighlightLayer.qml
         qml/StatusBar.qml
         qml/TitleBar.qml
         qml/Toolbar.qml

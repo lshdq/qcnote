@@ -8,6 +8,7 @@ qt_add_executable(test_core
     tst_gbkcodec.cpp
     tst_localstorage.cpp
     tst_multicursorengine.cpp
+    tst_searchengine.cpp
     tst_sessionmanager.cpp
     tst_shellintegration.cpp
     tst_singleinstance.cpp

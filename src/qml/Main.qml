@@ -10,6 +10,8 @@ import QtQuick.Layouts
  * - 快捷键统一为窗口级 Shortcut；菜单仅展示快捷键文本；
  * - 未保存关闭/退出流程：三选（保存 / 不保存 / 取消），取消中止；
  * - 打开/保存失败统一错误对话框（排队展示），内容不丢失；
+ * - 查找替换（Ctrl+F/Ctrl+H）：模态对话框（顶部对齐）+ 全部匹配高亮 +
+ *   F3/Shift+F3 关闭态跳转，与多光标互斥，见 SearchDialog/SearchController；
  * - 边缘 + 四角隐形命中区触发系统缩放，保留 Win+方向贴靠等原生行为；
  * - 会话恢复：启动时先恢复文档集（含光标/活动标签）再应用窗口几何、
  *   最后显示窗口（几何先就位再显示，避免默认几何闪跳）；运行期窗口
@@ -59,7 +61,7 @@ ApplicationWindow {
         return unsavedDialog.visible || errorDialog.visible
                || openFileDlg.visible || saveFileDialog.visible
                || titleBar.menuVisible || ctxMenuPromptDialog.visible
-               || reloadConfirmDialog.visible
+               || reloadConfirmDialog.visible || searchDialog.visible
     }
 
     function firstModifiedDoc() {
@@ -166,6 +168,66 @@ ApplicationWindow {
         const i = m.indexOf(DocumentManager.activeDocument)
         const n = m.count
         DocumentManager.activeDocument = m.at(((i + delta) % n + n) % n)
+    }
+
+    // ---- 查找与替换 ----
+    // Ctrl+F / Ctrl+H 打开同一对话框（聚焦框不同）。打开逻辑：
+    // - 查找对话框自身可见（亦属 uiLocked）时不重开，改为聚焦对应输入框
+    //   （查找框全选，便于直接重新输入）；其他模态打开时无操作；
+    // - 无活动文档（欢迎页）无操作（需求边界）；
+    // - 多光标激活时先退出（DEC-008 互斥）；
+    // - 预填：活动编辑器有不含换行的选区 → 查找串（含换行不预填），
+    //   否则沿用上次查找串；两种情况均在对话框内全选（其 onAboutToShow
+    //   自控制器同步输入框）。
+    function doFind() {
+        openSearchDialog("find")
+    }
+
+    function doReplace() {
+        openSearchDialog("replace")
+    }
+
+    function openSearchDialog(mode) {
+        if (uiLocked()) {
+            if (searchDialog.visible) {
+                if (mode === "replace")
+                    searchDialog.focusReplaceField()
+                else
+                    searchDialog.focusFindField()
+            }
+            return
+        }
+        if (!DocumentManager.activeDocument)
+            return
+        editorArea.exitMultiCursor()
+        const sel = editorArea.activeSelectionText()
+        if (sel !== null && sel.indexOf("\n") === -1)
+            editorArea.searchController.pattern = sel
+        // 高亮层激活（对话框关闭时由 searchDialog.onRejected 复位）
+        editorArea.searchActive = true
+        if (mode === "replace")
+            searchDialog.openReplace()
+        else
+            searchDialog.openFind()
+    }
+
+    // F3 / Shift+F3 在对话框关闭时的跳转（DEC-009：沿用上次查找参数与
+    // 控制器保留的匹配状态，不恢复全部高亮）；无活动文档、无查找串或
+    // 无匹配时无操作。经对话框的跳转出口执行（全新会话首跳先定位当前
+    // 匹配，语义与对话框内 Enter 一致）；对话框打开期间 F3 由窗口级
+    // Shortcut 直接转发（见下方快捷键），不经本函数
+    function searchJumpGlobal(forward) {
+        if (uiLocked())
+            return
+        if (!DocumentManager.activeDocument)
+            return
+        const c = editorArea.searchController
+        if (c.pattern.length === 0 || c.matchCount === 0)
+            return
+        if (forward)
+            searchDialog.doFindNext()
+        else
+            searchDialog.doFindPrev()
     }
 
     // ---- 关闭 / 退出流程 ----
@@ -405,6 +467,35 @@ ApplicationWindow {
         sequence: "Ctrl+Shift+Tab"
         onActivated: root.cycleTab(-1)
     }
+    Shortcut {
+        sequence: "Ctrl+F"
+        onActivated: root.doFind()
+    }
+    Shortcut {
+        sequence: "Ctrl+H"
+        onActivated: root.doReplace()
+    }
+    // F3 / Shift+F3：对话框关闭时全局跳转（DEC-009，沿用上次查找参数）；
+    // 对话框打开时转发给对话框动作（与输入框 Enter 等价，此时焦点可能在
+    // 选项开关或按钮上——选择转发而非仅靠输入框 Enter 处理）
+    Shortcut {
+        sequence: "F3"
+        onActivated: {
+            if (searchDialog.visible)
+                searchDialog.doFindNext()
+            else
+                root.searchJumpGlobal(true)
+        }
+    }
+    Shortcut {
+        sequence: "Shift+F3"
+        onActivated: {
+            if (searchDialog.visible)
+                searchDialog.doFindPrev()
+            else
+                root.searchJumpGlobal(false)
+        }
+    }
 
     // ---- 对话框 ----
     FileDialog {
@@ -620,6 +711,22 @@ ApplicationWindow {
         }
         // 取消（含 Esc）：不动作，未保存修改保留
         onRejected: root.reloadConfirmDoc = null
+    }
+
+    // 查找与替换对话框（DEC-002 顶部对齐模态）：参数与匹配状态由
+    // EditorArea 会话级 SearchController 持有，本实例只做输入/展示/转发；
+    // 打开与预填逻辑见 doFind/doReplace（openSearchDialog）
+    SearchDialog {
+        id: searchDialog
+        controller: editorArea.searchController
+
+        // 关闭统一出口（Esc 与「关闭」按钮均为 RejectRole → rejected）：
+        // DEC-009——不调 reset()，控制器匹配状态保留供 F3 继续跳转；
+        // 仅隐藏高亮层并把焦点还给活动编辑器
+        onRejected: {
+            editorArea.searchActive = false
+            editorArea.focusActiveEditor()
+        }
     }
 
     Connections {

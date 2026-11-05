@@ -65,6 +65,21 @@ QtObject {
     /// 多光标选区高亮（带透明度，叠于文本之上）
     readonly property color multiSelection: dark ? "#336f9bff" : "#293564d4"
 
+    // ---- 搜索（查找/替换） ----
+    /// 全部匹配底色（半透明，叠于文本之上）。色相取橙黄系而非选区蓝：
+    /// 搜索高亮与原生选区 / 多光标选区同屏出现（当前匹配本身即原生选区），
+    /// 蓝系会与选区蓝混淆；橙黄与蓝互补、同屏可辨，且与 unsavedMark
+    /// 同属"注意力/标记"语义。透明度参照 selection / multiSelection
+    /// （0x33 / 0x29）的风格略上调至 0x4d / 0x59：橙黄在浅色主题白色
+    /// 内容背景上低于约 25% 透明度时几乎不可辨，仍属半透明档，文本可读。
+    readonly property color searchMatch: dark ? "#4dffb454" : "#59ffb454"
+    /// 当前匹配描边（不透明，同色系较底色加深——底色是同色相约 30% 透明度
+    /// 的浅渍，描边取全强度橙黄 / 深琥珀，浅深两主题下均清晰可辨）。
+    /// 「有描边 = 当前匹配」本身即非颜色区分线索，颜色仅辅助。
+    /// 与 unsavedMark 同值但独立 token（语义不同：未保存标记 vs 搜索描边，
+    /// 便于各自单独调整，参照 onAccentForeground / closeGlyphForeground 先例）。
+    readonly property color searchMatchBorder: dark ? "#ffb454" : "#b37700"
+
     // ---- 字体 ----
     /// 编辑区等宽字体（Windows 自带；缺字时 Qt 自动回退系统字体）
     readonly property string fontFamilyMono: "Consolas"
