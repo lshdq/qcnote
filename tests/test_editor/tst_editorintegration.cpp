@@ -28,6 +28,7 @@
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPoint>
+#include <QPointingDevice>
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
@@ -37,6 +38,7 @@
 #include <QStringList>
 #include <QTextLayout>
 #include <QVariant>
+#include <QWheelEvent>
 
 #include "document/document.h"
 #include "document/documentmanager.h"
@@ -108,6 +110,49 @@ QQuickItem *contentFlickable(QQuickItem *scroll)
     if (!classNameMatches(flick, "Flickable"))
         return nullptr;
     return flick;
+}
+
+// item 的祖先 ScrollView：TextArea 位于其 contentItem（内部 Flickable）
+// 内，向上遍历可视树父链即得（不依赖"全树唯一"假设，多文档 delegate
+// 时同样命中各自编辑器的滚动视图）
+QQuickItem *ancestorScrollView(QQuickItem *item)
+{
+    QQuickItem *p = item ? item->parentItem() : nullptr;
+    while (p) {
+        if (classNameMatches(p, "ScrollView"))
+            return p;
+        p = p->parentItem();
+    }
+    return nullptr;
+}
+
+// 显式 Mouse 类型的合成指针设备：offscreen 默认合成设备
+//（primaryPointingDevice）类型非 Mouse，而 QQuickTextControlPrivate::
+// mouseDoubleClickEvent 的双击选词分支要求 isEventFromMouseOrTouchpad
+//（设备 Mouse/TouchPad）；且手工构造的 DblClick 不是 begin 事件、须借
+// 第二击 press 建立的独占抓取通道送达（真实平台分别由窗口系统设备与
+// 平台双击合成保证，见 tcD009）。函数内静态（首次调用时
+// QGuiApplication 已就绪）
+const QPointingDevice *synthMouse()
+{
+    static const QPointingDevice dev(QStringLiteral("tst-synth-mouse"), 1,
+                                     QInputDevice::DeviceType::Mouse,
+                                     QPointingDevice::PointerType::Generic,
+                                     QInputDevice::Capability::Position, 1, 3);
+    return &dev;
+}
+
+// editor 所在 delegate（editorHolder）：向上找持 nativeDragGuard 属性的
+// 项（拖拽守卫状态的直接读取入口；找不到说明 EditorArea 结构变化）
+QQuickItem *dragGuardHolder(QQuickItem *editor)
+{
+    QQuickItem *p = editor ? editor->parentItem() : nullptr;
+    while (p) {
+        if (p->property("nativeDragGuard").isValid())
+            return p;
+        p = p->parentItem();
+    }
+    return nullptr;
 }
 
 /**
@@ -297,6 +342,28 @@ EditorArea {
     // 等待 QML 绑定/布局/信号传递
     void settle() { QTest::qWait(30); }
 
+    // 拖拽步进用短等待：全部 move 须在 QQuickPressHandler 的 800ms
+    // 延迟按下窗口内完成，收紧裕度防 CI 重载偶发假失败
+    void settleDrag() { QTest::qWait(10); }
+
+    // 活动编辑器的内部 Flickable（ScrollView.contentItem）：拖拽守卫的
+    // 直接作用对象（interactive 绑定）与滚动状态观测点（contentY）
+    QQuickItem *flick() const
+    {
+        QQuickItem *scroll = ancestorScrollView(editor);
+        return scroll ? contentFlickable(scroll) : nullptr;
+    }
+
+    // 文档选区文本（TextEdit.getText(start, end) Q_INVOKABLE）
+    QString selectedText(int start, int end) const
+    {
+        QString ret;
+        QMetaObject::invokeMethod(const_cast<QQuickItem *>(editor), "getText",
+                                  Q_RETURN_ARG(QString, ret),
+                                  Q_ARG(int, start), Q_ARG(int, end));
+        return ret;
+    }
+
     // 文档位置 → 窗口坐标（字符左缘中点；positionAt 与之互逆）
     QPoint pointOf(int docPos) const
     {
@@ -307,12 +374,22 @@ EditorArea {
 
     // 合成鼠标事件：手动构造 QMouseEvent 发送（QTest::mouseMove 生成的
     // move 事件 buttons 状态不符合按下拖拽语义，导致原生/MouseArea 拖拽
-    // 选择失效；此处完全控制 button/buttons/modifiers）
+    // 选择失效；此处完全控制 button/buttons/modifiers/device）。
+    // device：默认 primaryPointingDevice（offscreen 下类型非 Mouse）——
+    // 双击用例（tcD009）必须传 synthMouse()：QQuickTextControl 双击选词
+    // 分支的 isEventFromMouseOrTouchpad 门槛接受 Mouse 或 TouchPad，
+    // offscreen 默认指点设备两者皆非；press/move/release 路径无设备门槛。
+    // 注意：手工构造的 MouseButtonDblClick 事件 isBeginEvent()==false，
+    // delivery 层不做 press 分发、update 通道对合成事件不可达（诊断实证），
+    // 须直接 sendEvent 给 editor 驱动 item 内部链路，见 tcD009
     void sendMouse(QEvent::Type type, const QPointF &local, Qt::MouseButton button,
-                   Qt::MouseButtons buttons, Qt::KeyboardModifiers mods)
+                   Qt::MouseButtons buttons, Qt::KeyboardModifiers mods,
+                   const QPointingDevice *device = nullptr)
     {
         const QPointF global = QPointF(view.mapToGlobal(local.toPoint()));
-        QMouseEvent ev(type, local, global, button, buttons, mods);
+        QMouseEvent ev(type, local, global, button, buttons, mods,
+                       device ? device
+                              : QPointingDevice::primaryPointingDevice());
         QCoreApplication::sendEvent(&view, &ev);
     }
 
@@ -629,6 +706,82 @@ private slots:
 
     // TC-V013（P1）：边界与状态机（单行/空文档/越界 y/Esc 退出）
     void tc122_columnSelect_boundaries_stateMachine();
+
+    // ---- 编辑区竖直拖拽选区修复（需求：编辑区竖直拖拽选区修复） ----
+    // 对应《测试用例-编辑区竖直拖拽选区修复》TC-001 至 TC-004 的可自动化
+    // 部分：经合成鼠标事件驱动完整事件链路（窗口 → TextArea 的
+    // QQuickPressHandler 延迟按下 → 补放 press → QTextDocument 选区），
+    // 以内部 Flickable 的 contentY 恒定断言"视图未被抢为滚动"。
+
+    // TC-001（P0）：竖直先行拖拽选区（原始缺陷场景）——先竖直下移 42px
+    // 再横移，选区自按下点连续产生；守卫期间 Flickable 非交互、
+    // contentY 纹丝不动；释放后守卫复位
+    void tcD001_verticalFirst_dragSelect();
+
+    // TC-002（P0）：近乎纯竖直拖拽选区——竖直为主、带自然横向漂移
+    //（累计 > startDragDistance，触发延迟按下补放）跨多行
+    void tcD002_mostlyVertical_dragSelect();
+
+    // TC-003（P0）：横向先行拖拽选区（回归）——先横移超阈值（补放 press、
+    // keepMouseGrab 生效）再竖直，行为与修复前一致
+    void tcD003_horizontalFirst_regression();
+
+    // TC-004（P0，可自动化部分）：守卫复位后滚轮滚动恢复——拖拽选区
+    // 释放（守卫复位、interactive 恢复 true）后合成滚轮事件，
+    // Flickable 正常滚动（守卫无残留禁用）
+    void tcD004_wheelScroll_afterGuardRelease();
+
+    // TC-005（P0，防回归）：非左键单击不得置守卫——QQuickPressHandler 对
+    // 任意按键都发 pressed/released，若 onPressed 不过滤按键而 onReleased
+    // 过滤，右/中键单击会置守卫 true 且其 release 被过滤挡住不复位，
+    // 守卫卡死 → Flickable interactive 持续 false → 滚轮失效直到下次
+    // 左键点击或焦点转移。断言右/中键 press-release 后守卫复位、
+    // interactive 为 true；再做左键对照保持主路径覆盖
+    void tcD005_nonLeftClick_guardNotStuck();
+
+    // TC-006（P0，第 4 轮根因守护）：纯竖直拖拽（全程 |dx| ≤ 10px）立即
+    // 产生选区且随步进增长——守护 QQuickPressHandler delayed-press 销毁
+    // 缺陷（800ms 定时器仅横向取消，到期销毁保存的 press 后原生 move
+    // 永不扩展选区），对 PointHandler 被动驱动敏感：移除 PointHandler 后
+    // 本用例应失败
+    void tcD006_pureVertical_immediateSelection();
+
+    // TC-007（P1，第 4 轮新机制回归）：单击不拖拽——press→release 无位移
+    //（及 ≤ 字符内微移）后无选区残留、光标定位正确（onPressed 立即定位；
+    // onReleased 重放条件 last !== anchor 不触发）
+    void tcD007_plainClick_noSelectionResidue();
+
+    // TC-008（P0，第 4 轮新机制回归）：纯竖直拖拽释放后选区不被原生补放
+    // 清空——onReleased 以 Qt.callLater 延迟一拍重放选区；释放后等待 2 帧
+    // 再查、并跨 800ms 延迟按下定时器窗口（delayed press 到期销毁路径）
+    // 复查，选区仍保留且锚/终点精确
+    void tcD008_releaseReplay_survivesNativeReplay();
+
+    // TC-009（P1，第 4 轮新机制回归，可自动化部分）：双击路径——手工构造
+    // DblClick（synthMouse 设备 + 直接 sendEvent 给 editor）验证原生选词
+    // 仍工作、双击会话结束后守卫/锚点复位无残留。offscreen 合成的 delivery
+    // 通道与平台序列差异（第二击含 Press）如实记录；双击后拖拽按词扩展
+    // 见人工待验
+    void tcD009_doubleClick_nativeWordSelect();
+
+    // TC-010（P0，第 4 轮新机制回归）：释放后立即二次拖拽——连续两次
+    // press-drag-release 循环，第二次锚点正确更新为新按下点（nativeDragAnchor
+    // 即时换新）、nativeDragLastPos 无上次残留（release 已复位为 -1），
+    // 第二次选区锚 = 第二次按下点而非旧锚/旧终点
+    void tcD010_secondDrag_anchorRenewal();
+
+    // TC-011（P0，第 5 轮回归）：Shift+单击扩展选区——守护第 5 轮应改项：
+    // 第 4 轮 onPressed 无条件 cursorPosition = pos（MoveAnchor 语义）把锚
+    // 改写为按下点，Shift 扩展长度恒 0 且旧选区被清除。修复后 Shift 分支
+    // 保持 KeepAnchor 语义（锚 = 当前光标 / 既有选区中光标的对端）。
+    // 原生基线（qquicktextcontrol.cpp mousePressEvent KeepAnchor 分支）：
+    // 锚不跟随更新——连续 Shift+click 始终自首次光标锚扩展
+    void tcD011_shiftClick_extendSelection();
+
+    // TC-012（P0，第 5 轮回归）：Shift+拖拽扩展选区——单击定位 A 后
+    // Shift+press 于 B 拖到 C：选区起点必须仍是 A（不得被改写为 B），
+    // 终点随拖拽更新到 C；守卫期间选区持续由 PointHandler 驱动扩展
+    void tcD012_shiftDrag_extendSelection();
 
 private:
     // tc008b 对拍断言：selectionSegments 与朴素参考实现逐段一致
@@ -2036,6 +2189,921 @@ void TestEditorIntegration::tc122_columnSelect_boundaries_stateMachine()
         QVERIFY(!b.mc->active());
         QVERIFY(!b.mc->columnSelecting());
     }
+}
+
+// ==================== 编辑区竖直拖拽选区修复（TC-001 至 TC-004 可自动化部分） ====================
+//
+// 需求：编辑区竖直拖拽选区修复。根因在 Qt 框架内部机制（QQuickPressHandler
+// 延迟按下窗口内 keepMouseGrab 未设置，ScrollView 内部 Flickable 经
+// childMouseEventFilter 抢夺竖直拖拽转为视图滚动），项目侧以 EditorArea.qml
+// 的 nativeDragGuard 守卫规避：按下期间将 contentItem（内部 Flickable）的
+// interactive 绑定为 false，阻断抢夺与拖动；释放（或失焦兜底）即恢复。
+//
+// 断言设计：
+// - 拖拽全程 contentY 恒等于初始值：视图未被抢为滚动（缺陷的直接可观测面）
+//   ——抢夺一旦发生，竖直位移会转换为 contentY 增长；
+// - 按下期间 nativeDragGuard == true 且 Flickable.interactive == false
+//   （守卫与 Binding 生效的直接断言）；
+// - 选区产生与更新：selectionEnd > selectionStart、锚 == 按下点（补放的
+//   press 保留原始坐标）、终点 == positionAt(终点坐标)（与逐行命中同源）；
+// - 释放后守卫复位（nativeDragGuard == false、interactive == true），
+//   合成滚轮事件滚动恢复（无残留禁用）。
+// 合成时序：tcD001/tcD002 每步 settleDrag() 10ms（全部 move 须在 800ms
+// 延迟窗口内完成）；tcD003 及之后每步 settle() 30ms。横向
+// 位移超 startDragDistance（约 10px）触发延迟 press 补放；窗口外拖拽、
+// 真实滚轮/滚动条实体手感等见人工待验清单。
+//
+// 公共文本：200 行（内容高度远超 400px 视口）保证垂直可滚动——守卫失效
+// 时 Flickable 才具备抢夺竖直拖拽的前提（该轴可滚动）。
+
+// TC-001（P0）：竖直先行拖拽选区（原始缺陷场景）。
+// 按下后先纯竖直下移 6 步（累计 42px，超 Flickable 抢夺阈值约 10px，
+// 横向零位移），再横移 24px（超 startDragDistance 触发 press 补放）：
+// 选区自按下点连续产生，contentY 全程恒定，释放后守卫复位。
+// 注意：全部 move 须在 800ms 延迟窗口（QQuickPressHandler 定时器）内
+// 完成，故步进用 10ms 短等待（含 press 后 settle，同样构成窗口压力）；
+// 若 CI 重载导致偶发假失败，直接重跑本用例甄别。
+void TestEditorIntegration::tcD001_verticalFirst_dragSelect()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QVERIFY2(flick->property("contentHeight").toDouble()
+                     > flick->property("height").toDouble(),
+             "content must overflow viewport (vertical scroll steal premise)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+
+    // 初始状态：守卫复位、Flickable 交互开启、位于顶部
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+    const qreal contentY0 = flick->property("contentY").toDouble();
+    QCOMPARE(contentY0, 0.0);
+
+    const int pressPos = 3; // 第 0 行 "lin|e 0"
+    const QPoint p0 = b.pointOf(pressPos);
+
+    // 按下：守卫立即生效（interactive = false，两条抢夺路径同时被阻断）
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+    QCOMPARE(flick->property("interactive").toBool(), false);
+
+    // 先竖直向下 6 步（每步 7px、累计 42px，横向零位移）：无守卫时
+    // Flickable 将在第 2 步起抢夺独占抓取转为视图滚动（contentY 增长）
+    for (int i = 1; i <= 6; ++i) {
+        b.sendMouse(QEvent::MouseMove, p0 + QPoint(0, i * 7), Qt::NoButton,
+                    Qt::LeftButton, Qt::NoModifier);
+        b.settleDrag();
+        QVERIFY2(flick->property("contentY").toDouble() == contentY0,
+                 qPrintable(QStringLiteral("step %1: contentY %2 changed "
+                                           "(drag stolen as scroll)")
+                                .arg(i)
+                                .arg(flick->property("contentY").toDouble())));
+    }
+
+    // 再横移 24px（超 startDragDistance）：延迟按下补放，选区自按下点展开
+    const QPoint p1 = p0 + QPoint(24, 42);
+    b.sendMouse(QEvent::MouseMove, p1, Qt::NoButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             qPrintable(QStringLiteral("no selection after horizontal move "
+                                       "(start=%1 end=%2)")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    QCOMPARE(b.selectionStart(), pressPos); // 锚 = 按下点（正向拖拽）
+    const QPointF local1 = b.editor->mapFromScene(QPointF(p1));
+    QCOMPARE(b.selectionEnd(), b.positionAt(local1.x(), local1.y()));
+    QCOMPARE(flick->property("contentY").toDouble(), contentY0);
+    const int end1 = b.selectionEnd();
+
+    // 选区持续更新：继续横移并下移一行（目标行是短行，纯横移会双双
+    // 钳制到行末同一位置，无法体现更新；跨行下移驱动选区真实增长）
+    const QPoint p2 = p0 + QPoint(48, 56);
+    b.sendMouse(QEvent::MouseMove, p2, Qt::NoButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QVERIFY2(b.selectionEnd() > end1,
+             qPrintable(QStringLiteral("selection must keep updating "
+                                       "(end %1 not > %2)")
+                            .arg(b.selectionEnd()).arg(end1)));
+    const QPointF local2 = b.editor->mapFromScene(QPointF(p2));
+    QCOMPARE(b.selectionEnd(), b.positionAt(local2.x(), local2.y()));
+
+    // 释放：守卫复位、滚动恢复交互（滚轮不再被禁用）、选区定格
+    b.sendMouse(QEvent::MouseButtonRelease, p2, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+    QCOMPARE(flick->property("contentY").toDouble(), contentY0);
+    QVERIFY(b.selectionEnd() > b.selectionStart());
+}
+
+// TC-002（P0）：近乎纯竖直拖拽选区（自然操作）。
+// 竖直为主、每步带 2px 横向漂移（7 步累计 +14px > startDragDistance，
+// 代表真实人手拖拽；全程纯竖直 ≤10px 是 Qt 上游缺陷已知限制，见
+// docs/已知问题，不在本用例覆盖）：跨多行选区产生，contentY 恒定。
+// 注意：全部 move 须在 800ms 延迟窗口（QQuickPressHandler 定时器）内
+// 完成，故步进用 10ms 短等待（含 press 后 settle，同样构成窗口压力）；
+// 若 CI 重载导致偶发假失败，直接重跑本用例甄别。
+void TestEditorIntegration::tcD002_mostlyVertical_dragSelect()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    const qreal contentY0 = flick->property("contentY").toDouble();
+
+    const int pressPos = 3;
+    const QPoint p0 = b.pointOf(pressPos);
+
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(flick->property("interactive").toBool(), false);
+
+    // 7 步 (+2px, +8px)：累计 (+14, +56)，竖直为主跨多行
+    const QPoint last = p0 + QPoint(14, 56);
+    for (int i = 1; i <= 7; ++i) {
+        b.sendMouse(QEvent::MouseMove, p0 + QPoint(i * 2, i * 8), Qt::NoButton,
+                    Qt::LeftButton, Qt::NoModifier);
+        b.settleDrag();
+        QVERIFY2(flick->property("contentY").toDouble() == contentY0,
+                 qPrintable(QStringLiteral("step %1: contentY %2 changed "
+                                           "(drag stolen as scroll)")
+                                .arg(i)
+                                .arg(flick->property("contentY").toDouble())));
+    }
+
+    b.sendMouse(QEvent::MouseButtonRelease, last, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+
+    // 跨多行选区：锚 = 按下点、终点 = 终点坐标布局命中、含换行
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             qPrintable(QStringLiteral("no selection (start=%1 end=%2)")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    QCOMPARE(b.selectionStart(), pressPos);
+    const QPointF local = b.editor->mapFromScene(QPointF(last));
+    QCOMPARE(b.selectionEnd(), b.positionAt(local.x(), local.y()));
+    const QString sel = b.selectedText(pressPos, b.selectionEnd());
+    QVERIFY2(sel.contains(QLatin1Char('\n')),
+             qPrintable(QStringLiteral("selection must span multiple lines, "
+                                       "got '%1'")
+                            .arg(sel)));
+
+    // 守卫复位、视图未滚动
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+    QCOMPARE(flick->property("contentY").toDouble(), contentY0);
+}
+
+// TC-003（P0）：横向先行拖拽选区（回归）。
+// 先横移 24px（超 startDragDistance → press 补放、keepMouseGrab 生效，
+// 修复前即正常）再竖直 5 步共 40px：行为与修复前一致——同行选区先产生，
+// 竖直扩展跨行，contentY 恒定（守卫不得反向破坏既有正常路径）。
+void TestEditorIntegration::tcD003_horizontalFirst_regression()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    const qreal contentY0 = flick->property("contentY").toDouble();
+
+    const int pressPos = 3;
+    const QPoint p0 = b.pointOf(pressPos);
+
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+    QCOMPARE(flick->property("interactive").toBool(), false);
+
+    // 先横向 24px（同行）：选区立即产生、不含换行
+    const QPoint p1 = p0 + QPoint(24, 0);
+    b.sendMouse(QEvent::MouseMove, p1, Qt::NoButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settle();
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             qPrintable(QStringLiteral("no selection after horizontal-first "
+                                       "move (start=%1 end=%2)")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    QCOMPARE(b.selectionStart(), pressPos);
+    const int endH = b.selectionEnd();
+    QVERIFY2(!b.selectedText(pressPos, endH).contains(QLatin1Char('\n')),
+             "horizontal-first selection must stay on one line");
+    QCOMPARE(flick->property("contentY").toDouble(), contentY0);
+
+    // 再竖直 5 步共 40px：选区跨行扩展
+    const QPoint p2 = p0 + QPoint(24, 40);
+    for (int i = 1; i <= 5; ++i) {
+        b.sendMouse(QEvent::MouseMove, p0 + QPoint(24, i * 8), Qt::NoButton,
+                    Qt::LeftButton, Qt::NoModifier);
+        b.settle();
+        QVERIFY2(flick->property("contentY").toDouble() == contentY0,
+                 qPrintable(QStringLiteral("vertical step %1: contentY %2 "
+                                           "changed (drag stolen as scroll)")
+                                .arg(i)
+                                .arg(flick->property("contentY").toDouble())));
+    }
+    QVERIFY2(b.selectionEnd() > endH, "selection must extend vertically");
+    QVERIFY2(b.selectedText(pressPos, b.selectionEnd())
+                     .contains(QLatin1Char('\n')),
+             "selection must span multiple lines after vertical extension");
+
+    b.sendMouse(QEvent::MouseButtonRelease, p2, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+    QCOMPARE(flick->property("contentY").toDouble(), contentY0);
+    QVERIFY(b.selectionEnd() > b.selectionStart());
+}
+
+// TC-004（P0，可自动化部分）：守卫复位后滚轮滚动恢复（无残留禁用）。
+// 完整链路：拖拽选区（守卫激活→复位）→ 合成滚轮事件 → Flickable
+// contentY 增长（wheelEvent 仅在 interactive 时处理，若守卫未复位则
+// 滚轮失效——这正是"不得永久禁用 interactive"约束的回归面）。
+// NoWrap 横向滚轮、真实滚轮实体手感见人工待验清单。
+void TestEditorIntegration::tcD004_wheelScroll_afterGuardRelease()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    const qreal contentY0 = flick->property("contentY").toDouble();
+
+    // 先走一遍拖拽选区（守卫激活→释放复位），与真实使用时序一致
+    const QPoint p0 = b.pointOf(3);
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(flick->property("interactive").toBool(), false);
+    b.sendMouse(QEvent::MouseMove, p0 + QPoint(24, 32), Qt::NoButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settle();
+    b.sendMouse(QEvent::MouseButtonRelease, p0 + QPoint(24, 32), Qt::LeftButton,
+                Qt::NoButton, Qt::NoModifier);
+    b.settle();
+    QCOMPARE(flick->property("interactive").toBool(), true);
+    QVERIFY(b.selectionEnd() > b.selectionStart());
+
+    // 合成滚轮（向后滚一格 120）：contentY 增长（QTRY 等待平滑滚动动画）
+    const QPointF pos = QPointF(b.pointOf(3));
+    QWheelEvent wheel(pos, QPointF(b.view.mapToGlobal(pos.toPoint())),
+                      QPoint(0, 0), QPoint(0, -120), Qt::NoButton,
+                      Qt::NoModifier, Qt::ScrollUpdate, false);
+    QCoreApplication::sendEvent(&b.view, &wheel);
+    QTRY_VERIFY2(flick->property("contentY").toDouble() > contentY0,
+                 qPrintable(QStringLiteral("wheel scroll dead after guard "
+                                           "release (contentY=%1)")
+                                .arg(flick->property("contentY").toDouble())));
+}
+
+// TC-005（P0，防回归）：非左键单击不得置守卫。
+// 守护缺陷（第 2 轮回归，实验实证）：onReleased 加了左键过滤而
+// onPressed 未加，右/中键单击编辑器会置守卫 true，其 release 又被
+// 左键过滤挡住不复位 → Flickable interactive 持续 false → 滚轮失效
+// 直到下次左键点击或焦点转移，违反"非按下状态下滚轮滚动正常"。
+// 步骤：右键 press → release、中键 press → release，各自断言守卫
+// 未被置位（false）且 interactive 保持 true；再左键 press（守卫置位
+// true、interactive false）→ release（复位），保持守卫主路径覆盖。
+void TestEditorIntegration::tcD005_nonLeftClick_guardNotStuck()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+
+    const QPoint p = b.pointOf(3);
+
+    // 右键单击：press/release 全程守卫不得置位
+    b.sendMouse(QEvent::MouseButtonPress, p, Qt::RightButton, Qt::RightButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    b.sendMouse(QEvent::MouseButtonRelease, p, Qt::RightButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+
+    // 中键单击：同上
+    b.sendMouse(QEvent::MouseButtonPress, p, Qt::MiddleButton,
+                Qt::MiddleButton, Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    b.sendMouse(QEvent::MouseButtonRelease, p, Qt::MiddleButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+
+    // 左键对照：按下守卫置位、释放复位（主路径不因过滤受损）
+    b.sendMouse(QEvent::MouseButtonPress, p, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+    QCOMPARE(flick->property("interactive").toBool(), false);
+    b.sendMouse(QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+}
+
+// TC-006（P0，第 4 轮根因守护）：纯竖直拖拽（全程 |dx| ≤ 10px）**立即**
+// 产生选区且随步进增长。
+// 根因守护：QQuickPressHandler 的 800ms 延迟按下定时器只被横向位移取消，
+// 纯竖直拖拽超时后保存的 press 被销毁、control 侧 mousePressed 恒 false，
+// 原生 move 永不扩展选区——本用例在 press 后**无需等待**即逐步竖直 move，
+// 每步断言选区非空且较上步增长；对 EditorArea 的 PointHandler 被动驱动
+// （onPressed 自持锚点 + select(锚点, positionAt(当前点))）敏感，
+// 移除 PointHandler 后本用例应失败（第 4 步起每步选区断言失败）。
+// 全程横向漂移每步 ≤ +1px（累计 4px ≤ startDragDistance≈10px），
+// 不会触发延迟 press 补放，选区增长只能来自 PointHandler 驱动。
+void TestEditorIntegration::tcD006_pureVertical_immediateSelection()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    const qreal contentY0 = flick->property("contentY").toDouble();
+
+    const int pressPos = 3;
+    const QPoint p0 = b.pointOf(pressPos);
+
+    // 按下后无需等待（脱离 800ms 定时器窗口约束），立即竖直 move
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+    QCOMPARE(flick->property("interactive").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), pressPos);
+
+    // 4 步逐行下移（文本 "line %1\n"：行 i 起始位置 = i*7）：每步 y 取目标行
+    // 行中心（保证每步恰好跨一行，选区长度必然增长）、x 每步 +1（累计 4px
+    // ≤ startDragDistance≈10px，不触发延迟 press 补放），选区增长只能来自
+    // PointHandler 驱动。每步：选区非空且较上步增长、含换行、视图未被滚动、守卫真
+    int prevLen = 0;
+    QPoint cur = p0;
+    for (int i = 1; i <= 4; ++i) {
+        const int lineStart = i * 7;               // 行 i 首字符位置
+        const qreal targetY = b.rowCenterY(lineStart);
+        const qreal targetX = p0.x() + i * 1;
+        cur = QPoint(qRound(targetX), qRound(targetY));
+        b.sendMouse(QEvent::MouseMove, cur, Qt::NoButton, Qt::LeftButton,
+                    Qt::NoModifier);
+        b.settleDrag();
+        const int len = b.selectionEnd() - b.selectionStart();
+        QVERIFY2(len > prevLen,
+                 qPrintable(QStringLiteral("step %1: selection length %2 not "
+                                           "growing (prev %3, start=%4 end=%5)")
+                                .arg(i).arg(len).arg(prevLen)
+                                .arg(b.selectionStart()).arg(b.selectionEnd())));
+        QVERIFY2(b.selectedText(b.selectionStart(), b.selectionEnd())
+                         .contains(QLatin1Char('\n')),
+                 qPrintable(QStringLiteral("step %1: selection must span "
+                                           "multiple lines")
+                                .arg(i)));
+        QVERIFY2(flick->property("contentY").toDouble() == contentY0,
+                 qPrintable(QStringLiteral("step %1: contentY %2 changed "
+                                           "(drag stolen as scroll)")
+                                .arg(i)
+                                .arg(flick->property("contentY").toDouble())));
+        QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+        prevLen = len;
+    }
+
+    // 释放：守卫复位、锚点复位、interactive 恢复、选区保留
+    b.sendMouse(QEvent::MouseButtonRelease, cur, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+    QCOMPARE(flick->property("contentY").toDouble(), contentY0);
+    QVERIFY2(b.selectionEnd() > b.selectionStart(), "selection lost on release");
+}
+
+// TC-007（P1，第 4 轮新机制回归）：单击不拖拽——press→release 无位移后
+// 无选区残留、光标定位正确。
+// 第 4 轮 onPressed 立即定位光标并自持锚点（nativeDragAnchor），onReleased
+// 以 last !== anchor 条件决定是否重放选区。本用例验证单击路径：
+// - 前置一次纯竖直拖拽产生选区（PointHandler 驱动），单击后选区不得残留
+//   （onPressed 的 cursorPosition 赋值为 MoveAnchor 语义，清除旧选区）；
+// - 按下即定位：press 后光标已在按下点（不必等 release，桌面编辑器惯例）；
+// - 无位移释放：PointHandler 未更新 last（-1）→ 重放条件不触发，
+//   选区保持空、光标停在单击处；
+// - 字符内微移（+2px，命中同一字符位置）释放：last == anchor → 重放条件
+//   仍不触发，无选区（真实单击的自然抖动不得被误判为拖拽）。
+void TestEditorIntegration::tcD007_plainClick_noSelectionResidue()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+              "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+
+    // ---- 前置：纯竖直拖拽 2 行产生选区（PointHandler 驱动，横向零位移） ----
+    const int dragPos = 3;
+    const QPoint p0 = b.pointOf(dragPos);
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    const QPoint p1(p0.x(), qRound(b.rowCenterY(2 * 7)));
+    b.sendMouse(QEvent::MouseMove, p1, Qt::NoButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    b.sendMouse(QEvent::MouseButtonRelease, p1, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             "precondition: drag selection must exist before plain click");
+
+    // ---- 单击（press→release 无位移）第 5 行中部 ----
+    const int clickPos = 5 * 7 + 2; // "li|ne 5"
+    const QPoint pc = b.pointOf(clickPos);
+    const QPointF localC = b.editor->mapFromScene(QPointF(pc));
+    const int clickHit = b.positionAt(localC.x(), localC.y());
+    QVERIFY2(clickHit >= 5 * 7 && clickHit < 5 * 7 + 6,
+             qPrintable(QStringLiteral("click point must hit line 5, got %1")
+                            .arg(clickHit)));
+
+    b.sendMouse(QEvent::MouseButtonPress, pc, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    // 按下即定位（第 4 轮新行为）：光标已到按下点、锚点自持、守卫置位、
+    // 上次拖拽的选区已被清除（cursorPosition 赋值 MoveAnchor 语义）
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), clickHit);
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
+    QCOMPARE(b.cursorPosition(), clickHit);
+    QCOMPARE(b.selectionStart(), b.selectionEnd());
+
+    b.sendMouse(QEvent::MouseButtonRelease, pc, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    // 无位移释放：重放条件 last !== anchor 不触发（last 恒 -1），
+    // 无选区残留、光标停在单击处、守卫复位
+    QCOMPARE(b.selectionStart(), b.selectionEnd());
+    QCOMPARE(b.cursorPosition(), clickHit);
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+
+    // ---- 字符内微移释放：last 更新但命中同位置（== anchor），不重放 ----
+    const int clickPos2 = 8 * 7 + 4; // "line| 8"
+    const QPoint pd = b.pointOf(clickPos2);
+    const QPointF localD = b.editor->mapFromScene(QPointF(pd));
+    const int clickHit2 = b.positionAt(localD.x(), localD.y());
+
+    b.sendMouse(QEvent::MouseButtonPress, pd, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), clickHit2);
+    // 微移 +2px（等宽 ASCII ≈8px 宽，前半字符内，命中同一位置）
+    b.sendMouse(QEvent::MouseMove, pd + QPoint(2, 0), Qt::NoButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), clickHit2);
+    QCOMPARE(b.selectionStart(), b.selectionEnd()); // select(a, a) 空选区
+    b.sendMouse(QEvent::MouseButtonRelease, pd + QPoint(2, 0), Qt::LeftButton,
+                Qt::NoButton, Qt::NoModifier);
+    b.settle();
+    // last === anchor：重放条件不触发，单击微抖动不得产生选区
+    QCOMPARE(b.selectionStart(), b.selectionEnd());
+    QCOMPARE(b.cursorPosition(), clickHit2);
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+}
+
+// TC-008（P0，第 4 轮新机制回归）：纯竖直拖拽释放后选区不被原生补放清空。
+// 机制：延迟按下窗口内 release 时，QQuickPressHandler 先补放保存的 press
+// 再放 release，原生处理将清空 PointHandler 驱动的选区；onReleased 以
+// Qt.callLater 延迟一拍用自持锚点/终点重放。本用例在释放后分两段时间复查：
+// - 释放后等待约 2 帧（qWait 40ms，覆盖 Qt.callLater 一拍 + 渲染节拍）；
+// - 再等 850ms 跨过 800ms 延迟按下定时器窗口（定时器到期销毁 delayed press
+//   的路径不得影响已重放的选区）。
+// 选区锚/终点必须与释放前 PointHandler 最后驱动的状态精确一致。
+void TestEditorIntegration::tcD008_releaseReplay_survivesNativeReplay()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+              "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    const qreal contentY0 = flick->property("contentY").toDouble();
+
+    // 纯竖直拖拽 2 行（横向零位移，全程不触发延迟 press 补放，
+    // 选区完全由 PointHandler 驱动）
+    const int pressPos = 3;
+    const QPoint p0 = b.pointOf(pressPos);
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), pressPos);
+    const QPoint p1(p0.x(), qRound(b.rowCenterY(2 * 7)));
+    b.sendMouse(QEvent::MouseMove, p1, Qt::NoButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             "PointHandler must drive selection during pure-vertical drag");
+    const int selStart = b.selectionStart();
+    const int selEnd = b.selectionEnd();
+    QCOMPARE(selStart, pressPos);
+
+    // 释放（仍在 800ms 窗口内：原生补放 press + release 将清选区，
+    // onReleased Qt.callLater 延迟一拍重放）
+    b.sendMouse(QEvent::MouseButtonRelease, p1, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    QTest::qWait(40); // 等 2 帧以上：callLater 重放完成
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             qPrintable(QStringLiteral("selection lost after release (native "
+                                       "replay not compensated): start=%1 end=%2")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    QCOMPARE(b.selectionStart(), selStart);
+    QCOMPARE(b.selectionEnd(), selEnd);
+
+    // 跨 800ms 延迟按下定时器窗口复查：定时器到期销毁 delayed press 的
+    // 路径不得回溯影响已重放的选区
+    QTest::qWait(850);
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             qPrintable(QStringLiteral("selection lost after 800ms timer "
+                                       "expiry: start=%1 end=%2")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    QCOMPARE(b.selectionStart(), selStart);
+    QCOMPARE(b.selectionEnd(), selEnd);
+
+    // 守卫复位、interactive 恢复、视图未被滚动
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+    QCOMPARE(flick->property("contentY").toDouble(), contentY0);
+}
+
+// TC-009（P1，第 4 轮新机制回归，可自动化部分）：双击路径——原生选词仍
+// 工作、双击会话结束后守卫/锚点无残留。
+// Windows 真实序列：Press → Release →（双击间隔内同位置）DblClick →
+// Release（第二击由系统直接以 DblClick 送达，不经 QQuickPressHandler 的
+// mousePressEvent，onPressed 不触发）。offscreen 合成的环境门槛（真实平台
+// 由窗口系统保证）须在测试内补偿：
+// 1. 手工 DblClick 事件 isBeginEvent()==false，delivery 层不做 press 分发
+//    （诊断实证：经 delivery 送达 item 亦不触发选词），故直接 sendEvent
+//    给 editor，驱动 QQuickTextArea::mouseDoubleClickEvent 完整内部链路
+//   （补放 delayed press → QQuickTextControl 原生选词）；
+// 2. QQuickTextControl 选词分支要求事件设备类型 Mouse，全序列统一
+//    synthMouse()。
+// 第二击含物理 Press（Windows 真实序列无）为平台序列差异而非产品缺陷，
+// 守卫短暂置位属预期。断言：
+// - DblClick 原生选词工作：选区 == 双击处整词区间（第 4 轮 onPressed
+//   立即定位 + PointHandler 驱动不破坏双击选词，定位被选词覆盖）；
+// - 第二击 release 后：守卫复位、锚点/终点复位（无残留，滚轮不受影响）；
+// - 选区在 release 后保留。
+// 双击后拖拽按词扩展依赖平台双击间隔节奏，人工待验。
+void TestEditorIntegration::tcD009_doubleClick_nativeWordSelect()
+{
+    Bench b;
+    QVERIFY2(b.open(QStringLiteral("alpha beta gamma")), "testbench open failed");
+
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+
+    // 双击 'beta' 内部（位置 7 = 'e'）：词区间 [6,10)。
+    // offscreen 双击合成的两道环境门槛（真实平台分别由窗口系统双击合成与
+    // 物理鼠标设备保证）：
+    // 1. 手工构造的 DblClick 事件 isBeginEvent()==false，delivery 层不做
+    //    press 分发，只能作为 update 事件送给独占抓取者——故第二击先发
+    //    press（TextArea 接受并成为 grabber）再发 DblClick（经 grabber
+    //    通道送达）；
+    // 2. QQuickTextControl 双击选词分支的 isEventFromMouseOrTouchpad 门槛
+    //    接受 Mouse 或 TouchPad，offscreen 默认指点设备两者皆非——全序列
+    //    统一用 synthMouse()（真实平台一次双击的所有事件来自同一鼠标）。
+    // 序列：Press→Release（第一击）→Press（第二击，经 onPressed 置守卫/
+    // 定位锚点）→DblClick（QQuickTextArea::mouseDoubleClickEvent 先补放
+    // delayed press 再 QQuickTextControl 原生选词）→Release（守卫复位）。
+    // 第二击含物理 Press 为 offscreen 合成序列与 Windows 真实序列（系统
+    // 直接发 DblClick、无第二击 Press）的平台差异，如实记录。
+    const QPointingDevice *mouse = synthMouse();
+    const QPoint p = b.pointOf(7);
+
+    // 第一击
+    b.sendMouse(QEvent::MouseButtonPress, p, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier, mouse);
+    b.settleDrag();
+    b.sendMouse(QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier, mouse);
+    b.settle();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
+
+    // 第二击 press：守卫置位（物理第二击按下，onPressed 语义）；锚点自持
+    b.sendMouse(QEvent::MouseButtonPress, p, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier, mouse);
+    b.settleDrag();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), 7);
+
+    // DblClick：直接 sendEvent 给 editor（TextArea 完整内部链路：
+    // QQuickTextArea::mouseDoubleClickEvent → 补放 delayed press（control
+    // mousePressed 置位）→ QQuickTextControl::mouseDoubleClickEvent 原生
+    // 选词）。不走 window delivery：offscreen 合成事件的设备 point 注册
+    // 状态与平台注入不同，delivery 层的 update 通道对本事件不可达（诊断
+    // 实证：同坐标同设备事件经 delivery 送达 item 亦不选词、直接送 item
+    // 则选词成功；真实 Windows DblClick 由系统注入带正确状态，不受此
+    // 环境限制影响——见测试报告）。断言：onPressed 的光标定位被选词
+    // 覆盖（选区 == 整词 [6,10)），第 4 轮机制不破坏双击选词
+    {
+        const QPointF local = b.editor->mapFromScene(QPointF(p));
+        QMouseEvent dbl(QEvent::MouseButtonDblClick, local,
+                        QPointF(b.view.mapToGlobal(p)), Qt::LeftButton,
+                        Qt::LeftButton, Qt::NoModifier, mouse);
+        QCoreApplication::sendEvent(b.editor, &dbl);
+        b.settle();
+    }
+    QVERIFY2(b.selectionStart() == 6 && b.selectionEnd() == 10,
+             qPrintable(QStringLiteral("native word select not working on "
+                                       "dblclick (start=%1 end=%2, expected 6..10)")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+
+    // 第二击 release：选区保留（release 不清选区）、守卫复位（无残留，
+    // 滚轮不受双击影响）、锚点/终点复位
+    b.sendMouse(QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier, mouse);
+    b.settle();
+    QCOMPARE(b.selectionStart(), 6);
+    QCOMPARE(b.selectionEnd(), 10);
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
+}
+
+// TC-010（P0，第 4 轮新机制回归）：释放后立即二次拖拽——锚点正确更新、
+// 无上次 lastPos 残留。
+// 第 4 轮自持锚点（nativeDragAnchor）/终点（nativeDragLastPos）均为
+// delegate 级状态，若释放复位不彻底（或第二次 press 未即时换新），
+// 第二次拖拽的选区会以旧锚点/旧终点为基准。本用例背靠背执行两次
+// press-drag-release（中间仅 settle），断言：
+// - 第二次 press 后锚点即时 == 新按下点命中、lastPos 已复位 -1；
+// - 第二次拖拽中/释放后选区锚 == 第二次按下点（selectionStart 为之），
+//   与第一次选区终点无关；
+// - 两次均纯竖直（PointHandler 驱动路径，对状态残留最敏感）。
+void TestEditorIntegration::tcD010_secondDrag_anchorRenewal()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+
+    // ---- 第一次：第 0 行位置 3 纯竖直下移 2 行，释放 ----
+    const QPoint a0 = b.pointOf(3);
+    b.sendMouse(QEvent::MouseButtonPress, a0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    const QPoint a1(a0.x(), qRound(b.rowCenterY(2 * 7)));
+    b.sendMouse(QEvent::MouseMove, a1, Qt::NoButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    b.sendMouse(QEvent::MouseButtonRelease, a1, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             "first drag: selection must exist");
+    const int firstEnd = b.selectionEnd();
+    QVERIFY2(firstEnd > 2 * 7, "first drag must span to line 2+");
+
+    // ---- 第二次：立即从第 6 行位置 2 纯竖直下移 2 行 ----
+    const int secondPressPos = 6 * 7 + 2;
+    const QPoint c0 = b.pointOf(secondPressPos);
+    b.sendMouse(QEvent::MouseButtonPress, c0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    // 锚点即时更新为新按下点、上次 lastPos 无残留（release 已复位）
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), secondPressPos);
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+
+    const QPoint c1(c0.x(), qRound(b.rowCenterY(8 * 7)));
+    b.sendMouse(QEvent::MouseMove, c1, Qt::NoButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    // 选区锚 = 第二次按下点（正向拖拽 selectionStart == 锚），
+    // 终点跨 2 行（远超第一次终点 firstEnd 的行范围基准）
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             "second drag: selection must exist");
+    QCOMPARE(b.selectionStart(), secondPressPos);
+    QVERIFY2(b.selectionEnd() > 8 * 7,
+             qPrintable(QStringLiteral("second drag must reach line 8, end=%1")
+                            .arg(b.selectionEnd())));
+
+    b.sendMouse(QEvent::MouseButtonRelease, c1, Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    // 释放重放后锚仍是第二次按下点（无旧锚/旧 lastPos 混入）
+    QCOMPARE(b.selectionStart(), secondPressPos);
+    QVERIFY2(b.selectionEnd() > 8 * 7,
+             "second drag: selection must survive release replay");
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
+}
+
+// TC-011（P0，第 5 轮回归）：Shift+单击扩展选区。
+// 守护回归：第 5 轮应改项——第 4 轮 onPressed 无条件
+// editor.cursorPosition = pos（MoveAnchor 语义）把锚改写为按下点，
+// Shift 扩展长度恒 0 且旧选区被清除。修复后 Shift 分支保持 KeepAnchor：
+// - 先普通单击定位光标到 A（onPressed 定位路径）；
+// - Shift+click 到 B → 选区 [A,B]（锚 = A 即首次光标）；
+// - 再 Shift+click 到更远 C → 选区 [A,C]——原生基线（QQuickTextControl
+//   mousePressEvent 的 KeepAnchor 分支：锚保持既有 text cursor 的锚、
+//   仅位置移到点击点）为锚不跟随更新，连续 Shift+click 始终自首次
+//   光标锚扩展；QML 侧经 cursorPosition 对端推导复现该语义。
+//   （锚跟随更新则为 [B,C]，与原生不符，判失败）
+void TestEditorIntegration::tcD011_shiftClick_extendSelection()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+
+    // 普通单击定位 A（第 0 行位置 3）：无修饰，走 onPressed 定位分支
+    b.plainClick(3);
+    QCOMPARE(b.cursorPosition(), 3);
+
+    // Shift+click 到 B（第 2 行位置 16）：press 即 KeepAnchor 扩展
+    const int aPos = 3;
+    const int bPos = 2 * 7 + 2;
+    const QPoint pb = b.pointOf(bPos);
+    b.sendMouse(QEvent::MouseButtonPress, pb, Qt::LeftButton, Qt::LeftButton,
+                Qt::ShiftModifier);
+    b.settleDrag();
+    // 锚 = 首次光标 A，不得被改写为按下点 B
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), aPos);
+    QVERIFY2(b.selectionStart() == aPos && b.selectionEnd() == bPos,
+             qPrintable(QStringLiteral("shift+click: expected [%1,%2], got "
+                                       "[%3,%4]")
+                            .arg(aPos).arg(bPos)
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    b.sendMouse(QEvent::MouseButtonRelease, pb, Qt::LeftButton, Qt::NoButton,
+                Qt::ShiftModifier);
+    b.settle();
+    // 释放后选区保留（原生补放 press 同为 Shift KeepAnchor，不回退）
+    QVERIFY2(b.selectionStart() == aPos && b.selectionEnd() == bPos,
+             qPrintable(QStringLiteral("shift+click: selection lost on "
+                                       "release: [%1,%2]")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
+
+    // 再 Shift+click 到更远 C（第 4 行位置 30）：锚仍为 A（原生基线锚不
+    // 跟随更新），选区 [A,C]
+    const int cPos = 4 * 7 + 2;
+    const QPoint pc = b.pointOf(cPos);
+    b.sendMouse(QEvent::MouseButtonPress, pc, Qt::LeftButton, Qt::LeftButton,
+                Qt::ShiftModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), aPos);
+    QVERIFY2(b.selectionStart() == aPos && b.selectionEnd() == cPos,
+             qPrintable(QStringLiteral("second shift+click: expected [%1,%2] "
+                                       "(anchor must NOT follow), got [%3,%4]")
+                            .arg(aPos).arg(cPos)
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    b.sendMouse(QEvent::MouseButtonRelease, pc, Qt::LeftButton, Qt::NoButton,
+                Qt::ShiftModifier);
+    b.settle();
+    QVERIFY2(b.selectionStart() == aPos && b.selectionEnd() == cPos,
+             qPrintable(QStringLiteral("second shift+click: selection lost on "
+                                       "release: [%1,%2]")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+}
+
+// TC-012（P0，第 5 轮回归）：Shift+拖拽扩展选区。
+// 守护回归：第 5 轮应改项——onPressed 无条件定位破坏 Shift 扩展（锚被改写
+// 为 Shift 按下点）。修复后：单击定位 A，Shift+press 于 B 并拖到 C：
+// - Shift+press 时锚 = A（当前光标），选区立即 [A,B]；
+// - 拖拽（纯竖直，PointHandler 驱动路径）期间选区持续更新，
+//   起点恒为 A，终点随拖拽到达 C 所在行；
+// - 释放后选区保留，锚/守卫复位。
+void TestEditorIntegration::tcD012_shiftDrag_extendSelection()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+
+    // 单击定位 A（第 0 行位置 3）
+    const int aPos = 3;
+    b.plainClick(aPos);
+    QCOMPARE(b.cursorPosition(), aPos);
+
+    // Shift+press 于 B（第 2 行位置 16）：锚 = A，选区立即 [A,B]
+    const int bPos = 2 * 7 + 2;
+    const QPoint pb = b.pointOf(bPos);
+    b.sendMouse(QEvent::MouseButtonPress, pb, Qt::LeftButton, Qt::LeftButton,
+                Qt::ShiftModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), aPos);
+    QVERIFY2(b.selectionStart() == aPos && b.selectionEnd() == bPos,
+             qPrintable(QStringLiteral("shift+press: expected [%1,%2], got "
+                                       "[%3,%4]")
+                            .arg(aPos).arg(bPos)
+                            .arg(b.selectionStart()).arg(b.selectionEnd())));
+
+    // 纯竖直拖到 C（第 4 行同列）：守卫期间选区持续由 PointHandler 驱动，
+    // 起点恒为 A（不得被改写为 B）
+    const int cPos = 4 * 7 + 2;
+    const QPoint pc = b.pointOf(cPos);
+    b.sendMouse(QEvent::MouseMove, pc, Qt::NoButton, Qt::LeftButton,
+                Qt::ShiftModifier);
+    b.settleDrag();
+    QCOMPARE(b.selectionStart(), aPos);
+    QVERIFY2(b.selectionEnd() >= 4 * 7,
+             qPrintable(QStringLiteral("shift+drag: selection end %1 must "
+                                       "reach line 4 (>= 28)")
+                            .arg(b.selectionEnd())));
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), true);
+
+    // 释放：选区保留（重放锚 = A）、守卫复位
+    b.sendMouse(QEvent::MouseButtonRelease, pc, Qt::LeftButton, Qt::NoButton,
+                Qt::ShiftModifier);
+    b.settle();
+    QCOMPARE(b.selectionStart(), aPos);
+    QVERIFY2(b.selectionEnd() >= 4 * 7,
+             qPrintable(QStringLiteral("shift+drag: selection lost on "
+                                       "release, end=%1")
+                            .arg(b.selectionEnd())));
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
+    QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
 }
 
 int main(int argc, char *argv[])

@@ -129,6 +129,19 @@ Item {
             /// 光标自同步标志：doc.cursorPositionChanged → editor 应用期间为真，
             /// 用于 editor.onCursorPositionChanged 区分“下行应用”与“用户输入回写”
             property bool selfCursorSync: false
+            /// 原生拖拽守卫：编辑器按下期间为真。用于按下期间禁用 ScrollView
+            /// 内部 Flickable 的 interactive，阻止其在 TextArea 延迟按下窗口内
+            /// 抢夺鼠标抓取（竖直先行拖拽选区失效的根因，见 docs/已知问题）
+            property bool nativeDragGuard: false
+            /// 原生拖拽锚点：左键按下时的文档位置（onPressed 记录）。
+            /// Qt 的 QQuickPressHandler 延迟按下机制下 delayed press 可能被
+            /// 800ms 定时器销毁而永不补放，锚点必须在按下时自持，由下方
+            /// PointHandler 被动驱动选区扩展（见 onPressed / PointHandler 注释）
+            property int nativeDragAnchor: -1
+            /// 原生拖拽终点：PointHandler 最后一次点更新的文档位置。
+            /// 释放时原生 replay 会清空选区（延迟按下窗口内 release 先补放
+            /// press 再放 release），onReleased 据此延迟一拍重放选区
+            property int nativeDragLastPos: -1
 
             visible: isActive
             anchors.fill: parent
@@ -185,6 +198,17 @@ Item {
                     target: editorScroll.contentItem
                     property: "boundsBehavior"
                     value: Flickable.StopAtBounds
+                }
+
+                // 按下期间禁用内部 Flickable 交互：阻断其子事件过滤器抢夺鼠标
+                // （TextArea 的 QQuickPressHandler 延迟按下机制下 keepMouseGrab
+                // 未及时设置，竖直先行拖拽会被抢为视图滚动）。代价：编辑区内
+                // "按住拖动=滚动视图"的触摸式交互被禁用（桌面编辑器惯例，滚轮
+                // 与滚动条不受影响）
+                Binding {
+                    target: editorScroll.contentItem
+                    property: "interactive"
+                    value: !editorHolder.nativeDragGuard
                 }
 
                 TextArea {
@@ -364,6 +388,94 @@ Item {
                             // 拖拽被系统打断（如窗口失活）：结束列选，状态定格
                             if (mc.columnSelecting)
                                 mc.columnDragEnd()
+                        }
+                    }
+
+                    // 原生拖拽的被动驱动：QQuickPressHandler 的 800ms 延迟定时器只被
+                    // 横向位移取消，竖直拖拽超时后保存的 press 被销毁、control 侧
+                    // mousePressed 恒 false，原生 move 不再扩展选区。PointHandler 为
+                    // Qt 6 的被动点跟踪（不抢独占抓取，TextArea 抓取期间照常更新），
+                    // 按下期间以锚点 + 当前点直接驱动 select；与原生补放路径并存时
+                    // 锚点/终点一致、逐步收敛，无双头冲突。双击/三击为独立 dblclick
+                    // 事件不经 onPressed（守卫不置位），原生选词/扩展不受影响
+                    PointHandler {
+                        acceptedButtons: Qt.LeftButton
+                        onPointChanged: {
+                            // active 过滤：释放时 point 会重置为 (0,0)（此时守卫
+                            // 尚未复位），不过滤会以 select(锚点, 0) 清空选区
+                            if (!active || !editorHolder.nativeDragGuard
+                                    || editorHolder.nativeDragAnchor < 0)
+                                return
+                            const pos = editor.positionAt(point.position.x, point.position.y)
+                            editorHolder.nativeDragLastPos = pos
+                            editor.select(editorHolder.nativeDragAnchor, pos)
+                        }
+                    }
+
+                    // 按下/释放维护守卫：连接 pressed 信号使 press 被 TextArea 接受、
+                    // 成为独占抓取者（拖出边缘 move/release 仍送达，选区可跨边缘持续，
+                    // 释放必达，守卫可靠复位）。守卫为真期间内部 Flickable 非交互，
+                    // 其 childMouseEventFilter 早退、自身拖动分支不生效，两条抢夺/滚动
+                    // 路径同时被阻断；释放即恢复，滚轮滚动不受影响
+                    //（QQuickFlickable::wheelEvent 仅在 interactive 时处理，故不能永久禁用）
+                    onPressed: (event) => {
+                        // 仅左键置守卫：QQuickPressHandler 对任意按键都发 pressed，
+                        // 右/中键单击不得触发（否则其 release 被下方左键过滤挡住，
+                        // 守卫卡死导致滚轮长期失效）
+                        if (event.button === Qt.LeftButton) {
+                            editorHolder.nativeDragGuard = true
+                            if (event.modifiers & Qt.ShiftModifier) {
+                                // Shift+按下：原生 KeepAnchor 扩展语义——锚保持当前
+                                // 光标；已有选区时锚为光标对端（连续 Shift+click 锚
+                                // 不跟随更新，与 qquicktextcontrol 原生基线一致）。
+                                // 不得 MoveAnchor 定位到按下点，否则扩展长度恒 0
+                                // 且清掉旧选区；立即以锚 + 按下点 select，随后
+                                // PointHandler 以此锚持续扩展（被动驱动）
+                                const anchor = editor.selectedText !== ""
+                                        ? (editor.cursorPosition === editor.selectionStart
+                                           ? editor.selectionEnd
+                                           : editor.selectionStart)
+                                        : editor.cursorPosition
+                                editorHolder.nativeDragAnchor = anchor
+                                const shiftPos = editor.positionAt(event.x, event.y)
+                                editor.select(anchor, shiftPos)
+                            } else {
+                                // 按下即定位光标并自持锚点：原生路径要到 release 或首个
+                                // 横向位移超阈值的 move 才补放 press；竖直拖拽超 800ms 后
+                                // delayed press 被定时器销毁，原生 move 永不扩展选区
+                                //（光标定位亦由 release 提前到 press，桌面编辑器惯例）
+                                const pos = editor.positionAt(event.x, event.y)
+                                editor.cursorPosition = pos
+                                editorHolder.nativeDragAnchor = pos
+                            }
+                        }
+                    }
+                    onReleased: (event) => {
+                        // 仅左键释放复位：QQuickPressHandler 对任意按键的释放都发 released，
+                        // 左键拖拽中点按右/中键不得提前解除守卫
+                        if (event.button === Qt.LeftButton) {
+                            // 延迟按下窗口内 release 会先补放 press 再放 release，
+                            // 原生处理将清空 PointHandler 驱动的选区；延迟一拍
+                            //（原生事件处理完成后）以自持的锚点/终点重放选区
+                            const anchor = editorHolder.nativeDragAnchor
+                            const last = editorHolder.nativeDragLastPos
+                            if (anchor >= 0 && last >= 0 && last !== anchor) {
+                                Qt.callLater(function() {
+                                    editor.select(anchor, last)
+                                })
+                            }
+                            editorHolder.nativeDragGuard = false
+                            editorHolder.nativeDragAnchor = -1
+                            editorHolder.nativeDragLastPos = -1
+                        }
+                    }
+                    // 防御性复位：窗口失活等事件中断可能丢失 release，焦点转移时兜底，
+                    // 防止守卫卡死导致滚轮长期失效（下次按下亦有自愈兜底）
+                    onActiveFocusChanged: {
+                        if (!activeFocus) {
+                            editorHolder.nativeDragGuard = false
+                            editorHolder.nativeDragAnchor = -1
+                            editorHolder.nativeDragLastPos = -1
                         }
                     }
 
