@@ -675,6 +675,24 @@ private slots:
     // （onWrapModeChanged 读写 contentItem 的既有链路）后仍保持
     void tcSB004_scrollBounds_stopAtBounds();
 
+    // ---- 滚动条常驻显示（需求：编辑器滚动条常驻显示） ----
+
+    // TC-001/TC-002（可自动化部分）：超高内容竖向滚动条 policy ==
+    // ScrollBar.AlwaysOn 且可见、interactive 可拖拽；短内容竖向滚动条
+    // policy == ScrollBar.AlwaysOff 且不可见（动态 policy 切换）
+    void tcSB001_002_verticalPolicy_dynamic();
+
+    // TC-003/TC-004（可自动化部分）：NoWrap 长行横向滚动条 AlwaysOn；
+    // 开启换行后内容收窄至视口宽 → size >= 1.0 → policy 自动切 AlwaysOff
+    void tcSB003_004_horizontalPolicy_wrapToggle();
+
+    // TC-009（P0，防回归）：滚动条几何可见性——常驻（AlwaysOn）时
+    // effectiveScrollBarWidth/Height > 0 且滚动条实例 width/height > 0，
+    // 隐藏（AlwaysOff）时 effective 恒为 0。第 1 轮缺陷根因是整体替换
+    // 丢失风格层定位绑定致滚动条 0 尺寸不可见，policy/visible 断言
+    // 无法拦截，本用例以几何断言兜底
+    void tcSB009_geometry_nonZero();
+
     // ---- 列选区视觉对齐（需求：列选区视觉对齐；TC-V003 至 TC-V013） ----
 
     // TC-V003（P0）：鼠标列选——中文混排视觉对齐（各行起点视觉 x 一致，
@@ -1743,6 +1761,225 @@ void TestEditorIntegration::tcSB004_scrollBounds_stopAtBounds()
                                 .arg(i)));
         QCOMPARE(f->property("boundsBehavior").toInt(), 0);
     }
+}
+
+// ==================== 滚动条常驻显示（需求：编辑器滚动条常驻显示） ====================
+//
+// EditorArea.qml 为 editorScroll 声明显式 ScrollBar.vertical /
+// ScrollBar.horizontal（interactive: true + 动态 policy
+// `size < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff`）。
+// offscreen 下断言真实组件树上 ScrollBar 的 policy/visible/interactive/size：
+// QQuickScrollBar::Policy 枚举 AsNeeded=0 / AlwaysOff=1 / AlwaysOn=2；
+// orientation：Qt.Vertical==2 / Qt.Horizontal==1。
+// 滚动条滑块的悬停高亮、5 秒不淡出等纯视觉结论 offscreen 无法断言，
+// 人工待验（TC-001/003/005 视觉部分，见测试报告）。
+
+namespace {
+
+// ScrollView 的某个方向"活动"ScrollBar：ScrollView 子树中可能残留
+// 实例化早期的 size==0 占位 ScrollBar（policy 保持默认 AsNeeded），真正
+// 随内容布局的活动实例 size 恒 > 0（可滚动 < 1.0，不可滚动 == 1.0），
+// 按此筛选并断言唯一，避免命中占位实例
+QQuickItem *scrollBarOf(QObject *obj, Qt::Orientation ori)
+{
+    QQuickItem *found = nullptr;
+    const auto scan = [&](QObject *o, const auto &self) -> void {
+        for (QObject *kid : o->children()) {
+            if (classNameMatches(kid, "ScrollBar")
+                && kid->property("orientation").toInt() == int(ori)
+                && kid->property("size").toDouble() > 0.0) {
+                found = qobject_cast<QQuickItem *>(kid);
+            }
+            self(kid, self);
+        }
+    };
+    scan(obj, scan);
+    return found;
+}
+
+// 活动编辑器 ScrollView（tcSB004 同款定位：可视树中收集）
+QQuickItem *activeScrollView(QQuickItem *root)
+{
+    QQuickItem *scroll = nullptr;
+    visitItems(root, [&](QQuickItem *it) {
+        if (!scroll && classNameMatches(it, "ScrollView"))
+            scroll = it;
+    });
+    return scroll;
+}
+
+} // namespace
+
+// TC-001/TC-002：竖向滚动条动态 policy——超高内容 AlwaysOn/可见/可拖拽，
+// 短内容 AlwaysOff/不可见
+void TestEditorIntegration::tcSB001_002_verticalPolicy_dynamic()
+{
+    // 超高内容：200 行远超 400px 视口
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+    QTest::qWait(100); // 等待滚动条 size 布局求值
+
+    QQuickItem *scroll = activeScrollView(b.root);
+    QVERIFY2(scroll != nullptr, "editor ScrollView not found");
+    QQuickItem *vbar = scrollBarOf(scroll, Qt::Vertical);
+    QVERIFY2(vbar != nullptr,
+             "vertical ScrollBar not found (ScrollBar.vertical not declared?)");
+
+    // TC-001：可滚动 → size < 1.0 → AlwaysOn（常驻）
+    QVERIFY2(vbar->property("size").toDouble() < 1.0,
+             qPrintable(QStringLiteral("tall content: vertical size %1, "
+                                       "expected < 1.0")
+                            .arg(vbar->property("size").toDouble())));
+    QCOMPARE(vbar->property("policy").toInt(), 2); // ScrollBar.AlwaysOn
+    QVERIFY(vbar->property("visible").toBool());
+    QVERIFY(vbar->property("interactive").toBool()); // TC-005 可拖拽前置
+    // 滑块可见且长度有效（非零宽度/高度，常驻渲染的代理断言）
+    QVERIFY(vbar->height() > 0);
+
+    // 滚到中部后静置：policy 常驻不依赖交互状态（active 由 policy 保证）
+    QQuickItem *flick = contentFlickable(scroll);
+    QVERIFY(flick != nullptr);
+    flick->setProperty("contentY", 500);
+    QTest::qWait(100);
+    QCOMPARE(vbar->property("policy").toInt(), 2);
+    QVERIFY(vbar->property("visible").toBool());
+    QVERIFY(flick->property("contentY").toDouble() > 0); // 确已滚动
+
+    // TC-002：短内容一屏放下 → size >= 1.0 → AlwaysOff、不可见
+    Bench b2;
+    QVERIFY2(b2.open(QStringLiteral("ab\ncd")), "testbench open failed");
+    QTest::qWait(100);
+    QQuickItem *scroll2 = activeScrollView(b2.root);
+    QVERIFY2(scroll2 != nullptr, "editor ScrollView not found (short doc)");
+    QQuickItem *vbar2 = scrollBarOf(scroll2, Qt::Vertical);
+    QVERIFY2(vbar2 != nullptr,
+             "vertical ScrollBar not found on short doc");
+    QVERIFY2(vbar2->property("size").toDouble() >= 1.0,
+             qPrintable(QStringLiteral("short content: vertical size %1, "
+                                       "expected >= 1.0")
+                            .arg(vbar2->property("size").toDouble())));
+    QCOMPARE(vbar2->property("policy").toInt(), 1); // ScrollBar.AlwaysOff
+    QVERIFY(!vbar2->property("visible").toBool());
+}
+
+// TC-003/TC-004：横向滚动条动态 policy——NoWrap 超长行 AlwaysOn，
+// 开启换行后内容收窄至视口宽 → size >= 1.0 → AlwaysOff
+void TestEditorIntegration::tcSB003_004_horizontalPolicy_wrapToggle()
+{
+    // 超长单行：1000 字符在 520px 视口 NoWrap 下远超视口宽
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    Bench b;
+    QVERIFY2(b.open(words + QStringLiteral("\ntail")), "testbench open failed");
+    // 与 tc008 相同：显式驱动 wrapMode，与用户 SessionManager 配置解耦
+    b.editor->setProperty("wrapMode", 0); // NoWrap
+    QTest::qWait(100);
+
+    QQuickItem *scroll = activeScrollView(b.root);
+    QVERIFY2(scroll != nullptr, "editor ScrollView not found");
+    QQuickItem *hbar = scrollBarOf(scroll, Qt::Horizontal);
+    QVERIFY2(hbar != nullptr,
+             "horizontal ScrollBar not found (ScrollBar.horizontal not declared?)");
+
+    // TC-003：NoWrap 长行 → 横向可滚动 → AlwaysOn（常驻）
+    QVERIFY2(hbar->property("size").toDouble() < 1.0,
+             qPrintable(QStringLiteral("NoWrap long line: horizontal size %1, "
+                                       "expected < 1.0")
+                            .arg(hbar->property("size").toDouble())));
+    QCOMPARE(hbar->property("policy").toInt(), 2); // ScrollBar.AlwaysOn
+    QVERIFY(hbar->property("visible").toBool());
+    QVERIFY(hbar->property("interactive").toBool());
+
+    // TC-004：开启换行 → 内容宽收窄至视口宽 → size >= 1.0 → AlwaysOff
+    b.editor->setProperty("wrapMode", 4); // WrapAtWordBoundaryOrAnywhere
+    QTest::qWait(100);
+    QVERIFY2(hbar->property("size").toDouble() >= 1.0,
+             qPrintable(QStringLiteral("wrap on: horizontal size %1, "
+                                       "expected >= 1.0")
+                            .arg(hbar->property("size").toDouble())));
+    QCOMPARE(hbar->property("policy").toInt(), 1); // ScrollBar.AlwaysOff
+    QVERIFY(!hbar->property("visible").toBool());
+
+    // 切回 NoWrap 恢复 AlwaysOn（动态 policy 双向切换回归）
+    b.editor->setProperty("wrapMode", 0);
+    QTest::qWait(100);
+    QCOMPARE(hbar->property("policy").toInt(), 2);
+    QVERIFY(hbar->property("visible").toBool());
+}
+
+// TC-009：滚动条几何可见性（防回归）。
+// ScrollView.effectiveScrollBarWidth / effectiveScrollBarHeight（Qt 6.6+）
+// 在滚动条不可见或 policy==AlwaysOff 时恒为 0，常驻可见时 > 0——这是
+// 对"定位绑定丢失 → 0 尺寸滚动条"缺陷最直接的拦截断言（该缺陷下
+// policy/visible 均正常但几何塌缩为 0）。同时断言滚动条实例自身
+// width/height > 0（风格层 parent/x/y/height 定位链存活的代理信号）。
+// 覆盖三个场景：超高内容竖向几何 > 0、短内容竖向归零、NoWrap 长行
+// 横向几何 > 0（且短内容横向归零）。
+void TestEditorIntegration::tcSB009_geometry_nonZero()
+{
+    // ---- 场景 1：超高内容 → 竖向常驻，几何非零 ----
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+    QTest::qWait(100); // 等待滚动条 size/几何布局求值
+
+    QQuickItem *scroll = activeScrollView(b.root);
+    QVERIFY2(scroll != nullptr, "editor ScrollView not found");
+    const qreal tallEffV = scroll->property("effectiveScrollBarWidth").toDouble();
+    QVERIFY2(tallEffV > 0.0,
+             qPrintable(QStringLiteral("tall content: effectiveScrollBarWidth "
+                                       "= %1, expected > 0 (0-size bar defect?)")
+                            .arg(tallEffV)));
+    QQuickItem *vbar = scrollBarOf(scroll, Qt::Vertical);
+    QVERIFY2(vbar != nullptr, "vertical ScrollBar not found");
+    QVERIFY2(vbar->width() > 0.0 && vbar->height() > 0.0,
+             qPrintable(QStringLiteral("tall content: vertical bar %1x%2, "
+                                       "expected non-zero (style positioning "
+                                       "bindings lost?)")
+                            .arg(vbar->width()).arg(vbar->height())));
+    // 竖向滚动条常驻时，横向滚动条不应占位（短行横向不可滚动）
+    const qreal tallEffH = scroll->property("effectiveScrollBarHeight").toDouble();
+    QCOMPARE(tallEffH, 0.0);
+
+    // ---- 场景 2：短内容 → 竖向 AlwaysOff，几何归零 ----
+    Bench b2;
+    QVERIFY2(b2.open(QStringLiteral("ab\ncd")), "testbench open failed");
+    QTest::qWait(100);
+    QQuickItem *scroll2 = activeScrollView(b2.root);
+    QVERIFY2(scroll2 != nullptr, "editor ScrollView not found (short doc)");
+    QCOMPARE(scroll2->property("effectiveScrollBarWidth").toDouble(), 0.0);
+    QCOMPARE(scroll2->property("effectiveScrollBarHeight").toDouble(), 0.0);
+
+    // ---- 场景 3：NoWrap 长行 → 横向常驻，几何非零 ----
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    Bench b3;
+    QVERIFY2(b3.open(words + QStringLiteral("\ntail")), "testbench open failed");
+    b3.editor->setProperty("wrapMode", 0); // NoWrap
+    QTest::qWait(100);
+
+    QQuickItem *scroll3 = activeScrollView(b3.root);
+    QVERIFY2(scroll3 != nullptr, "editor ScrollView not found (NoWrap doc)");
+    const qreal wideEffH = scroll3->property("effectiveScrollBarHeight").toDouble();
+    QVERIFY2(wideEffH > 0.0,
+             qPrintable(QStringLiteral("NoWrap long line: "
+                                       "effectiveScrollBarHeight = %1, "
+                                       "expected > 0 (0-size bar defect?)")
+                            .arg(wideEffH)));
+    QQuickItem *hbar3 = scrollBarOf(scroll3, Qt::Horizontal);
+    QVERIFY2(hbar3 != nullptr, "horizontal ScrollBar not found");
+    QVERIFY2(hbar3->width() > 0.0 && hbar3->height() > 0.0,
+             qPrintable(QStringLiteral("NoWrap long line: horizontal bar "
+                                       "%1x%2, expected non-zero (style "
+                                       "positioning bindings lost?)")
+                            .arg(hbar3->width()).arg(hbar3->height())));
 }
 
 // ==================== 列选区视觉对齐（TC-V003 至 TC-V013） ====================

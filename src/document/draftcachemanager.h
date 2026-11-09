@@ -26,12 +26,18 @@ class QJSEngine;
  *   编辑），只重写变化文档的条目；写失败 qWarning 静默，不打断编辑（DEC-005）；
  * - 清理：modified 变 false（保存/另存为/撤回基线/重载覆盖）或关闭时仍
  *   modified（“不保存”放弃路径）→ 删除条目（DEC-003）；
+ * - 失焦即写：QGuiApplication::applicationStateChanged(ApplicationInactive)
+ *   时立即 flushPending()（DEC-003）——强杀前切窗口是高概率路径，把丢失
+ *   窗口从「最后 1 秒防抖」压缩到「失焦前 1 秒」；C++ 单测环境
+ *   （QCoreApplication，无该信号）构造时判空跳过连接；
  * - 恢复：restoreDrafts() 在会话恢复之后调用；同 URL 多条目先去重（仅留
  *   savedAt 最新一条，平局按 uid 字典序保留较大者，落选条目即删，防止
  *   Esc 未决残留 + 再崩溃产生的较旧草稿覆盖较新草稿）；磁盘未被外部修改
  *   （基线指纹相符）→ 静默应用为未保存修改；不符/文件缺失 → conflictsFound
  *   交 QML 弹窗，经 resolveConflicts() 应用或丢弃；应用/丢弃后即删条目
- *   （DEC-007）；
+ *   （DEC-007）；未命名条目按会话记录位置升序按位插入（关闭现场还原
+ *   DEC-002），激活三级优先（activeUid 匹配 > 会话活动复位 > 首个恢复
+ *   文档，DEC-003）；
  * - 目录定位：便携模式（复用 SessionManager::resolvePortableIniPath 检测）
  *   为 ini 同目录 drafts/，否则 AppLocalDataLocation 下 drafts/（DEC-004）。
  * 可脱离 QML 引擎在 C++ 测试中直接 new（注入 DocumentManager 与缓存目录）；
@@ -62,8 +68,10 @@ public:
 
     /// 启动恢复（QML 在 SessionManager.restoreDocuments() 之后调用一次）：
     /// 先全量解析并对同 URL 条目去重（仅留 savedAt 最新一条，平局按 uid 字典
-    /// 序保留较大者，落选条目即删）；未命名条目重建未命名文档；有 url 条目
-    /// 比对基线指纹后静默应用或转冲突（同一 url 至多一项冲突）
+    /// 序保留较大者，落选条目即删）；有 url 条目先行处理（代开/静默应用/冲突
+    /// 暂存）；未命名条目按会话记录位置升序按位插入还原标签顺序（无位置
+    /// 记录/无会话实例的追加尾部，DEC-002 稳定插入）；激活三级优先：会话
+    /// activeUid 匹配 > 会话活动标签复位 > 空场景激活首个恢复文档（DEC-003）
     Q_INVOKABLE void restoreDrafts();
 
     /// 冲突处理（conflictsFound 之后由 QML 调用）：restore=true 应用缓存内容
@@ -72,6 +80,13 @@ public:
 
     /// 防抖挂起立即写盘（测试/退出兜底）
     void flush();
+
+    /// 失焦即写（DEC-003）：应用切到后台（ApplicationInactive）时立即把
+    /// 防抖挂起的脏文档落盘——用户强杀前的「输入 → 切窗口」是高概率路径，
+    /// 把丢失窗口压缩到失焦前 1 秒。构造函数自动连接
+    /// QGuiApplication::applicationStateChanged 到本方法；C++ 单测可直接
+    /// 调用（无需真实窗口失焦）。其余状态（Active/Suspended 等）不动作
+    void onApplicationStateChanged(Qt::ApplicationState state);
 
 signals:
     /// 恢复时发现冲突（磁盘被外部修改/文件缺失）：每项为

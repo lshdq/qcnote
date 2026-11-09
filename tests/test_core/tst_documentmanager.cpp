@@ -65,6 +65,7 @@ private slots:
     void saveAsToInvalidPathFailsAndKeepsContent();
     void closeDocumentActivatesNeighbor();
     void closingInactiveDocumentKeepsActive();
+    void restoreUntitledDraftInsertsAtPosition();
     void hasUnsavedChangesToggles();
     void nameFiltersAggregatesRegisteredFormats();
     void documentsModelEmitsInsertOnNewDocument();
@@ -93,7 +94,7 @@ private:
 // 连续新建：命名 未命名-1 / 未命名-2 且逐个激活
 void TestDocumentManager::newDocumentsAreNamedAndActivated()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QCOMPARE(mgr.documents().size(), 0);
     QCOMPARE(mgr.activeDocument(), nullptr);
 
@@ -113,7 +114,7 @@ void TestDocumentManager::newDocumentsAreNamedAndActivated()
 // 打开临时文件：生成文档、内容正确、干净、激活、发 documentOpened
 void TestDocumentManager::openUrlsCreatesDocumentWithContent()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("hello.txt"));
@@ -136,7 +137,7 @@ void TestDocumentManager::openUrlsCreatesDocumentWithContent()
 // 重复打开同一 URL：文档数不变，激活已有文档
 void TestDocumentManager::openUrlsDeduplicatesSameUrl()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("dup.txt")));
@@ -155,7 +156,7 @@ void TestDocumentManager::openUrlsDeduplicatesSameUrl()
 // 打开不存在文件：发 openFailed，不崩溃，继续处理后续 URL
 void TestDocumentManager::openMissingFileEmitsOpenFailedAndContinues()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl missing = QUrl::fromLocalFile(dir.filePath(QStringLiteral("missing.txt")));
@@ -176,7 +177,7 @@ void TestDocumentManager::openMissingFileEmitsOpenFailedAndContinues()
 // 打开无可用存储的 URL（无 scheme）：发 openFailed，不新建文档（openUrls 的 storage 空分支）
 void TestDocumentManager::openUrlWithoutStorageEmitsOpenFailed()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QSignalSpy spy(&mgr, &DocumentManager::openFailed);
     mgr.openUrls({ QUrl(QStringLiteral("noscheme.txt")) });
 
@@ -187,7 +188,7 @@ void TestDocumentManager::openUrlWithoutStorageEmitsOpenFailed()
 // 空 URL 防御：openUrls({空 URL}) 跳过处理——不误激活未命名文档、不发 openFailed
 void TestDocumentManager::openUrlsSkipsEmptyUrl()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("real.txt"));
@@ -212,7 +213,7 @@ void TestDocumentManager::openUrlsSkipsEmptyUrl()
 // TC-004：GBK 文件经 openUrls 自动识别打开——encoding=Gbk、内容正确解码、无替换符
 void TestDocumentManager::openUrlsAppliesGbkDetection()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("gbk.txt"));
@@ -231,7 +232,7 @@ void TestDocumentManager::openUrlsAppliesGbkDetection()
 // 正确记录，内容不含 BOM 字符（openUrls 完整链路，detector/storage 之外的直连断言）
 void TestDocumentManager::openUrlsRecordsUtf8Bom()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("bom.txt"));
@@ -249,7 +250,7 @@ void TestDocumentManager::openUrlsRecordsUtf8Bom()
 // openUrlWithEncoding：强制按指定编码打开（GBK 文件强制 UTF-8 → 替换符乱码但可打开）
 void TestDocumentManager::openUrlWithEncodingForcesEncoding()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("force.txt")));
@@ -266,7 +267,7 @@ void TestDocumentManager::openUrlWithEncodingForcesEncoding()
 // openUrlWithEncoding：重复 URL 激活已有文档（与 openUrls 去重行为一致）
 void TestDocumentManager::openUrlWithEncodingDeduplicatesSameUrl()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("dup.txt")));
@@ -283,7 +284,7 @@ void TestDocumentManager::openUrlWithEncodingDeduplicatesSameUrl()
 // 光标钳制到新内容长度、换行风格重探测
 void TestDocumentManager::reloadWithEncodingCorrectsMisjudgment()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("misjudge.txt")));
@@ -309,7 +310,7 @@ void TestDocumentManager::reloadWithEncodingCorrectsMisjudgment()
 // TC-013：未命名文档防御——url 为空发 openFailed，不崩溃
 void TestDocumentManager::reloadWithEncodingOnUntitledEmitsOpenFailed()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     mgr.newDocument();
     Document *doc = mgr.activeDocument();
 
@@ -322,7 +323,7 @@ void TestDocumentManager::reloadWithEncodingOnUntitledEmitsOpenFailed()
 // reloadWithEncoding 读取失败（磁盘文件被删）：发 openFailed 且保留原文档内容
 void TestDocumentManager::reloadWithEncodingReadFailureKeepsContent()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("gone.txt")));
@@ -342,7 +343,7 @@ void TestDocumentManager::reloadWithEncodingReadFailureKeepsContent()
 // TC-014：saveWithEncoding GBK→UTF-8——磁盘字节为合法 UTF-8、编码与修改标记更新
 void TestDocumentManager::saveWithEncodingConvertsGbkToUtf8()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("conv.txt")));
@@ -363,7 +364,7 @@ void TestDocumentManager::saveWithEncodingConvertsGbkToUtf8()
 // （UTF-8+BOM 文件转 GBK 再转回 UTF-8 仍带 BOM）
 void TestDocumentManager::saveWithEncodingConvertsUtf8ToGbkAndKeepsBomRecord()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("bom-conv.txt")));
@@ -389,7 +390,7 @@ void TestDocumentManager::saveWithEncodingConvertsUtf8ToGbkAndKeepsBomRecord()
 // TC-010 管理器侧：GBK 不可编码保存失败——saveFailed、编码回滚（不误导状态栏）、磁盘不变
 void TestDocumentManager::saveWithEncodingUnencodableFailsAndReverts()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("emoji.txt")));
@@ -412,7 +413,7 @@ void TestDocumentManager::saveWithEncodingUnencodableFailsAndReverts()
 // DEC-005：未命名文档 saveWithEncoding——保留已设编码、返回 false（UI 转另存为）
 void TestDocumentManager::saveWithEncodingUntitledKeepsEncoding()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     mgr.newDocument();
     Document *doc = mgr.activeDocument();
     doc->setContent(QStringLiteral("你好"));
@@ -426,7 +427,7 @@ void TestDocumentManager::saveWithEncodingUntitledKeepsEncoding()
 // 直接保存保持 GBK 编码：打开 GBK 文件修改后 Ctrl+S，磁盘仍为 GBK 字节
 void TestDocumentManager::saveKeepsGbkEncodingOnDisk()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("keep-gbk.txt")));
@@ -444,7 +445,7 @@ void TestDocumentManager::saveKeepsGbkEncodingOnDisk()
 // 另存为携带编码：GBK 文档另存到新路径，新文件为 GBK 字节；被覆盖路径的既有文档按该编码重载
 void TestDocumentManager::saveAsCarriesEncoding()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString pathA = dir.filePath(QStringLiteral("src-gbk.txt"));
@@ -469,7 +470,7 @@ void TestDocumentManager::saveAsCarriesEncoding()
 // 格式匹配：未知扩展（.md）与已知扩展（.txt）均兜底为 PlainTextFormat
 void TestDocumentManager::formatForUrlFallsBackToPlainText()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DocumentFormat *mdFormat =
         mgr.formatForUrl(QUrl::fromLocalFile(QStringLiteral("C:/notes/readme.md")));
     QVERIFY(mdFormat != nullptr);
@@ -485,7 +486,7 @@ void TestDocumentManager::formatForUrlFallsBackToPlainText()
 // 注册的具体格式优先于兜底格式：*.tst 命中 FakeFormat（扩展点契约），未匹配扩展仍兜底 plaintext
 void TestDocumentManager::formatForUrlPrefersRegisteredFormatOverFallback()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     FakeFormat fake;
     mgr.registerFormat(&fake);
 
@@ -505,7 +506,7 @@ void TestDocumentManager::formatForUrlPrefersRegisteredFormatOverFallback()
 // 存储分发：file:// 命中 LocalStorage，http:// 返回 nullptr
 void TestDocumentManager::storageForUrlMatchesScheme()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DocumentStorage *fileStorage =
         mgr.storageForUrl(QUrl(QStringLiteral("file:///C:/notes/a.txt")));
     QVERIFY(fileStorage != nullptr);
@@ -518,7 +519,7 @@ void TestDocumentManager::storageForUrlMatchesScheme()
 // url 为空的文档：save 返回 false（UI 转另存为）
 void TestDocumentManager::saveRequiresUrl()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     mgr.newDocument();
     Document *doc = mgr.activeDocument();
     QCOMPARE(mgr.save(doc), false);
@@ -527,7 +528,7 @@ void TestDocumentManager::saveRequiresUrl()
 // 保存：清除 modified，磁盘内容更新且按记录的风格写回
 void TestDocumentManager::saveClearsModifiedAndWritesDisk()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("save.txt"));
@@ -549,7 +550,7 @@ void TestDocumentManager::saveClearsModifiedAndWritesDisk()
 // 撤回到保存时内容自动清脏（save 路径 markSaved 生效）
 void TestDocumentManager::saveThenEditThenRevertToSavedClearsModified()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("revert.txt"));
@@ -570,7 +571,7 @@ void TestDocumentManager::saveThenEditThenRevertToSavedClearsModified()
 // TC-007（另存为集成）：另存成功后基线更新为另存时内容，撤回到该内容清脏
 void TestDocumentManager::saveAsThenRevertToSavedClearsModified()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
 
@@ -590,7 +591,7 @@ void TestDocumentManager::saveAsThenRevertToSavedClearsModified()
 // TC-008（回归）：保存失败不更新基线，脏标记保留（save 与 saveAs 失败路径）
 void TestDocumentManager::saveFailureKeepsModified()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QUrl bad = QUrl::fromLocalFile(dir.filePath(QStringLiteral("no/such/dir/x.txt")));
@@ -618,7 +619,7 @@ void TestDocumentManager::saveFailureKeepsModified()
 // 另存为：url / displayName 更新，modified 清除，文件写入新路径
 void TestDocumentManager::saveAsUpdatesUrlAndDisplayName()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
 
@@ -639,7 +640,7 @@ void TestDocumentManager::saveAsUpdatesUrlAndDisplayName()
 // 另存为到已存在文件：目标旧内容被完全替换（TC-005 覆盖场景）
 void TestDocumentManager::saveAsOverwritesExistingFile()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString target = dir.filePath(QStringLiteral("exists.txt"));
@@ -656,7 +657,7 @@ void TestDocumentManager::saveAsOverwritesExistingFile()
 // 另存为后原文件不被修改：打开 A → 修改 → 另存为 B，A 磁盘内容保持原样（TC-005 预期）
 void TestDocumentManager::saveAsLeavesOriginalFileUntouched()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString original = dir.filePath(QStringLiteral("original.txt"));
@@ -675,7 +676,7 @@ void TestDocumentManager::saveAsLeavesOriginalFileUntouched()
 // 另存为到其他已打开文档的 URL：写盘覆盖后重载对方文档，防止其旧内存内容后续保存时静默覆盖新内容
 void TestDocumentManager::saveAsToOpenedUrlReloadsOtherDocument()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString pathA = dir.filePath(QStringLiteral("a.txt"));
@@ -707,7 +708,7 @@ void TestDocumentManager::saveAsToOpenedUrlReloadsOtherDocument()
 // 另存为到非法路径：返回 false、发 saveFailed、内容与修改标记不丢（TC-016 核心行为）
 void TestDocumentManager::saveAsToInvalidPathFailsAndKeepsContent()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
 
@@ -726,7 +727,7 @@ void TestDocumentManager::saveAsToInvalidPathFailsAndKeepsContent()
 // 关闭文档：关闭活动文档时激活邻近（优先前一个，其次后一个，无则 nullptr）
 void TestDocumentManager::closeDocumentActivatesNeighbor()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     mgr.newDocument(); // A
     mgr.newDocument(); // B
     mgr.newDocument(); // C
@@ -759,7 +760,7 @@ void TestDocumentManager::closeDocumentActivatesNeighbor()
 // 关闭非活动文档：活动文档不变
 void TestDocumentManager::closingInactiveDocumentKeepsActive()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     mgr.newDocument(); // A
     mgr.newDocument(); // B（激活）
     Document *a = mgr.documents().at(0);
@@ -771,10 +772,55 @@ void TestDocumentManager::closingInactiveDocumentKeepsActive()
     QCOMPARE(mgr.activeDocument(), b);
 }
 
+// TC-005（关闭现场还原，DEC-002）：restoreUntitledDraft 按位插入——insertIndex
+// 钳制到 [0, size]、-1（默认）追加；内部列表与 QML model 同步按位一致
+// （rowsInserted 增量通知行号正确）；不激活既有活动文档
+void TestDocumentManager::restoreUntitledDraftInsertsAtPosition()
+{
+    DocumentManager mgr(nullptr);
+    mgr.newDocument(); // 未命名-1 @0
+    mgr.newDocument(); // 未命名-2 @1（活动）
+    Document *second = mgr.documents().at(1);
+    DocumentListModel *model = mgr.documentsModel();
+    QCOMPARE(model->count(), 2);
+
+    // 合法位置 1：插入到两文档之间；model 行级增量通知的行号正确
+    QSignalSpy insertedSpy(model, &QAbstractItemModel::rowsInserted);
+    Document *mid = mgr.restoreUntitledDraft(QStringLiteral("mid"), QStringLiteral("草稿-中"), 1);
+    QCOMPARE(mgr.documents().size(), 3);
+    QCOMPARE(mgr.documents().at(1), mid);
+    QCOMPARE(model->at(1), mid); // model 与 documents() 按位一致
+    QCOMPARE(mid->content(), QStringLiteral("mid"));
+    QCOMPARE(mid->modified(), true); // 草稿恢复必为脏（基线为空）
+    QCOMPARE(insertedSpy.count(), 1);
+    QCOMPARE(insertedSpy.at(0).at(1).toInt(), 1); // rowsInserted(first)
+    QCOMPARE(insertedSpy.at(0).at(2).toInt(), 1); // rowsInserted(last)
+
+    // 越界（正）：钳制到 size（追加）
+    Document *over = mgr.restoreUntitledDraft(QStringLiteral("over"), QStringLiteral("草稿-尾"), 999);
+    QCOMPARE(mgr.documents().constLast(), over);
+    QCOMPARE(model->indexOf(over), 3);
+
+    // 越界（负，非 -1 哨兵）：钳制到 0
+    Document *head = mgr.restoreUntitledDraft(QStringLiteral("head"), QStringLiteral("草稿-头"), -5);
+    QCOMPARE(mgr.documents().at(0), head);
+    QCOMPARE(model->at(0), head);
+
+    // 默认 -1：追加（既有调用方 resolveConflicts 等的行为不变）
+    Document *tail = mgr.restoreUntitledDraft(QStringLiteral("tail"), QStringLiteral("草稿-追"));
+    QCOMPARE(mgr.documents().constLast(), tail);
+
+    // 全程一致性与不激活：model 与列表逐位一致；活动文档仍为未命名-2
+    QCOMPARE(model->count(), mgr.documents().size());
+    for (int i = 0; i < mgr.documents().size(); ++i)
+        QCOMPARE(model->at(i), mgr.documents().at(i));
+    QCOMPARE(mgr.activeDocument(), second);
+}
+
 // hasUnsavedChanges 随 modified 变化
 void TestDocumentManager::hasUnsavedChangesToggles()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
 
@@ -793,7 +839,7 @@ void TestDocumentManager::hasUnsavedChangesToggles()
 // nameFilters：聚合已注册格式的过滤器（去重），供 FileDialog 使用
 void TestDocumentManager::nameFiltersAggregatesRegisteredFormats()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     const QStringList filters = mgr.nameFilters();
     QVERIFY(filters.contains(QStringLiteral("文本文件 (*.txt)")));
     QVERIFY(filters.contains(QStringLiteral("所有文件 (*)")));
@@ -803,7 +849,7 @@ void TestDocumentManager::nameFiltersAggregatesRegisteredFormats()
 // B1 增量模型：newDocument 触发 rowsInserted（只插入对应行）、count 属性同步、at/indexOf 一致
 void TestDocumentManager::documentsModelEmitsInsertOnNewDocument()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DocumentListModel *model = mgr.documentsModel();
     QCOMPARE(model->count(), 0);
 
@@ -839,7 +885,7 @@ void TestDocumentManager::documentsModelEmitsInsertOnNewDocument()
 // B1 增量模型核心场景：打开 A、B → 关 A → count=1 且 B 仍在 index 0（只移除对应行）
 void TestDocumentManager::documentsModelRemovesOnlyClosedRow()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString pathA = dir.filePath(QStringLiteral("a.txt"));
@@ -878,7 +924,7 @@ void TestDocumentManager::documentsModelRemovesOnlyClosedRow()
 // B1 增量模型：document 角色返回行对应 Document*（供 QML delegate 的 required property 注入）
 void TestDocumentManager::documentsModelExposesDocumentRole()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DocumentListModel *model = mgr.documentsModel();
     mgr.newDocument();
     mgr.newDocument();
@@ -903,10 +949,10 @@ void TestDocumentManager::instanceTracksLatestInstance()
     QCOMPARE(DocumentManager::instance(), nullptr); // 前置：无存活实例
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         QCOMPARE(DocumentManager::instance(), &mgr);
 
-        DocumentManager mgr2; // 后构造者覆盖登记
+        DocumentManager mgr2(nullptr); // 后构造者覆盖登记
         QCOMPARE(DocumentManager::instance(), &mgr2);
     } // 两个实例均析构：析构时置空
 

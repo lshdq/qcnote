@@ -40,7 +40,7 @@ DocumentManager *DocumentManager::create(QQmlEngine *qmlEngine, QJSEngine *jsEng
     // 所有权固定为 CppOwnership（QML 引擎不负责销毁）。
     // 仅支持单 QML 引擎使用：多引擎共享同一实例是未定义行为，当前不支持。
     if (!s_instance)
-        s_instance = new DocumentManager();
+        s_instance = new DocumentManager(nullptr); // 显式传 parent（构造无默认参数，见头文件注释）
     QJSEngine::setObjectOwnership(s_instance, QQmlEngine::CppOwnership);
     return s_instance;
 }
@@ -84,7 +84,8 @@ void DocumentManager::newDocument()
     setActiveDocument(doc);
 }
 
-Document *DocumentManager::restoreUntitledDraft(const QString &content, const QString &untitledName)
+Document *DocumentManager::restoreUntitledDraft(const QString &content, const QString &untitledName,
+                                                int insertIndex)
 {
     // 显示名尽量沿用记录值；记录名形如 未命名-N 时推进计数器（后续 newDocument
     // 跳过占用号），与现有文档 displayName 冲突时按计数器生成新名
@@ -111,10 +112,14 @@ Document *DocumentManager::restoreUntitledDraft(const QString &content, const QS
     }
 
     auto *doc = new Document(name, this);
-    m_documents.append(doc);
+    // 插入位置：-1（默认哨兵）追加（既有调用方行为）；其余值（含越界负数）
+    // 钳制到 [0, size]（越界/草稿多于会话记录的场景按钳制处理，需求边界）
+    const int index = insertIndex == -1 ? m_documents.size()
+                                        : qBound(0, insertIndex, m_documents.size());
+    m_documents.insert(index, doc);
     // 先建 model 行（rowsInserted，视图只新增对应 delegate），再发 documentsChanged；
     // 不激活、不发 documentOpened（草稿恢复不抢占活动标签，TC-015）
-    m_documentsModel->insert(m_documents.size() - 1, doc);
+    m_documentsModel->insert(index, doc);
     emit documentsChanged();
     // 入列后再写内容：DraftCacheManager 等经 documentsChanged 补连信号后，
     // setContent 触发的 contentChanged 按新 uid 正常进入草稿续写防抖（预期行为）

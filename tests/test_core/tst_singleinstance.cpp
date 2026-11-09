@@ -24,8 +24,8 @@ static_assert(!std::is_default_constructible_v<SingleInstance>,
 // 所有用例使用随机服务名（绝不以默认服务名 qcnote-<用户名> 监听，避免与真实
 // 运行实例冲突），对象为栈上临时实例，析构即释放监听与连接。
 // DocumentManager::instance() 可能被同进程其他测试残留实例占用：需要
-// “未就绪”前置的用例先以 { DocumentManager resetter; } 构造-析构对把
-// instance() 归零；需要“已就绪”的用例持本地管理器，断言只依赖本地对象。
+// “未就绪”前置的用例先以 { DocumentManager resetter(nullptr); } 构造-析构
+// 对把 instance() 归零；需要“已就绪”的用例持本地管理器，断言只依赖本地对象。
 class TestSingleInstance : public QObject
 {
     Q_OBJECT
@@ -97,7 +97,7 @@ void TestSingleInstance::frameRoundTrip()
 // 支持多个先后到达的连接（分帧缓冲按连接隔离）
 void TestSingleInstance::loopbackOpensAndActivates()
 {
-    DocumentManager manager; // 本地管理器在场 → 走“立即刷出”路径
+    DocumentManager manager(nullptr); // 本地管理器在场 → 走“立即刷出”路径
     const QString name = randomServerName();
     SingleInstance si(name);
     QCOMPARE(si.initialize({}), SingleInstance::StartupRole::Primary);
@@ -135,7 +135,7 @@ void TestSingleInstance::loopbackOpensAndActivates()
 // 监听）initialize → Forwarded 且自身不本地打开；首实例收到数据并立即刷出
 void TestSingleInstance::primaryElectionForwardsToListener()
 {
-    DocumentManager manager; // 首实例侧管理器在场 → 收到即刷出
+    DocumentManager manager(nullptr); // 首实例侧管理器在场 → 收到即刷出
     const QString name = randomServerName();
 
     SingleInstance first(name);
@@ -160,7 +160,7 @@ void TestSingleInstance::primaryElectionForwardsToListener()
 // 待打开 URL；队列清空后再次调用无新信号、无崩溃
 void TestSingleInstance::pendingQueueFlushesWhenManagerReady()
 {
-    { DocumentManager resetter; } // 构造登记 → 析构置空：确保 instance() == nullptr
+    { DocumentManager resetter(nullptr); } // 构造登记 → 析构置空：确保 instance() == nullptr
 
     const QString name = randomServerName();
     SingleInstance si(name);
@@ -174,7 +174,7 @@ void TestSingleInstance::pendingQueueFlushesWhenManagerReady()
     si.openPendingUrls(); // 管理器仍不存在：保留队列
     QVERIFY(openedSpy.isEmpty());
 
-    DocumentManager manager; // 就绪
+    DocumentManager manager(nullptr); // 就绪
     si.openPendingUrls();
     QCOMPARE(openedSpy.count(), 1);
     QCOMPARE(openedSpy.at(0).at(0).value<QList<QUrl>>(), urls); // 无丢失、顺序保持
@@ -187,7 +187,7 @@ void TestSingleInstance::pendingQueueFlushesWhenManagerReady()
 // 逐帧独立解析（每帧一次 urlsOpened，帧内 URL 批量携带）
 void TestSingleInstance::partialAndCoalescedFrames()
 {
-    DocumentManager manager; // 立即刷出路径：每帧到达即一次 urlsOpened
+    DocumentManager manager(nullptr); // 立即刷出路径：每帧到达即一次 urlsOpened
     const QString name = randomServerName();
     SingleInstance si(name);
     QCOMPARE(si.initialize({}), SingleInstance::StartupRole::Primary);

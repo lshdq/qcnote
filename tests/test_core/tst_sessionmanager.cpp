@@ -61,7 +61,9 @@ private:
 
 // 会话恢复核心行为：文档往返、缺失文件静默跳过、active 丢失回退、空会话无副作用、
 // 损坏数据容错、光标钳制、防抖写盘与 flush、几何校验纯函数、窗口状态往返、
-// 自动换行设置（默认值 / 写盘 / 重启恢复 / 旧会话兼容，TC-001~TC-004）。
+// 自动换行设置（默认值 / 写盘 / 重启恢复 / 旧会话兼容，TC-001~TC-004）、
+// 关闭现场还原（未命名条目 uid/位置记录 TC-001、activeUid 互斥 TC-002/003、
+// 恢复暂存查询接口 TC-004、旧格式无 uid 条目丢弃 TC-010）。
 // 均为 C++ 直接 new（注入 DocumentManager 与临时会话路径），不经 QML 单例工厂。
 class TestSessionManager : public QObject
 {
@@ -69,7 +71,11 @@ class TestSessionManager : public QObject
 
 private slots:
     void sessionRoundTrip();
-    void unnamedDocumentsAreExcludedFromSession();
+    void unnamedDocumentsRecordUidAndPosition();
+    void activeUnnamedRecordsActiveUidWithoutActive();
+    void activeFileRecordsActiveWithoutActiveUid();
+    void pendingDraftQueriesAfterRestore();
+    void legacyEntriesWithoutUidOrUrlAreDropped();
     void missingFilesAreSkippedSilently();
     void lostActiveFallsBackToLastOpened();
     void emptySessionIsNoop();
@@ -173,7 +179,7 @@ void TestSessionManager::sessionRoundTrip()
     writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("bbbbbb"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath); // 先于恢复目标构造，建立信号连接
         mgr.openUrls({ urlA, urlB });
         mgr.documents().at(0)->setCursorPosition(2);
@@ -183,7 +189,7 @@ void TestSessionManager::sessionRoundTrip()
     } // 声明顺序保证 SessionManager 先于 DocumentManager 析构（manager 生命周期覆盖）
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         session.restoreDocuments();
 
@@ -196,32 +202,178 @@ void TestSessionManager::sessionRoundTrip()
     }
 }
 
-// 未命名文档不入会话：newDocument()（不 saveAs，url 为空）+ 打开 1 个有
-// url 文件 → flush → 会话 size == 1，唯一条目即有 url 文档（未命名文档
-// 无 url，不占编号不入会话）
-void TestSessionManager::unnamedDocumentsAreExcludedFromSession()
+// TC-001（关闭现场还原，DEC-001）：[documents] 按标签栏顺序记录完整序列——
+// 文件条目 url/cursor 照旧；未命名条目（url 空）该编号写 uid（不写 url）。
+// 打开 [文件A, 未命名1, 文件B] → flush → size=3、条目 2 有 uid 无 url、
+// 条目 1/3 有 url，编号顺序与标签栏一致
+void TestSessionManager::unnamedDocumentsRecordUidAndPosition()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
-    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("saved.txt")));
-    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("content"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("a.txt")));
+    const QUrl urlB = QUrl::fromLocalFile(dir.filePath(QStringLiteral("b.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A"));
+    writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B"));
 
+    QString unnamedUid;
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
-        mgr.newDocument();     // 未命名文档：url 为空
-        mgr.openUrls({ url }); // 有 url 文档（自动激活）
+        mgr.openUrls({ urlA }); // 条目 1
+        mgr.newDocument();      // 未命名-1：条目 2（url 为空）
+        unnamedUid = mgr.documents().at(1)->uid();
+        mgr.openUrls({ urlB }); // 条目 3
         session.flush();
     }
 
     QSettings reader(iniPath, QSettings::IniFormat);
+    QCOMPARE(reader.value(QStringLiteral("documents/size")).toInt(), 3);
+    QCOMPARE(QUrl(reader.value(QStringLiteral("documents/1/url")).toString()), urlA);
+    QCOMPARE(reader.value(QStringLiteral("documents/2/uid")).toString(), unnamedUid);
+    QVERIFY(reader.value(QStringLiteral("documents/2/url"))
+                    .toString()
+                    .isEmpty()); // 未命名条目不写 url
+    QCOMPARE(QUrl(reader.value(QStringLiteral("documents/3/url")).toString()), urlB);
+    QVERIFY(!reader.contains(QStringLiteral("documents/4/url"))); // 无多余条目
+}
+
+// TC-002（关闭现场还原，DEC-001）：活动标签为未命名 → 记 activeUid（其 uid）、
+// 不记 active 键（两键互斥；saveNow 开头整组删除保证不并存残留）
+void TestSessionManager::activeUnnamedRecordsActiveUidWithoutActive()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("saved.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("content"));
+
+    QString unnamedUid;
+    {
+        DocumentManager mgr(nullptr);
+        SessionManager session(&mgr, iniPath);
+        mgr.openUrls({ urlA });
+        mgr.newDocument(); // newDocument 激活未命名-1
+        unnamedUid = mgr.documents().at(1)->uid();
+        QCOMPARE(mgr.activeDocument(), mgr.documents().at(1)); // 前置：活动为未命名
+        session.flush();
+    }
+
+    QSettings reader(iniPath, QSettings::IniFormat);
+    QCOMPARE(reader.value(QStringLiteral("documents/activeUid")).toString(), unnamedUid);
+    QVERIFY(!reader.contains(QStringLiteral("documents/active"))); // 两键互斥
+}
+
+// TC-003（关闭现场还原回归）：活动标签为文件 → 维持现状记 active URL，
+// 不产生 activeUid 键
+void TestSessionManager::activeFileRecordsActiveWithoutActiveUid()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("a.txt")));
+    const QUrl urlB = QUrl::fromLocalFile(dir.filePath(QStringLiteral("b.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A"));
+    writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B"));
+
+    {
+        DocumentManager mgr(nullptr);
+        SessionManager session(&mgr, iniPath);
+        mgr.openUrls({ urlA, urlB }); // 最后打开的 B 被自动激活（活动为文件）
+        QCOMPARE(mgr.activeDocument(), mgr.documents().at(1));
+        session.flush();
+    }
+
+    QSettings reader(iniPath, QSettings::IniFormat);
+    QCOMPARE(QUrl(reader.value(QStringLiteral("documents/active")).toString()), urlB);
+    QVERIFY(!reader.contains(QStringLiteral("documents/activeUid"))); // 两键互斥
+}
+
+// TC-004（关闭现场还原）：restoreDocuments 暂存未命名条目并经查询接口暴露——
+// pendingDraftPosition(uid) 返回标签栏 0 基位置（[documents] 条目编号-1）、
+// 未知 uid 返回 -1；pendingActiveDraftUid() 返回记录 uid、无记录为空串。
+// 未命名条目本身不开文档（内容在草稿缓存，由 DraftCacheManager 按位还原）
+void TestSessionManager::pendingDraftQueriesAfterRestore()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("a.txt")));
+    const QUrl urlB = QUrl::fromLocalFile(dir.filePath(QStringLiteral("b.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A"));
+    writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B"));
+
+    QString unnamedUid;
+    {
+        DocumentManager mgr(nullptr);
+        SessionManager session(&mgr, iniPath);
+        mgr.openUrls({ urlA });  // 条目 1
+        mgr.newDocument();       // 未命名-1：条目 2
+        unnamedUid = mgr.documents().at(1)->uid();
+        mgr.openUrls({ urlB });  // 条目 3（openUrls 激活 B）
+        mgr.setActiveDocument(mgr.documents().at(1)); // 活动 = 未命名 → activeUid
+        session.flush();
+    }
+
+    {
+        DocumentManager mgr(nullptr);
+        SessionManager session(&mgr, iniPath);
+        session.restoreDocuments();
+
+        QCOMPARE(mgr.documents().size(), 2); // 未命名条目不开文档
+        QCOMPARE(mgr.documents().at(0)->url(), urlA);
+        QCOMPARE(mgr.documents().at(1)->url(), urlB);
+        QCOMPARE(session.pendingDraftPosition(unnamedUid), 1); // 标签栏 0 基位置
+        QCOMPARE(session.pendingDraftPosition(QStringLiteral("00000000-0000-0000-0000-000000000000")),
+                 -1); // 未知 uid
+        QCOMPARE(session.pendingActiveDraftUid(), unnamedUid);
+    }
+
+    // 无会话记录场景：空会话文件 → 查询接口无值（位置 -1、activeUid 空串）
+    {
+        DocumentManager mgr(nullptr);
+        SessionManager session(&mgr, dir.filePath(QStringLiteral("session2.ini"))); // 不存在
+        session.restoreDocuments();
+        QCOMPARE(session.pendingActiveDraftUid(), QString());
+        QCOMPARE(session.pendingDraftPosition(unnamedUid), -1);
+    }
+}
+
+// TC-010（旧格式兼容，DEC-005）：旧格式会话不记录未命名条目；无 url 且无 uid
+// 的空条目（防御）按损坏丢弃（现状行为）——不崩溃、不暂存位置、无 activeUid；
+// 恢复后的对齐写盘剔除坏条目
+void TestSessionManager::legacyEntriesWithoutUidOrUrlAreDropped()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("a.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A"));
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=2\n");
+    ini += QStringLiteral("1\\url=") + urlA.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("1\\cursor=0\n");
+    ini += QStringLiteral("2\\cursor=7\n"); // 无 url 且无 uid：损坏丢弃（旧格式无此形态，防御）
+    ini += QStringLiteral("active=") + urlA.toString() + QStringLiteral("\n");
+    writeRawBytes(iniPath, ini.toUtf8());
+
+    DocumentManager mgr(nullptr);
+    SessionManager session(&mgr, iniPath);
+    QSignalSpy failSpy(&mgr, &DocumentManager::openFailed);
+    session.restoreDocuments(); // 不崩溃
+
+    QCOMPARE(failSpy.count(), 0);
+    QCOMPARE(mgr.documents().size(), 1); // 仅有效文件条目恢复
+    QCOMPARE(mgr.documents().constFirst()->url(), urlA);
+    QCOMPARE(session.pendingActiveDraftUid(), QString()); // 无 activeUid 记录
+    QCOMPARE(session.pendingDraftPosition(QStringLiteral("00000000-0000-0000-0000-000000000000")),
+             -1); // 无未命名条目暂存
+
+    // 恢复后的对齐写盘剔除坏条目
+    QSettings reader(iniPath, QSettings::IniFormat);
     QCOMPARE(reader.value(QStringLiteral("documents/size")).toInt(), 1);
-    // 唯一条目是有 url 文档：不含未命名文档
-    QCOMPARE(QUrl(reader.value(QStringLiteral("documents/1/url")).toString()), url);
-    QVERIFY(!reader.value(QStringLiteral("documents/1/url")).toString().isEmpty());
-    // 未命名文档未占据第 2 个编号
-    QVERIFY(!reader.contains(QStringLiteral("documents/2/url")));
 }
 
 // 缺失文件静默跳过：3 个文件删中间 1 个 → 恢复 2 个；无 openFailed；顺序保持
@@ -238,7 +390,7 @@ void TestSessionManager::missingFilesAreSkippedSilently()
     writeRawBytes(urlC.toLocalFile(), QByteArrayLiteral("C"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         mgr.openUrls({ urlA, urlB, urlC });
         session.flush();
@@ -247,7 +399,7 @@ void TestSessionManager::missingFilesAreSkippedSilently()
     QVERIFY(QFile::remove(urlB.toLocalFile())); // 模拟文件被删除/移动
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         QSignalSpy failSpy(&mgr, &DocumentManager::openFailed);
         session.restoreDocuments();
@@ -271,7 +423,7 @@ void TestSessionManager::lostActiveFallsBackToLastOpened()
     writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         mgr.openUrls({ urlA, urlB }); // 最后打开的 B 被自动激活并记录
         session.flush();
@@ -280,7 +432,7 @@ void TestSessionManager::lostActiveFallsBackToLastOpened()
     QVERIFY(QFile::remove(urlB.toLocalFile())); // 删除 active 指向的文件
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         session.restoreDocuments();
 
@@ -296,7 +448,7 @@ void TestSessionManager::emptySessionIsNoop()
     QVERIFY(dir.isValid());
     const QString iniPath = dir.filePath(QStringLiteral("session.ini")); // 不存在
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, iniPath);
     session.restoreDocuments();
 
@@ -328,7 +480,7 @@ void TestSessionManager::corruptSessionEntriesAreSkippedOrClamped()
     ini += QStringLiteral("active=") + goneUrl.toString() + QStringLiteral("\n"); // active 丢失
     writeRawBytes(iniPath, ini.toUtf8());
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, iniPath);
     QSignalSpy failSpy(&mgr, &DocumentManager::openFailed);
     session.restoreDocuments(); // 不崩溃
@@ -354,7 +506,7 @@ void TestSessionManager::cursorPositionIsClampedToContentLength()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("hello")); // 5 字符
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         mgr.openUrls({ url });
         mgr.documents().constFirst()->setCursorPosition(100); // 超出内容长度
@@ -362,7 +514,7 @@ void TestSessionManager::cursorPositionIsClampedToContentLength()
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         session.restoreDocuments();
         QCOMPARE(mgr.documents().constFirst()->cursorPosition(), 5); // 钳到内容长度
@@ -380,7 +532,7 @@ void TestSessionManager::debouncedSaveAndFlush()
     writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A"));
     writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, iniPath);
 
     mgr.openUrls({ urlA }); // documentsChanged → 500ms 防抖启动
@@ -410,7 +562,7 @@ void TestSessionManager::aboutToQuitFlushesPendingDebounce()
     writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A"));
     writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, iniPath);
     mgr.openUrls({ urlA, urlB });
     session.flush(); // 基线落盘：两个文档 cursor 均为 0
@@ -485,14 +637,14 @@ void TestSessionManager::windowStateRoundTrip()
     const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         session.saveWindowState(120, 80, 1000, 640, true);
         session.flush(); // 立即落盘
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         const QVariantMap restored = session.windowState();
         QCOMPARE(restored.value(QStringLiteral("x")).toInt(), 120);
@@ -513,7 +665,7 @@ void TestSessionManager::wordWrapDefaultsToFalseWithoutDiskWrite()
     const QString iniPath = dir.filePath(QStringLiteral("session.ini")); // 不存在
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         QCOMPARE(session.wordWrap(), false); // 默认关闭，与现状一致
 
@@ -536,7 +688,7 @@ void TestSessionManager::wordWrapToggleWritesIniAfterFlush()
     const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         QCOMPARE(session.wordWrap(), false);
 
@@ -566,14 +718,14 @@ void TestSessionManager::wordWrapRestoredAcrossInstances()
     const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         session.setWordWrap(true);
         session.flush();
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath); // 构造预读 [editor]
         QCOMPARE(session.wordWrap(), true);    // 与落盘值一致
 
@@ -588,7 +740,7 @@ void TestSessionManager::wordWrapRestoredAcrossInstances()
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         QCOMPARE(session.wordWrap(), false); // 与落盘值一致
     }
@@ -619,7 +771,7 @@ void TestSessionManager::legacyIniWithoutEditorSectionIsCompatible()
     ini += QStringLiteral("maximized=false\n");
     writeRawBytes(iniPath, ini.toUtf8());
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, iniPath);
     QCOMPARE(session.wordWrap(), false); // 旧格式无 [editor]：默认 false
 
@@ -657,7 +809,7 @@ void TestSessionManager::encodingRememberedAndRestoredAcrossSessions()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3")); // GBK：你好
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         mgr.openUrlWithEncoding(url, Document::Encoding::Gbk); // 手动指定编码打开
         session.flush();
@@ -665,7 +817,7 @@ void TestSessionManager::encodingRememberedAndRestoredAcrossSessions()
     QVERIFY(sessionFileHasEncoding(iniPath, 1, QStringLiteral("gbk")));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         session.restoreDocuments();
         QCOMPARE(mgr.documents().size(), 1);
@@ -686,7 +838,7 @@ void TestSessionManager::forcedUtf8EncodingRememberedForGbkFile()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         // 用户纠正：GBK 字节强制按 UTF-8 打开（乱码），会话记录该选择
         mgr.openUrlWithEncoding(url, Document::Encoding::Utf8);
@@ -695,7 +847,7 @@ void TestSessionManager::forcedUtf8EncodingRememberedForGbkFile()
     QVERIFY(sessionFileHasEncoding(iniPath, 1, QStringLiteral("utf8")));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         SessionManager session(&mgr, iniPath);
         session.restoreDocuments();
         // 重启后仍按记忆的 UTF-8 打开（不重新自动识别为 GBK）
@@ -720,7 +872,7 @@ void TestSessionManager::legacySessionWithoutEncodingFallsBackToAutoDetect()
     ini += QStringLiteral("active=") + url.toString() + QStringLiteral("\n");
     writeRawBytes(iniPath, ini.toUtf8()); // 无 encoding 键（旧格式）
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, iniPath);
     QSignalSpy failSpy(&mgr, &DocumentManager::openFailed);
     session.restoreDocuments();
@@ -748,7 +900,7 @@ void TestSessionManager::invalidEncodingValueFallsBackToAutoDetect()
     ini += QStringLiteral("active=") + url.toString() + QStringLiteral("\n");
     writeRawBytes(iniPath, ini.toUtf8());
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, iniPath);
     QSignalSpy failSpy(&mgr, &DocumentManager::openFailed);
     session.restoreDocuments();
@@ -831,7 +983,7 @@ void TestSessionManager::constructWithEmptyPathWritesIniNextToExeWhenMarkerPrese
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("portable.txt")));
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("P"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, QString()); // 空注入路径：应命中便携模式
     mgr.openUrls({ url });
     session.flush(); // 不等防抖，立即落盘
@@ -854,7 +1006,7 @@ void TestSessionManager::constructWithEmptyPathKeepsExeDirCleanWhenMarkerMissing
     if (!exeDir.dirIsClean())
         QSKIP("build 目录已存在 qcnote.portable/qcnote.ini，跳过以免误动他人产物");
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     SessionManager session(&mgr, QString()); // 空注入路径 + 无标记：走默认 UserScope
     QCOMPARE(mgr.documents().size(), 0);
     session.flush(); // 无任何写操作：仅 sync，不落盘

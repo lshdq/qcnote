@@ -8,7 +8,10 @@ import QtQuick.Layouts
  * 主窗口：Frameless 四层结构（标题栏 / 工具栏 / 内容区 / 状态栏）。
  *
  * - 快捷键统一为窗口级 Shortcut；菜单仅展示快捷键文本；
- * - 未保存关闭/退出流程：三选（保存 / 不保存 / 取消），取消中止；
+ * - 标签页关闭三选确认：保存 / 不保存 / 取消，取消中止（「不保存」
+ *   放弃并清理该文档草稿）；
+ * - 退出热退出免提示：不弹确认直接退出，未保存修改经草稿缓存
+ *   （DraftCacheManager）保留，下次启动恢复为未保存状态；
  * - 打开/保存失败统一错误对话框（排队展示），内容不丢失；
  * - 查找替换（Ctrl+F/Ctrl+H）：模态对话框（顶部对齐）+ 全部匹配高亮 +
  *   F3/Shift+F3 关闭态跳转，与多光标互斥，见 SearchDialog/SearchController；
@@ -46,10 +49,6 @@ ApplicationWindow {
     // ---- 流程状态 ----
     /// 正在处理的关闭请求文档（null = 无流程）
     property var closeFlowDoc: null
-    /// 该流程是否由退出触发（保存/放弃后继续处理下一个未保存文档）
-    property bool closeFlowIsExit: false
-    /// 退出已确认，放行 onClosing
-    property bool exiting: false
     /// 正在另存为的文档
     property var saveAsTarget: null
     /// 待展示错误队列
@@ -64,15 +63,6 @@ ApplicationWindow {
                || titleBar.menuVisible || ctxMenuPromptDialog.visible
                || reloadConfirmDialog.visible || searchDialog.visible
                || draftConflictDialog.visible
-    }
-
-    function firstModifiedDoc() {
-        const m = DocumentManager.documentsModel
-        for (let i = 0; i < m.count; ++i) {
-            if (m.at(i).modified)
-                return m.at(i)
-        }
-        return null
     }
 
     // ---- 动作 ----
@@ -158,7 +148,7 @@ ApplicationWindow {
     function doQuit() {
         if (uiLocked())
             return
-        root.close() // 统一走 onClosing → 退出确认流程
+        root.close() // 统一走 onClosing → 热退出（免提示）
     }
 
     function cycleTab(delta) {
@@ -232,40 +222,24 @@ ApplicationWindow {
             searchDialog.doFindPrev()
     }
 
-    // ---- 关闭 / 退出流程 ----
+    // ---- 关闭流程 ----（仅标签页关闭三选确认；退出已改为热退出免提示，
+    // 见 onClosing）
     function closeDocumentWithConfirm(doc) {
         if (doc.modified) {
             closeFlowDoc = doc
-            closeFlowIsExit = false
             unsavedDialog.open()
         } else {
             DocumentManager.closeDocument(doc)
         }
     }
 
-    function continueExit() {
-        const next = firstModifiedDoc()
-        if (!next) {
-            exiting = true
-            root.close()
-            return
-        }
-        closeFlowDoc = next
-        closeFlowIsExit = true
-        unsavedDialog.open()
-    }
-
     function finishCloseFlow(doc) {
-        const wasExit = closeFlowIsExit
         resetCloseFlow()
         DocumentManager.closeDocument(doc)
-        if (wasExit)
-            continueExit()
     }
 
     function resetCloseFlow() {
         closeFlowDoc = null
-        closeFlowIsExit = false
         saveAsTarget = null
     }
 
@@ -276,27 +250,10 @@ ApplicationWindow {
     }
 
     onClosing: (close) => {
-        // 退出已确认（未保存流程走完）→ 放行
-        if (root.exiting) {
-            close.accepted = true
-            return
-        }
+        // 热退出：不弹未保存确认，未保存修改经草稿缓存（DraftCacheManager）
+        // 防抖/失焦落盘保留，下次启动恢复为未保存状态；
         // 有模态 UI 打开时拒绝关闭
-        if (uiLocked()) {
-            close.accepted = false
-            return
-        }
-        // 无未保存修改 → 直接放行关闭；
-        // 不可嵌套调用 close()：QWindow::close() 在 close 事件派发期间有重入保护（inClose），会被静默忽略
-        if (!DocumentManager.hasUnsavedChanges()) {
-            close.accepted = true
-            return
-        }
-        // 有未保存修改 → 拒绝本次关闭，弹确认框逐个处理
-        close.accepted = false
-        closeFlowDoc = firstModifiedDoc()
-        closeFlowIsExit = true
-        unsavedDialog.open()
+        close.accepted = !uiLocked()
     }
 
     // ---- 会话恢复 ----
@@ -527,16 +484,17 @@ ApplicationWindow {
             if (!doc)
                 return
             if (DocumentManager.saveAs(doc, selectedFile)) {
-                // 保存成功：若该保存服务于关闭/退出流程，继续流程
+                // 保存成功：若该保存服务于关闭流程（未保存确认 → 另存为），
+                // 关闭该文档
                 if (root.closeFlowDoc === doc)
                     root.finishCloseFlow(doc)
             } else if (root.closeFlowDoc === doc) {
-                // 写入失败：saveFailed 已弹错误对话框，中止关闭/退出，内容保留
+                // 写入失败：saveFailed 已弹错误对话框，中止关闭流程，内容保留
                 root.resetCloseFlow()
             }
         }
         onRejected: {
-            // 取消另存为：中止关闭/退出流程，内容保留
+            // 取消另存为：中止关闭流程，内容保留
             root.resetCloseFlow()
         }
     }
@@ -586,7 +544,7 @@ ApplicationWindow {
                     root.resetCloseFlow()
                 }
             } else {
-                // 无路径：自动转另存为（取消则中止关闭/退出）
+                // 无路径：自动转另存为（取消则中止关闭流程）
                 root.saveAsTarget = doc
                 root.prefillSaveDialog(doc)
                 saveFileDialog.open()

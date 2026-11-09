@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QtQmlIntegration/qqmlintegration.h>
+#include <QHash>
 #include <QList>
 #include <QObject>
 #include <QPointer>
@@ -22,7 +23,9 @@ class QJSEngine;
  * @brief 会话恢复管理器（QML 单例）。
  *
  * 统一持有会话文件（QSettings，IniFormat）：
- * - [documents]：按编号记录上次打开的文件（URL、光标）与活动文档 URL；
+ * - [documents]：按编号记录上次打开的标签栏完整序列——文件条目记 URL/光标/
+ *   编码，未命名条目记 uid（关闭现场还原 DEC-001）；活动标签为文件记
+ *   active URL，为未命名记 activeUid（两键互斥，整组重写不并存）；
  * - [window]：窗口 normal 几何（x/y/width/height）与最大化标志；
  * - [editor]：编辑器全局设置（所有文档共享，如自动换行）。
  *
@@ -55,8 +58,22 @@ public:
     /// 保证管理器单例先于本单例存在（消除 QML 侧引用顺序的隐式依赖）
     static SessionManager *create(QQmlEngine *qmlEngine, QJSEngine *jsEngine);
 
-    /// 恢复上次会话：按原顺序重开文件、逐文档恢复光标、恢复活动文档；缺失文件静默跳过
+    /// 取当前实例（可能为 nullptr），供 DraftCacheManager 等获取会话恢复期暂存的
+    /// 未命名草稿位置/活动 uid（关闭现场还原 DEC-001；C++ 测试经直接构造注入）
+    static SessionManager *instance();
+
+    /// 恢复上次会话：按原顺序重开文件、逐文档恢复光标、恢复活动文档；缺失文件静默
+    /// 跳过；未命名条目不开文档，暂存 uid→标签栏位置与活动 uid（经下方查询接口
+    /// 交 DraftCacheManager 在草稿恢复阶段按位还原，DEC-001）
     Q_INVOKABLE void restoreDocuments();
+
+    /// 会话记录的未命名草稿目标位置（uid → 标签栏 0 基位置，即 [documents] 条目
+    /// 编号-1）；无记录返回 -1。restoreDocuments 期间暂存，供草稿恢复按位插入
+    int pendingDraftPosition(const QString &uid) const;
+
+    /// 会话记录的活动未命名文档 uid；无记录返回空串。供草稿恢复阶段按
+    /// DEC-003 一级优先匹配激活
+    QString pendingActiveDraftUid() const;
 
     /// 校验后的窗口几何 {x, y, width, height, maximized}；无数据或位置离屏返回空 map（QML 用默认值）
     Q_INVOKABLE QVariantMap windowState() const;
@@ -112,6 +129,9 @@ private:
     QTimer m_debounce;                     ///< 防抖：500ms 单触发
     bool m_restoring = false;              ///< 恢复中标志：屏蔽连锁 scheduleSave
     QSet<Document *> m_connectedDocuments; ///< 已连接信号文档（documentsChanged 时对比收缩）
+
+    QHash<QString, int> m_pendingDraftPositions; ///< 恢复期暂存：未命名条目 uid → 标签栏 0 基位置（[documents] 条目编号-1，DEC-001）
+    QString m_pendingActiveDraftUid;              ///< 恢复期暂存：会话记录的活动未命名文档 uid（无则空，DEC-003 一级激活依据）
 
     int m_windowX = 0;
     int m_windowY = 0;

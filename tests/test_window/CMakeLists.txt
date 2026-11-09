@@ -147,3 +147,49 @@ add_test(NAME test_searchmenu COMMAND test_searchmenu)
 set_tests_properties(test_searchmenu PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# 草稿缓存 QML 单例链路回归测试目标（offscreen，架构同上：单 main）：
+# 《退出免提示与草稿缓存单例修复》DEC-005——加载真实 Main.qml，
+# 经引擎拿 DocumentManager 单例后：tc002 真实防抖计时器到期断言条目
+# 落盘（TC-002，修复前红/修复后绿，QML 单例分裂根因的直接回归锁），
+# tc003 预放置未命名条目断言恢复且激活（TC-003，DEC-002 激活规则）。
+# 会话经 QSettings::setPath 重定向临时目录，缓存目录按本 exe 名派生并
+# 预清理/结束清理，不污染真实用户数据。
+qt_add_executable(test_draftsingleton
+    tst_draftsingleton.cpp
+)
+
+target_link_libraries(test_draftsingleton PRIVATE
+    Qt6::Test
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(test_draftsingleton)
+
+add_test(NAME test_draftsingleton COMMAND test_draftsingleton)
+# GUI 红线：自动化验证一律 offscreen，无可见窗口
+set_tests_properties(test_draftsingleton PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
+# 端到端草稿链路驱动 harness（不注册 ctest，手动/编排脚本运行）：
+# 《测试用例-退出免提示与草稿缓存单例修复》TC-010/TC-011/TC-012 的进程侧
+# 执行器，由 tests/verify-hotexit-draft-e2e.ps1 启动。加载真实 Main.qml，
+# 经 QML 动作入口（doNewDocument/doQuit）与活动 TextArea append() 等价驱动
+# 用户输入链路（EditorArea onTextChanged → doc.content 回写 → 真实防抖），
+# 支持热退出/待强杀/失焦强杀/恢复断言四模式。输出目录指到 build 根：与
+# qcnote.exe 同目录共享便携标记（qcnote.portable → build\drafts）。
+qt_add_executable(e2e_draft_driver
+    e2e_draft_driver.cpp
+)
+set_target_properties(e2e_draft_driver PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+target_link_libraries(e2e_draft_driver PRIVATE
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+qt_import_qml_plugins(e2e_draft_driver)

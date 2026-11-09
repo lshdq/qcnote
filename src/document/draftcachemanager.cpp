@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QHash>
 #include <QJSEngine>
 #include <QJsonDocument>
@@ -15,6 +16,8 @@
 #include <QStandardPaths>
 #include <QVariantMap>
 
+#include <algorithm>
+#include <limits>
 #include <utility>
 
 #include "document/document.h"
@@ -88,6 +91,13 @@ DraftCacheManager::DraftCacheManager(DocumentManager *manager, const QString &ca
 
     // 退出兜底：防抖挂起状态在退出前落盘（正常退出时 pending 应已清空，无副作用）
     connect(qApp, &QCoreApplication::aboutToQuit, this, &DraftCacheManager::flush);
+
+    // 失焦即写（DEC-003）：切窗口（失焦）是强杀前的高概率路径，立即落盘把
+    // 丢失窗口压缩到失焦前 1 秒。C++ 单测环境为 QCoreApplication（无该
+    // 信号），qobject_cast 判空跳过（防御：不假设 qApp 必为 QGuiApplication）
+    if (auto *guiApp = qobject_cast<QGuiApplication *>(qApp))
+        connect(guiApp, &QGuiApplication::applicationStateChanged, this,
+                &DraftCacheManager::onApplicationStateChanged);
 }
 
 DraftCacheManager::~DraftCacheManager()
@@ -123,6 +133,17 @@ void DraftCacheManager::restoreDrafts()
     // 进入时记录会话恢复设定的活动标签：代开路径 openUrls 会激活新开文档，
     // 恢复完成后须统一复位（TC-015：恢复不抢占活动标签）
     Document *const activeBefore = m_manager->activeDocument();
+    // 首个恢复成功的文档（QPointer 防悬垂）：会话无活动标签时激活它（DEC-002，
+    // 修复「未命名草稿恢复后界面停留在欢迎页/空白内容区」）；resolveConflicts
+    // 路径不改激活（冲突恢复时用户已在交互中）
+    QPointer<Document> firstRestored;
+
+    // 关闭现场还原（DEC-001/003）：会话恢复期暂存的未命名位置/活动 uid 经
+    // SessionManager::instance() 消费；无会话实例（C++ 测试环境）时全部回退
+    // 现有规则（位置 -1 追加、无一级激活匹配）
+    SessionManager *const session = SessionManager::instance();
+    const QString pendingActiveUid = session ? session->pendingActiveDraftUid() : QString();
+    QPointer<Document> activeUidMatch; // 一级激活候选：条目 uid 与会话 activeUid 同源的恢复文档
 
     QDir dir(m_cacheDir);
     if (!dir.exists())
@@ -195,17 +216,13 @@ void DraftCacheManager::restoreDrafts()
         }
     }
 
-    // 阶段三：分类处理（未命名重建 / 代开 / 静默应用 / 冲突暂存）
+    // 阶段三 a：有 url 条目先行处理（代开 / 静默应用 / 冲突暂存，去重后相对
+    // 序不变）。文件文档先于未命名条目全部就位——会话恢复的文件本就已按编号
+    // 占位，代开的文件追加在尾部，均不改变阶段三 b 按位插入所依赖的
+    // 「文件先就位」时序（DEC-002 恢复时序的自然延伸）
     for (const ParsedEntry &entry : std::as_const(entries)) {
-        if (entry.url.isEmpty()) {
-            // 未命名条目：重建未命名文档（内容即缓存、沿用记录显示名），光标
-            // 钳制恢复，删条目（DEC-007）
-            Document *restored = m_manager->restoreUntitledDraft(entry.content, entry.name);
-            restored->setCursorPosition(
-                    qBound(0, entry.cursor, static_cast<int>(entry.content.length())));
-            QFile::remove(entry.path);
-            continue;
-        }
+        if (entry.url.isEmpty())
+            continue; // 未命名条目在阶段三 b 按会话位置升序处理
 
         // 有 url 条目：会话恢复未打开该文件时先尝试代开（本地文件存在且存储可用）
         Document *target = m_manager->documentForUrl(entry.url);
@@ -230,12 +247,60 @@ void DraftCacheManager::restoreDrafts()
             target->setContent(entry.content);
             target->setCursorPosition(
                     qBound(0, entry.cursor, static_cast<int>(entry.content.length())));
+            if (!firstRestored)
+                firstRestored = target; // 代开后的静默应用也算恢复成功
+            // pendingActiveUid 为空是常态（活动为文件或无记录），空串不参与一级匹配（DEC-007）
+            if (!activeUidMatch && !pendingActiveUid.isEmpty() && entry.uid == pendingActiveUid)
+                activeUidMatch = target; // 一级激活候选（uid 同源：会话记 activeUid 后该文档被另存为的极端时序）
             QFile::remove(entry.path);
         } else {
             // 外部应用已修改磁盘：冲突条目（missing=false），暂存不删文件、不覆盖
             m_conflicts.append(
                     { entry.path, entry.url, entry.name, false, entry.content, entry.cursor });
         }
+    }
+
+    // 阶段三 b：未命名条目按会话位置升序稳定插入（DEC-002）。会话条目编号是
+    // 标签栏完整序列的绝对位置（暂存为 0 基）：会话恢复后文件文档已按编号就位，
+    // 未命名条目升序逐个插入其绝对位置可证最终顺序与关闭时一致；某些文件缺失
+    // 被跳过时编号整体前移，restoreUntitledDraft 内 qBound 钳制（目标位置与
+    // 当前列表长度取 min）的稳定插入仍保证未命名条目彼此的相对顺序正确（近似
+    // 接受，见需求边界「位置越界」）。无位置记录（草稿多于会话/旧格式/无
+    // 会话实例）的条目排最后、恢复时按追加处理，组内保持枚举序（DEC-006）
+    QList<int> unnamedOrder;
+    for (int i = 0; i < entries.size(); ++i) {
+        if (entries.at(i).url.isEmpty())
+            unnamedOrder.append(i);
+    }
+    const auto recordedPosition = [session](const ParsedEntry &entry) {
+        return session ? session->pendingDraftPosition(entry.uid) : -1;
+    };
+    const auto sortKey = [&recordedPosition](const ParsedEntry &entry) {
+        // 无位置记录：排序键取 int 最大值（排最后），不复用 -1 追加哨兵的
+        // 双重语义（-1 在升序中会排最前，与「排最后」矛盾，DEC-006）
+        const int recorded = recordedPosition(entry);
+        return recorded < 0 ? std::numeric_limits<int>::max() : recorded;
+    };
+    std::stable_sort(unnamedOrder.begin(), unnamedOrder.end(),
+                     [&](int lhs, int rhs) {
+                         return sortKey(entries.at(lhs)) < sortKey(entries.at(rhs));
+                     });
+    for (const int idx : unnamedOrder) {
+        const ParsedEntry &entry = entries.at(idx);
+        // 未命名条目：按会话位置按位重建未命名文档（内容即缓存、沿用记录显示
+        // 名），光标钳制恢复，删条目（DEC-007）；无位置记录时显式传 -1 走
+        // 追加语义，不依赖哨兵巧合（DEC-006）
+        const int insertIndex = recordedPosition(entry) < 0 ? -1 : recordedPosition(entry);
+        Document *restored = m_manager->restoreUntitledDraft(entry.content, entry.name,
+                                                             insertIndex);
+        restored->setCursorPosition(
+                qBound(0, entry.cursor, static_cast<int>(entry.content.length())));
+        if (!firstRestored)
+            firstRestored = restored;
+        // pendingActiveUid 为空是常态（活动为文件或无记录），空串不参与一级匹配（DEC-007）
+        if (!activeUidMatch && !pendingActiveUid.isEmpty() && entry.uid == pendingActiveUid)
+            activeUidMatch = restored; // 一级激活候选（关闭时的活动未命名标签）
+        QFile::remove(entry.path);
     }
 
     if (!m_conflicts.isEmpty()) {
@@ -252,14 +317,36 @@ void DraftCacheManager::restoreDrafts()
         emit conflictsFound(conflicts);
     }
 
-    // 代开路径 openUrls 会把活动标签顶成新开文档，此处统一复位为会话恢复设定
-    // 的活动标签；其余路径本就未改活动文档，setActiveDocument 同值早退无副作用（TC-015）
-    if (activeBefore && m_manager->documents().contains(activeBefore))
+    // 末尾激活三级优先（DEC-003），依序取第一个命中者：
+    // ① 会话 activeUid 匹配的本轮恢复文档——用户关闭时真实活动标签的最精确
+    //    表达（含活动标签为未命名的场景；无匹配时如有无内容未命名标签不恢复
+    //    等，自然落入下一级）；
+    // ② 会话恢复设定的活动标签复位（activeBefore）——代开路径 openUrls 会把
+    //    活动标签顶成新开文档，此处统一复位；其余路径本就未改活动文档，
+    //    setActiveDocument 同值早退无副作用（TC-015）；
+    // ③ 空场景激活首个恢复文档（上一工作流 DEC-002 规则兜底）——会话无活动
+    //    标签（activeBefore 为空：会话无文档、仅有未命名草稿等）时激活它，
+    //    避免恢复后停留在欢迎页/空白内容区
+    if (activeUidMatch && m_manager->documents().contains(activeUidMatch.data()))
+        m_manager->setActiveDocument(activeUidMatch.data());
+    else if (activeBefore && m_manager->documents().contains(activeBefore))
         m_manager->setActiveDocument(activeBefore);
+    else if (!activeBefore && firstRestored && m_manager->documents().contains(firstRestored.data()))
+        m_manager->setActiveDocument(firstRestored.data());
 }
 
 void DraftCacheManager::resolveConflicts(bool restore)
 {
+    // 恢复前若无活动文档：结束后激活首个恢复的文档（QPointer 防悬垂 +
+    // documents().contains 校验，风格对齐 restoreDrafts 末尾激活逻辑）——
+    // 与 DEC-002 空场景规则对齐，避免冲突恢复成功但界面停留在欢迎页
+    // （DEC-006）；用户已有活动标签（activeBefore 非空）时不抢占。
+    // 注：冲突恢复是用户显式交互决策的路径，不扩展会话位置/activeUid 匹配
+    // （按位还原与一级激活仅在启动自动恢复 restoreDrafts 生效），维持
+    // 上一工作流 DEC-006 的既有规则
+    Document *const activeBefore = (restore && m_manager) ? m_manager->activeDocument() : nullptr;
+    QPointer<Document> firstRestored;
+
     for (const PendingConflict &conflict : std::as_const(m_conflicts)) {
         Document *target = m_manager ? m_manager->documentForUrl(conflict.url) : nullptr;
         if (restore) {
@@ -268,23 +355,42 @@ void DraftCacheManager::resolveConflicts(bool restore)
                 target->setContent(conflict.content);
                 target->setCursorPosition(
                         qBound(0, conflict.cursor, static_cast<int>(conflict.content.length())));
+                if (!firstRestored)
+                    firstRestored = target;
             } else if (m_manager) {
                 Document *restored =
                         m_manager->restoreUntitledDraft(conflict.content, conflict.name);
                 restored->setCursorPosition(
                         qBound(0, conflict.cursor, static_cast<int>(conflict.content.length())));
+                if (!firstRestored)
+                    firstRestored = restored;
             }
         }
         // 应用/丢弃均删除条目文件（DEC-007）
         QFile::remove(conflict.entryPath);
     }
     m_conflicts.clear();
+
+    // 恢复前无活动标签且本次确有恢复文档：激活首个恢复文档（丢弃分支不激活）
+    if (!activeBefore && firstRestored && m_manager
+            && m_manager->documents().contains(firstRestored.data()))
+        m_manager->setActiveDocument(firstRestored.data());
 }
 
 void DraftCacheManager::flush()
 {
     if (m_debounce.isActive())
         flushPending(); // 防抖挂起：立即落盘（flushPending 内部停表）
+}
+
+void DraftCacheManager::onApplicationStateChanged(Qt::ApplicationState state)
+{
+    // 失焦即写（DEC-003）：仅 ApplicationInactive 触发——切窗口（含为强杀做
+    // 准备的切换）时立即落盘，把崩溃丢失窗口压缩到失焦前 1 秒；Active/
+    // Suspended 等状态不动作（不重复写、不在恢复前台时做 IO）。无挂起时
+    // flushPending 仅停表清空集合，天然幂等
+    if (state == Qt::ApplicationInactive)
+        flushPending();
 }
 
 void DraftCacheManager::flushPending()

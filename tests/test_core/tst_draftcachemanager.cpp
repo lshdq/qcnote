@@ -13,6 +13,7 @@
 #include "document/document.h"
 #include "document/documentmanager.h"
 #include "document/draftcachemanager.h"
+#include "document/sessionmanager.h"
 
 // 草稿缓存核心行为：修改后 flush 的条目字段与目录自动创建、干净文档零写入、
 // 五条清理路径（保存/另存为/放弃关闭/撤回基线/重载覆盖）、静默恢复（含代开
@@ -20,7 +21,13 @@
 // 恢复不抢活动标签、挂起中关闭后 flush 的悬垂防护、restoreUntitledDraft 命名
 // 规则、缓存目录不存在时恢复按空处理、便携/非便携目录定位（TC-016/TC-017）、
 // 同 URL 去重（双条目静默路径/冲突路径/savedAt 平局 + 三条目多路去重混合
-// 未命名条目，审查应改 #1）。
+// 未命名条目，审查应改 #1）、恢复激活规则（无活动标签时激活首个恢复文档
+// DEC-002；有活动标签不抢占由 restoreDoesNotStealActiveTab/
+// restoreAutoOpenKeepsActiveTab 锁定）、失焦即写（DEC-003：ApplicationInactive
+// 立即落盘 / ApplicationActive 不写）、关闭现场还原（会话位置保序 TC-006、
+// activeUid 一级激活 TC-007、不匹配回退 TC-008、无会话实例回退 TC-009、
+// 头尾双未命名保序与尾部激活（验收标准 2）、空位消除其余顺序不变（验收标
+// 准 4））。
 // 均为 C++ 直接 new（注入 DocumentManager 与临时缓存目录），不经 QML
 // 单例工厂，不污染真实用户数据目录。
 
@@ -99,8 +106,19 @@ private slots:
     void corruptAndWrongVersionEntriesArePurged();
     void restoreDoesNotStealActiveTab();
     void restoreAutoOpenKeepsActiveTab();
+    void restoreActivatesFirstRestoredWhenNoActiveDocument();
+    void conflictResolveRestoresActivatesWhenNoActiveDocument();
     void closeWhilePendingThenFlushIsSafe();
+    void applicationInactiveFlushesPending();
+    void applicationActiveDoesNotFlush();
     void restoreUntitledDraftNaming();
+    void restoreKeepsSessionTabOrderWithUntitled();
+    void restoreActivatesActiveUidMatchOverActiveBefore();
+    void restoreActiveUidMismatchFallsBack();
+    void restoreKeepsTabOrderWithUntitledAtBothEnds();
+    void restoreAppendsSessionMissingDraftAfterPositionedUnnamed();
+    void restoreDropsEmptyUnnamedAndKeepsOthersInOrder();
+    void restoreWithoutSessionInstanceAppendsAndUsesLegacyActivation();
     void restoreWithMissingCacheDirIsNoop();
     void portableMarkerLocatesCacheNextToExe();
     void noMarkerKeepsExeDirCleanWithoutDrafts();
@@ -171,7 +189,7 @@ void TestDraftCacheManager::flushWritesEntryWithAllFields()
     writeRawBytes(urlCrlf.toLocalFile(), QByteArrayLiteral("line1\r\nline2"));   // CRLF
     writeRawBytes(urlGbk.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3")); // GBK：你好
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     mgr.openUrls({ urlCrlf, urlGbk });
     Document *docCrlf = mgr.documents().at(0);
@@ -223,7 +241,7 @@ void TestDraftCacheManager::cleanDocumentWritesNoEntry()
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("clean.txt")));
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("clean"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     mgr.openUrls({ url });
     mgr.documents().constFirst()->setCursorPosition(3); // 光标变化不触发写
@@ -242,7 +260,7 @@ void TestDraftCacheManager::saveClearsEntry()
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("s.txt")));
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("abc"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     mgr.openUrls({ url });
     Document *doc = mgr.documents().constFirst();
@@ -261,7 +279,7 @@ void TestDraftCacheManager::saveAsClearsEntry()
     QVERIFY(dir.isValid());
     const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     mgr.newDocument();
     Document *doc = mgr.documents().constFirst();
@@ -284,7 +302,7 @@ void TestDraftCacheManager::closeWhileModifiedClearsEntry()
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("c.txt")));
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("abc"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     mgr.openUrls({ url });
     Document *doc = mgr.documents().constFirst();
@@ -305,7 +323,7 @@ void TestDraftCacheManager::revertToBaselineClearsEntry()
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("r.txt")));
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("abc"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     mgr.openUrls({ url });
     Document *doc = mgr.documents().constFirst();
@@ -327,7 +345,7 @@ void TestDraftCacheManager::reloadWithEncodingClearsEntry()
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("re.txt")));
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("\xC4\xE3\xBA\xC3")); // GBK：你好
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     mgr.openUrls({ url }); // 自动识别 GBK
     Document *doc = mgr.documents().constFirst();
@@ -353,7 +371,7 @@ void TestDraftCacheManager::silentRestoreAppliesUnsavedChanges()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("base"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.openUrls({ url });
         Document *doc = mgr.documents().constFirst();
@@ -364,7 +382,7 @@ void TestDraftCacheManager::silentRestoreAppliesUnsavedChanges()
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
         mgr.openUrls({ url }); // 模拟会话恢复已打开该文档
@@ -390,7 +408,7 @@ void TestDraftCacheManager::restoreDraftsAutoOpensFileBackedDoc()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("auto-base"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.openUrls({ url });
         Document *doc = mgr.documents().constFirst();
@@ -401,7 +419,7 @@ void TestDraftCacheManager::restoreDraftsAutoOpensFileBackedDoc()
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
         cache.restoreDrafts(); // 不 openUrls：恢复路径自动代开
@@ -428,7 +446,7 @@ void TestDraftCacheManager::externalModificationConflictRestoreAppliesCache()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("v1"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.openUrls({ url });
         Document *doc = mgr.documents().constFirst();
@@ -442,7 +460,7 @@ void TestDraftCacheManager::externalModificationConflictRestoreAppliesCache()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("v1-external"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
         mgr.openUrls({ url });
@@ -464,6 +482,7 @@ void TestDraftCacheManager::externalModificationConflictRestoreAppliesCache()
         cache.resolveConflicts(true); // 用户选「恢复」
         QCOMPARE(doc->content(), QStringLiteral("v1-dirty")); // 缓存应用为未保存修改
         QCOMPARE(doc->modified(), true);
+        QCOMPARE(mgr.activeDocument(), doc); // 已有活动文档：恢复不抢占（DEC-006）
         QCOMPARE(entryFiles(cacheDir).size(), 0); // 条目删除
     }
 }
@@ -478,7 +497,7 @@ void TestDraftCacheManager::externalModificationConflictDiscardKeepsDisk()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("v1"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.openUrls({ url });
         Document *doc = mgr.documents().constFirst();
@@ -490,7 +509,7 @@ void TestDraftCacheManager::externalModificationConflictDiscardKeepsDisk()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("v1-external"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
         mgr.openUrls({ url });
@@ -529,7 +548,7 @@ void TestDraftCacheManager::duplicateUrlEntriesSilentRestoreKeepsNewest()
                     QStringLiteral("older-draft"), 5, baseline, 100);
     QCOMPARE(entryFiles(cacheDir).size(), 2); // 前置：双条目确实在盘
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
     mgr.openUrls({ url }); // 模拟会话恢复已打开该文档
@@ -568,7 +587,7 @@ void TestDraftCacheManager::duplicateUrlEntriesConflictResolvesNewest()
     // 外部程序修改磁盘：两条目基线指纹均不再相符
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("v1-external"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
     mgr.openUrls({ url });
@@ -609,7 +628,7 @@ void TestDraftCacheManager::duplicateUrlEntriesTieKeepsLargerUid()
     writeDraftEntry(cacheDir, uidLarger, url, QStringLiteral("dup-tie.txt"),
                     QStringLiteral("large-uid-draft"), 6, baseline, 500);
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
     mgr.openUrls({ url });
@@ -655,7 +674,7 @@ void TestDraftCacheManager::tripleUrlEntriesDedupeKeepsNewestAmongThree()
                     QStringLiteral("untitled-keep"), 2, QString(), 50);
     QCOMPARE(entryFiles(cacheDir).size(), 4); // 前置：三条 url 条目 + 一条未命名
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
     cache.restoreDrafts(); // 会话未打开该文件：代开后静默应用
@@ -685,7 +704,7 @@ void TestDraftCacheManager::missingFileConflictRestoresAsUntitled()
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("old"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.openUrls({ url });
         Document *doc = mgr.documents().constFirst();
@@ -698,7 +717,7 @@ void TestDraftCacheManager::missingFileConflictRestoresAsUntitled()
     QVERIFY(QFile::remove(url.toLocalFile())); // 文件被删除/移动
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
         cache.restoreDrafts();
@@ -721,7 +740,8 @@ void TestDraftCacheManager::missingFileConflictRestoresAsUntitled()
 }
 
 // 未命名条目恢复：url 为空 → restoreUntitledDraft 路径、modified=true、
-// 显示名沿用记录值、光标恢复、条目删除、不激活
+// 显示名沿用记录值、光标恢复、条目删除；无活动标签时激活首个恢复文档
+// （DEC-002 恢复激活规则）
 void TestDraftCacheManager::untitledEntryRestoresUntitledDocument()
 {
     QTemporaryDir dir;
@@ -729,7 +749,7 @@ void TestDraftCacheManager::untitledEntryRestoresUntitledDocument()
     const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.newDocument(); // 未命名-1
         Document *doc = mgr.documents().constFirst();
@@ -740,7 +760,7 @@ void TestDraftCacheManager::untitledEntryRestoresUntitledDocument()
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
         cache.restoreDrafts();
@@ -752,7 +772,7 @@ void TestDraftCacheManager::untitledEntryRestoresUntitledDocument()
         QCOMPARE(doc->content(), QStringLiteral("draft content"));
         QCOMPARE(doc->modified(), true); // 基线为空 → 必为脏
         QCOMPARE(doc->cursorPosition(), 6);
-        QCOMPARE(mgr.activeDocument(), nullptr); // 不激活：不抢占活动标签
+        QCOMPARE(mgr.activeDocument(), doc); // 无活动标签：激活首个恢复文档（DEC-002）
         QCOMPARE(entryFiles(cacheDir).size(), 0);
     }
 }
@@ -790,7 +810,7 @@ void TestDraftCacheManager::corruptAndWrongVersionEntriesArePurged()
     writeRawBytes(QDir(cacheDir).filePath(QStringLiteral("aaaa3333-0000-0000-0000-000000000003.json")),
                   QJsonDocument(good).toJson());
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
     cache.restoreDrafts(); // 不崩溃
@@ -818,7 +838,7 @@ void TestDraftCacheManager::restoreDoesNotStealActiveTab()
     writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("b-origin"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.openUrls({ urlA });
         mgr.documents().constFirst()->setContent(QStringLiteral("a-dirty"));
@@ -830,7 +850,7 @@ void TestDraftCacheManager::restoreDoesNotStealActiveTab()
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.openUrls({ urlA, urlB }); // 会话恢复：最后打开的 B 为活动标签
         Document *docB = mgr.documents().at(1);
@@ -858,7 +878,7 @@ void TestDraftCacheManager::restoreAutoOpenKeepsActiveTab()
     writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("b-origin"));
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         mgr.openUrls({ urlB });
         mgr.documents().constFirst()->setContent(QStringLiteral("b-dirty"));
@@ -867,7 +887,7 @@ void TestDraftCacheManager::restoreAutoOpenKeepsActiveTab()
     }
 
     {
-        DocumentManager mgr;
+        DocumentManager mgr(nullptr);
         DraftCacheManager cache(&mgr, cacheDir);
         QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
         mgr.openUrls({ urlA }); // 会话恢复：A 为活动标签，B 未被打开
@@ -884,6 +904,75 @@ void TestDraftCacheManager::restoreAutoOpenKeepsActiveTab()
     }
 }
 
+// 恢复激活规则（DEC-002）——无活动标签分支：会话无文档（activeBefore 为空）、
+// 仅有未命名草稿 → restoreDrafts 恢复后激活首个恢复成功的文档，修复「未命名
+// 草稿恢复后界面停留在欢迎页/空白内容区」。条目处理顺序 = 目录枚举顺序
+// （uid 文件名字典序），首个被处理的条目恢复为 documents() 首个文档；
+// 有活动标签不抢占分支由 restoreDoesNotStealActiveTab /
+// restoreAutoOpenKeepsActiveTab 锁定
+void TestDraftCacheManager::restoreActivatesFirstRestoredWhenNoActiveDocument()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    QVERIFY(QDir().mkpath(cacheDir));
+
+    // 两条未命名条目：uid 文件名字典序 1111… 先被枚举 → 先恢复 → 应被激活
+    writeDraftEntry(cacheDir, QStringLiteral("11111111-0000-0000-0000-000000000001"),
+                    QUrl(), QStringLiteral("未命名-2"), QStringLiteral("first-draft"), 3,
+                    QString(), 100);
+    writeDraftEntry(cacheDir, QStringLiteral("22222222-0000-0000-0000-000000000002"),
+                    QUrl(), QStringLiteral("未命名-3"), QStringLiteral("second-draft"), 5,
+                    QString(), 200);
+
+    DocumentManager mgr(nullptr);
+    DraftCacheManager cache(&mgr, cacheDir);
+    QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
+    QCOMPARE(mgr.activeDocument(), nullptr); // 前置：会话无活动标签
+    cache.restoreDrafts();
+
+    QCOMPARE(conflictSpy.count(), 0); // 未命名条目无冲突语义
+    QCOMPARE(mgr.documents().size(), 2);
+    QCOMPARE(mgr.activeDocument(), mgr.documents().at(0)); // 激活首个恢复文档
+    QCOMPARE(mgr.activeDocument()->displayName(), QStringLiteral("未命名-2"));
+    QCOMPARE(mgr.activeDocument()->content(), QStringLiteral("first-draft"));
+    QCOMPARE(entryFiles(cacheDir).size(), 0); // 两条目恢复后均已删除
+}
+
+// 冲突恢复路径补激活（DEC-006）——无活动文档分支：会话无文档（active 为空）、
+// 仅文件缺失冲突条目 → conflictsFound → resolveConflicts(true) 以未命名文档
+// 恢复后须激活该文档，与 DEC-002 空场景规则对齐，避免恢复成功但停留在
+// 欢迎页；已有活动文档不抢占分支由 externalModificationConflictRestoreAppliesCache
+// 扩展断言锁定
+void TestDraftCacheManager::conflictResolveRestoresActivatesWhenNoActiveDocument()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    QVERIFY(QDir().mkpath(cacheDir));
+
+    // 文件缺失冲突条目（url 指向不存在的文件，missing=true）
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("missing-act.txt")));
+    writeDraftEntry(cacheDir, QStringLiteral("cccc8888-0000-0000-0000-000000000008"), url,
+                    QStringLiteral("missing-act.txt"), QStringLiteral("missing-dirty"), 4,
+                    sha256Hex(QStringLiteral("base")), 100);
+
+    DocumentManager mgr(nullptr);
+    DraftCacheManager cache(&mgr, cacheDir);
+    QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
+    QCOMPARE(mgr.activeDocument(), nullptr); // 前置：无活动文档
+    cache.restoreDrafts();
+
+    QCOMPARE(conflictSpy.count(), 1);
+    QCOMPARE(mgr.documents().size(), 0); // 等用户决策，未先行恢复
+
+    cache.resolveConflicts(true); // 用户选「恢复」：重建未命名文档
+    QCOMPARE(mgr.documents().size(), 1);
+    Document *restored = mgr.documents().constFirst();
+    QCOMPARE(restored->content(), QStringLiteral("missing-dirty"));
+    QCOMPARE(mgr.activeDocument(), restored); // 激活恢复的未命名文档（DEC-006）
+}
+
 // 悬垂防护：防抖挂起中 closeDocument（仍 modified → 条目删除、挂起清空）→
 // flush() 不崩溃、不重建条目
 void TestDraftCacheManager::closeWhilePendingThenFlushIsSafe()
@@ -894,7 +983,7 @@ void TestDraftCacheManager::closeWhilePendingThenFlushIsSafe()
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("p.txt")));
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("x"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     mgr.openUrls({ url });
     Document *doc = mgr.documents().constFirst();
@@ -910,12 +999,64 @@ void TestDraftCacheManager::closeWhilePendingThenFlushIsSafe()
     QCOMPARE(entryFiles(cacheDir).size(), 0); // 也不重建
 }
 
+// 失焦即写（DEC-003）：防抖挂起中的脏文档在 ApplicationInactive 立即落盘
+// （不等 1000ms 防抖到期）——强杀前「输入 → 切窗口」的高概率路径，把丢失
+// 窗口压缩到失焦前 1 秒。单测直接调用槽函数（QCoreApplication 环境无
+// applicationStateChanged 信号，构造时判空未连接，无重复触发）
+void TestDraftCacheManager::applicationInactiveFlushesPending()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("inactive.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("base"));
+
+    DocumentManager mgr(nullptr);
+    DraftCacheManager cache(&mgr, cacheDir);
+    mgr.openUrls({ url });
+    Document *doc = mgr.documents().constFirst();
+    doc->setContent(QStringLiteral("dirty")); // 置脏：防抖挂起（不 flush、不进事件循环）
+    QVERIFY(!QDir(cacheDir).exists());        // 前置：尚未落盘
+
+    cache.onApplicationStateChanged(Qt::ApplicationInactive); // 模拟切窗口失焦
+
+    QCOMPARE(entryFiles(cacheDir).size(), 1); // 立即落盘
+    const QJsonObject entry = readEntry(cacheDir, doc->uid());
+    QCOMPARE(entry.value(QStringLiteral("content")).toString(), QStringLiteral("dirty"));
+}
+
+// 失焦即写（DEC-003）——仅 Inactive 触发：ApplicationActive 不落盘（防抖
+// 继续挂起，前台交互不增加 IO），目录不创建、脏状态不受影响
+void TestDraftCacheManager::applicationActiveDoesNotFlush()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("active.txt")));
+    writeRawBytes(url.toLocalFile(), QByteArrayLiteral("base"));
+
+    DocumentManager mgr(nullptr);
+    DraftCacheManager cache(&mgr, cacheDir);
+    mgr.openUrls({ url });
+    Document *doc = mgr.documents().constFirst();
+    doc->setContent(QStringLiteral("dirty")); // 防抖挂起
+
+    cache.onApplicationStateChanged(Qt::ApplicationActive);
+
+    QCOMPARE(entryFiles(cacheDir).size(), 0);       // 不写
+    QVERIFY(!QDir(cacheDir).exists());             // 目录也不创建
+    QCOMPARE(doc->modified(), true);                // 脏状态不受影响
+
+    // 收尾：关闭文档清空挂起集合（closeDocument 时仍 modified → removeEntry）
+    mgr.closeDocument(doc);
+}
+
 // restoreUntitledDraft 命名规则（DocumentManager 直测）：冲突换新名、沿用
 // 非冲突记录名、记录名推进计数器（后续 newDocument 跳过占用号）、不激活、
 // modified=true
 void TestDraftCacheManager::restoreUntitledDraftNaming()
 {
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     mgr.newDocument(); // 未命名-1
     Document *first = mgr.documents().constFirst();
 
@@ -935,6 +1076,379 @@ void TestDraftCacheManager::restoreUntitledDraftNaming()
     QCOMPARE(mgr.documents().constLast()->displayName(), QStringLiteral("未命名-10")); // 计数器已推进到 9
 }
 
+// TC-006（关闭现场还原：保序恢复，DEC-002）：会话记录 [文件A@0, 未命名1@1,
+// 文件B@2]（手写临时 ini：条目 2 仅 uid）；草稿含未命名1 条目 →
+// restoreDocuments（开 A、B 并暂存位置）→ restoreDrafts 按会话位置升序
+// 按位插入 → 最终顺序 [A, 未命名1, B]；内容/modified 正确；无 activeUid
+// 记录时激活走既有规则（activeBefore=文件B 复位）
+void TestDraftCacheManager::restoreKeepsSessionTabOrderWithUntitled()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("scene-a.txt")));
+    const QUrl urlB = QUrl::fromLocalFile(dir.filePath(QStringLiteral("scene-b.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A-origin"));
+    writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B-origin"));
+    const QString uidU = QStringLiteral("eeee1111-0000-0000-0000-000000000001");
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=3\n");
+    ini += QStringLiteral("1\\url=") + urlA.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("2\\uid=") + uidU + QStringLiteral("\n"); // 未命名条目：仅 uid
+    ini += QStringLiteral("3\\url=") + urlB.toString() + QStringLiteral("\n");
+    writeRawBytes(iniPath, ini.toUtf8());
+    writeDraftEntry(cacheDir, uidU, QUrl(), QStringLiteral("未命名-1"),
+                    QStringLiteral("u-dirty"), 3, QString(), 100);
+
+    DocumentManager mgr(nullptr);
+    SessionManager session(&mgr, iniPath); // 构造即经 instance() 暴露暂存（DEC-001）
+    DraftCacheManager cache(&mgr, cacheDir);
+    QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
+    session.restoreDocuments();
+    QCOMPARE(mgr.documents().size(), 2); // 未命名条目不开文档
+    QCOMPARE(session.pendingDraftPosition(uidU), 1); // 暂存位置（标签栏 0 基）
+
+    cache.restoreDrafts();
+
+    QCOMPARE(conflictSpy.count(), 0);
+    QCOMPARE(mgr.documents().size(), 3);
+    QCOMPARE(mgr.documents().at(0)->url(), urlA);
+    QCOMPARE(mgr.documents().at(1)->displayName(), QStringLiteral("未命名-1"));
+    QCOMPARE(mgr.documents().at(1)->content(), QStringLiteral("u-dirty"));
+    QCOMPARE(mgr.documents().at(1)->modified(), true); // 未保存状态恢复
+    QCOMPARE(mgr.documents().at(1)->cursorPosition(), 3);
+    QCOMPARE(mgr.documents().at(2)->url(), urlB);
+    QCOMPARE(entryFiles(cacheDir).size(), 0); // 条目恢复后删除
+    // 无 activeUid 记录：激活走既有规则（openUrls 后 active=文件B → 复位）
+    QCOMPARE(mgr.activeDocument(), mgr.documents().at(2));
+}
+
+// TC-007（激活优先级一级，DEC-003）：TC-006 场景 + activeUid=未命名1 的 uid →
+// restoreDrafts 后活动标签 = 未命名1（优先于 activeBefore=文件B 复位）
+void TestDraftCacheManager::restoreActivatesActiveUidMatchOverActiveBefore()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("scene-a.txt")));
+    const QUrl urlB = QUrl::fromLocalFile(dir.filePath(QStringLiteral("scene-b.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A-origin"));
+    writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B-origin"));
+    const QString uidU = QStringLiteral("eeee2222-0000-0000-0000-000000000002");
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=3\n");
+    ini += QStringLiteral("1\\url=") + urlA.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("2\\uid=") + uidU + QStringLiteral("\n");
+    ini += QStringLiteral("3\\url=") + urlB.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("activeUid=") + uidU + QStringLiteral("\n"); // 活动=未命名
+    writeRawBytes(iniPath, ini.toUtf8());
+    writeDraftEntry(cacheDir, uidU, QUrl(), QStringLiteral("未命名-1"),
+                    QStringLiteral("u-dirty"), 0, QString(), 100);
+
+    DocumentManager mgr(nullptr);
+    SessionManager session(&mgr, iniPath);
+    DraftCacheManager cache(&mgr, cacheDir);
+    QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
+    session.restoreDocuments();
+    QCOMPARE(session.pendingActiveDraftUid(), uidU);
+    QCOMPARE(mgr.activeDocument(), mgr.documents().at(1)); // 前置：openUrls 后 active=文件B
+
+    cache.restoreDrafts();
+
+    QCOMPARE(conflictSpy.count(), 0);
+    QCOMPARE(mgr.documents().size(), 3); // 顺序 [A, 未命名1, B]（TC-006 已锁定）
+    // 一级优先：activeUid 匹配的未命名文档胜过 activeBefore（文件B）复位
+    QCOMPARE(mgr.activeDocument(), mgr.documents().at(1));
+    QCOMPARE(mgr.activeDocument()->displayName(), QStringLiteral("未命名-1"));
+    QCOMPARE(mgr.activeDocument()->content(), QStringLiteral("u-dirty"));
+}
+
+// TC-008（激活优先级回退两级，DEC-003/004）：activeUid 指向无草稿的 uid
+// （无内容未命名标签不恢复的场景）→ 一级不命中：
+// 半一：activeBefore 存活（会话文件打开后的活动标签）→ 复位（既有规则）；
+// 半二：activeBefore 为空（会话仅未命名条目且文件条目缺失）→ 激活首个恢复
+// 文档（上一工作流 DEC-002 空场景规则兜底）
+void TestDraftCacheManager::restoreActiveUidMismatchFallsBack()
+{
+    // ---- 半一：activeUid 无匹配 + activeBefore=文件B → 复位 B ----
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+        QVERIFY(QDir().mkpath(cacheDir));
+        const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+        const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("scene-a.txt")));
+        const QUrl urlB = QUrl::fromLocalFile(dir.filePath(QStringLiteral("scene-b.txt")));
+        writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A-origin"));
+        writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B-origin"));
+        const QString uidU = QStringLiteral("eeee3333-0000-0000-0000-000000000003");
+        const QString uidGhost = QStringLiteral("ffffffff-0000-0000-0000-00000000dead"); // 无草稿
+
+        QString ini;
+        ini += QStringLiteral("[documents]\n");
+        ini += QStringLiteral("size=3\n");
+        ini += QStringLiteral("1\\url=") + urlA.toString() + QStringLiteral("\n");
+        ini += QStringLiteral("2\\uid=") + uidU + QStringLiteral("\n");
+        ini += QStringLiteral("3\\url=") + urlB.toString() + QStringLiteral("\n");
+        ini += QStringLiteral("activeUid=") + uidGhost + QStringLiteral("\n"); // 指向空标签
+        writeRawBytes(iniPath, ini.toUtf8());
+        writeDraftEntry(cacheDir, uidU, QUrl(), QStringLiteral("未命名-1"),
+                        QStringLiteral("u-dirty"), 0, QString(), 100);
+
+        DocumentManager mgr(nullptr);
+        SessionManager session(&mgr, iniPath);
+        DraftCacheManager cache(&mgr, cacheDir);
+        session.restoreDocuments();
+        cache.restoreDrafts();
+
+        QCOMPARE(mgr.documents().size(), 3);
+        QCOMPARE(mgr.activeDocument(), mgr.documents().at(2)); // 回退二级：activeBefore=B 复位
+    }
+
+    // ---- 半二：activeUid 无匹配 + activeBefore 为空 → 激活首个恢复文档 ----
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+        QVERIFY(QDir().mkpath(cacheDir));
+        const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+        const QString uidGhost = QStringLiteral("ffffffff-0000-0000-0000-00000000dead");
+        const QString uidX = QStringLiteral("xxxx4444-0000-0000-0000-000000000004");
+
+        // 会话仅一条未命名条目（uidGhost，无草稿→不恢复），活动=uidGhost
+        QString ini;
+        ini += QStringLiteral("[documents]\n");
+        ini += QStringLiteral("size=1\n");
+        ini += QStringLiteral("1\\uid=") + uidGhost + QStringLiteral("\n");
+        ini += QStringLiteral("activeUid=") + uidGhost + QStringLiteral("\n");
+        writeRawBytes(iniPath, ini.toUtf8());
+        // 草稿仅有另一 uid 的未命名条目（不在会话中 → 无位置记录，按追加）
+        writeDraftEntry(cacheDir, uidX, QUrl(), QStringLiteral("未命名-7"),
+                        QStringLiteral("x-dirty"), 0, QString(), 100);
+
+        DocumentManager mgr(nullptr);
+        SessionManager session(&mgr, iniPath);
+        DraftCacheManager cache(&mgr, cacheDir);
+        session.restoreDocuments();
+        QCOMPARE(mgr.activeDocument(), nullptr); // 前置：无文件条目 → activeBefore 为空
+
+        cache.restoreDrafts();
+
+        QCOMPARE(mgr.documents().size(), 1); // 空标签不恢复（DEC-004），仅草稿条目
+        QCOMPARE(mgr.activeDocument(), mgr.documents().at(0)); // 回退三级：首个恢复文档
+        QCOMPARE(mgr.activeDocument()->displayName(), QStringLiteral("未命名-7"));
+    }
+}
+
+// 验收标准 2 变体（关闭现场还原）：标签栏 [未命名1@0, 文件A@1, 未命名2@2]、
+// 活动=未命名2——两个未命名分居头尾、文件居中。未命名 uid 的字典序刻意与
+// 会话位置相反（zzzz…在位置 0、aaaa…在位置 2）：目录枚举序为 [U2, U1]，仅当
+// 按"会话位置升序"稳定排序才能还原 [U1, A, U2]（若按枚举序直接处理会得到
+// [A, U2, U1] 错序）；同时覆盖头部（位置 0）与尾部（位置 2）两端插入，以及
+// 一级激活命中尾部未命名的场景
+void TestDraftCacheManager::restoreKeepsTabOrderWithUntitledAtBothEnds()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("mid-a.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A-origin"));
+    // 枚举序（uid 字典序）与目标位置相反：U2（aaaa）先枚举但应排在最后
+    const QString uidU1 = QStringLiteral("zzzz1111-0000-0000-0000-000000000001");
+    const QString uidU2 = QStringLiteral("aaaa2222-0000-0000-0000-000000000002");
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=3\n");
+    ini += QStringLiteral("1\\uid=") + uidU1 + QStringLiteral("\n"); // 未命名1@0
+    ini += QStringLiteral("2\\url=") + urlA.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("3\\uid=") + uidU2 + QStringLiteral("\n"); // 未命名2@2
+    ini += QStringLiteral("activeUid=") + uidU2 + QStringLiteral("\n"); // 活动=未命名2
+    writeRawBytes(iniPath, ini.toUtf8());
+    writeDraftEntry(cacheDir, uidU1, QUrl(), QStringLiteral("未命名-1"),
+                    QStringLiteral("u1-dirty"), 2, QString(), 100);
+    writeDraftEntry(cacheDir, uidU2, QUrl(), QStringLiteral("未命名-2"),
+                    QStringLiteral("u2-dirty"), 5, QString(), 200);
+
+    DocumentManager mgr(nullptr);
+    SessionManager session(&mgr, iniPath);
+    DraftCacheManager cache(&mgr, cacheDir);
+    QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
+    session.restoreDocuments();
+    QCOMPARE(mgr.documents().size(), 1); // 两个未命名条目均不开文档
+    QCOMPARE(mgr.documents().at(0)->url(), urlA);
+    QCOMPARE(session.pendingDraftPosition(uidU1), 0);
+    QCOMPARE(session.pendingDraftPosition(uidU2), 2);
+
+    cache.restoreDrafts();
+
+    QCOMPARE(conflictSpy.count(), 0);
+    QCOMPARE(mgr.documents().size(), 3);
+    QCOMPARE(mgr.documents().at(0)->displayName(), QStringLiteral("未命名-1")); // 头部插入
+    QCOMPARE(mgr.documents().at(0)->content(), QStringLiteral("u1-dirty"));
+    QCOMPARE(mgr.documents().at(0)->modified(), true);
+    QCOMPARE(mgr.documents().at(0)->cursorPosition(), 2);
+    QCOMPARE(mgr.documents().at(1)->url(), urlA); // 文件居中
+    QCOMPARE(mgr.documents().at(2)->displayName(), QStringLiteral("未命名-2")); // 尾部插入
+    QCOMPARE(mgr.documents().at(2)->content(), QStringLiteral("u2-dirty"));
+    QCOMPARE(mgr.documents().at(2)->cursorPosition(), 5);
+    QCOMPARE(mgr.activeDocument(), mgr.documents().at(2)); // 一级激活=尾部未命名2
+    QCOMPARE(entryFiles(cacheDir).size(), 0);
+}
+
+// DEC-006 修复回归：会话 [F1(磁盘缺失), U1@位置1] + 会话外无位置记录草稿条目
+// X（草稿多于会话）混排——无记录条目排序键取 int 最大值（排最后）、恢复时
+// 显式追加（insertIndex=-1），不再复用 -1 哨兵（升序排最前）。期望恢复顺序
+// [U1, X]；F1 缺失进冲突暂存。附带锁定 DEC-007 防御：无 activeUid 记录
+// （pendingActiveUid 空串）+ 伪造空 uid 无位置草稿条目 → 不被一级激活命中，
+// 激活走三级兜底（首个恢复文档 U1）
+void TestDraftCacheManager::restoreAppendsSessionMissingDraftAfterPositionedUnnamed()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlF1 = QUrl::fromLocalFile(dir.filePath(QStringLiteral("mix-f1.txt"))); // 不落盘：磁盘缺失
+    const QString uidU1 = QStringLiteral("bbbb7777-0000-0000-0000-000000000007");
+    const QString uidX = QStringLiteral("cccc8888-0000-0000-0000-000000000008");
+    const QString uidF1 = QStringLiteral("aaaa9999-0000-0000-0000-000000000009"); // F1 的草稿条目 uid（与文档 uid 无关）
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=2\n");
+    ini += QStringLiteral("1\\url=") + urlF1.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("2\\uid=") + uidU1 + QStringLiteral("\n"); // 未命名1@1
+    writeRawBytes(iniPath, ini.toUtf8());
+    // 会话外草稿条目 X（无位置记录）+ 伪造空 uid 条目（无位置记录，DEC-007）
+    writeDraftEntry(cacheDir, uidX, QUrl(), QStringLiteral("未命名-8"),
+                    QStringLiteral("x-dirty"), 1, QString(), 300);
+    writeDraftEntry(cacheDir, QString(), QUrl(), QStringLiteral("未命名-9"),
+                    QStringLiteral("forged"), 1, QString(), 400);
+    writeDraftEntry(cacheDir, uidF1, urlF1, QStringLiteral("mix-f1.txt"),
+                    QStringLiteral("f1-dirty"), 0, QString(), 100); // F1 草稿（缺失→冲突）
+    writeDraftEntry(cacheDir, uidU1, QUrl(), QStringLiteral("未命名-1"),
+                    QStringLiteral("u1-dirty"), 2, QString(), 200);
+
+    DocumentManager mgr(nullptr);
+    SessionManager session(&mgr, iniPath);
+    DraftCacheManager cache(&mgr, cacheDir);
+    QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
+    session.restoreDocuments();
+    QCOMPARE(mgr.documents().size(), 0); // F1 缺失不开文档，未命名条目不开文档
+    QCOMPARE(session.pendingDraftPosition(uidU1), 1);
+    QCOMPARE(session.pendingDraftPosition(uidX), -1); // 会话外：无位置记录
+    QCOMPARE(session.pendingActiveDraftUid(), QString()); // 无 activeUid 记录
+
+    cache.restoreDrafts();
+
+    QCOMPARE(conflictSpy.count(), 1); // 仅 F1 缺失冲突
+    QCOMPARE(mgr.documents().size(), 3); // [U1, 伪造条目, X]（无记录均追加、枚举序）
+    QCOMPARE(mgr.documents().at(0)->displayName(), QStringLiteral("未命名-1"));
+    QCOMPARE(mgr.documents().at(0)->content(), QStringLiteral("u1-dirty"));
+    QCOMPARE(mgr.documents().at(1)->displayName(), QStringLiteral("未命名-9")); // 伪造空 uid 条目
+    QCOMPARE(mgr.documents().at(1)->content(), QStringLiteral("forged"));
+    QCOMPARE(mgr.documents().at(2)->displayName(), QStringLiteral("未命名-8"));
+    QCOMPARE(mgr.documents().at(2)->content(), QStringLiteral("x-dirty"));
+    // DEC-007：空 uid 条目不匹配空 pendingActiveUid → 三级兜底激活首个恢复文档
+    QCOMPARE(mgr.activeDocument(), mgr.documents().at(0));
+    QCOMPARE(entryFiles(cacheDir).size(), 1); // 仅 F1 冲突条目暂存保留，其余已删
+}
+
+// 验收标准 4（无内容未命名不恢复）：会话 [文件A@0, 未命名@1(无草稿), 文件B@2]、
+// activeUid=该空未命名——重启后空位自然消除：其余标签 [A, B] 顺序不变；一级
+// 激活 uid 无草稿不命中 → 回退二级 activeBefore（文件B）复位。草稿目录含 A
+// 的条目保证 restoreDrafts 走完整恢复流程（而非缓存目录缺失早退）
+void TestDraftCacheManager::restoreDropsEmptyUnnamedAndKeepsOthersInOrder()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    const QString iniPath = dir.filePath(QStringLiteral("session.ini"));
+    const QUrl urlA = QUrl::fromLocalFile(dir.filePath(QStringLiteral("gap-a.txt")));
+    const QUrl urlB = QUrl::fromLocalFile(dir.filePath(QStringLiteral("gap-b.txt")));
+    writeRawBytes(urlA.toLocalFile(), QByteArrayLiteral("A-origin"));
+    writeRawBytes(urlB.toLocalFile(), QByteArrayLiteral("B-origin"));
+    const QString uidGhost = QStringLiteral("eeee5555-0000-0000-0000-000000000005"); // 空未命名
+    const QString uidA = QStringLiteral("dddd6666-0000-0000-0000-000000000006");     // A 的草稿条目
+
+    QString ini;
+    ini += QStringLiteral("[documents]\n");
+    ini += QStringLiteral("size=3\n");
+    ini += QStringLiteral("1\\url=") + urlA.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("2\\uid=") + uidGhost + QStringLiteral("\n"); // 空位（无草稿）
+    ini += QStringLiteral("3\\url=") + urlB.toString() + QStringLiteral("\n");
+    ini += QStringLiteral("activeUid=") + uidGhost + QStringLiteral("\n"); // 活动是空未命名
+    writeRawBytes(iniPath, ini.toUtf8());
+    // 草稿仅 A 的条目（关闭前 A 有未保存修改 + 另有一张空的未命名标签）
+    writeDraftEntry(cacheDir, uidA, urlA, QStringLiteral("gap-a.txt"),
+                    QStringLiteral("a-dirty"), 1, sha256Hex(QStringLiteral("A-origin")), 100);
+
+    DocumentManager mgr(nullptr);
+    SessionManager session(&mgr, iniPath);
+    DraftCacheManager cache(&mgr, cacheDir);
+    QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
+    session.restoreDocuments();
+    QCOMPARE(mgr.documents().size(), 2); // 空未命名条目不开文档：[A, B]
+    QCOMPARE(session.pendingDraftPosition(uidGhost), 1); // 位置已暂存（无草稿消费）
+
+    cache.restoreDrafts();
+
+    QCOMPARE(conflictSpy.count(), 0);
+    QCOMPARE(mgr.documents().size(), 2); // 空位消除：仍 [A, B]，顺序不变
+    QCOMPARE(mgr.documents().at(0)->url(), urlA);
+    QCOMPARE(mgr.documents().at(0)->content(), QStringLiteral("a-dirty")); // A 静默应用
+    QCOMPARE(mgr.documents().at(1)->url(), urlB);
+    QCOMPARE(mgr.activeDocument(), mgr.documents().at(1)); // uid 不命中 → 复位 B
+    QCOMPARE(entryFiles(cacheDir).size(), 0);
+}
+
+// TC-009（关闭现场还原回退，DEC-005）：无 SessionManager 实例（C++ 测试环境，
+// 前置断言 instance()==nullptr）→ 未命名条目全部按追加处理（现状行为，
+// 顺序=条目枚举序）、激活走既有规则（无活动标签时激活首个恢复文档）。
+// 静态指针生命周期参照 tst_documentmanager::instanceTracksLatestInstance 的
+// 自建自毁模式——本用例及此前用例中的 SessionManager 均为栈实例，析构即注销
+void TestDraftCacheManager::restoreWithoutSessionInstanceAppendsAndUsesLegacyActivation()
+{
+    QCOMPARE(SessionManager::instance(), nullptr); // 前置：无存活会话实例
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("drafts"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    writeDraftEntry(cacheDir, QStringLiteral("11111111-0000-0000-0000-000000000001"),
+                    QUrl(), QStringLiteral("未命名-2"), QStringLiteral("first-draft"), 3,
+                    QString(), 100);
+    writeDraftEntry(cacheDir, QStringLiteral("22222222-0000-0000-0000-000000000002"),
+                    QUrl(), QStringLiteral("未命名-3"), QStringLiteral("second-draft"), 5,
+                    QString(), 200);
+
+    DocumentManager mgr(nullptr);
+    DraftCacheManager cache(&mgr, cacheDir);
+    QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
+    cache.restoreDrafts();
+
+    QCOMPARE(conflictSpy.count(), 0);
+    QCOMPARE(mgr.documents().size(), 2);
+    // 追加尾部且顺序=枚举序（无位置记录不重排，现状行为）
+    QCOMPARE(mgr.documents().at(0)->displayName(), QStringLiteral("未命名-2"));
+    QCOMPARE(mgr.documents().at(1)->displayName(), QStringLiteral("未命名-3"));
+    // 激活走既有规则（DEC-002 空场景）：首个恢复文档
+    QCOMPARE(mgr.activeDocument(), mgr.documents().at(0));
+    QCOMPARE(entryFiles(cacheDir).size(), 0);
+}
+
 // TC-016（恢复半边）：注入的缓存目录不存在时 restoreDrafts 按空处理——
 // 无文档、无冲突信号、不创建目录（首启/正常退出后无残留，启动行为与
 // 现状一致，回归红线）。写入半边（写条目前自动建目录）由
@@ -945,7 +1459,7 @@ void TestDraftCacheManager::restoreWithMissingCacheDirIsNoop()
     QVERIFY(dir.isValid());
     const QString cacheDir = dir.filePath(QStringLiteral("drafts")); // 不存在
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, cacheDir);
     QSignalSpy conflictSpy(&cache, &DraftCacheManager::conflictsFound);
     cache.restoreDrafts(); // 目录不存在：静默返回，无报错
@@ -973,7 +1487,7 @@ void TestDraftCacheManager::portableMarkerLocatesCacheNextToExe()
     const QUrl url = QUrl::fromLocalFile(dir.filePath(QStringLiteral("portable-draft.txt")));
     writeRawBytes(url.toLocalFile(), QByteArrayLiteral("p"));
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, QString()); // 空注入路径：应命中便携模式
     mgr.openUrls({ url });
     Document *doc = mgr.documents().constFirst();
@@ -998,7 +1512,7 @@ void TestDraftCacheManager::noMarkerKeepsExeDirCleanWithoutDrafts()
     if (!exeDir.dirIsClean())
         QSKIP("build 目录已存在 qcnote.portable/qcnote.ini/drafts，跳过以免误动他人产物");
 
-    DocumentManager mgr;
+    DocumentManager mgr(nullptr);
     DraftCacheManager cache(&mgr, QString()); // 空注入路径 + 无标记：默认用户目录
     // 注意：此处不调用 restoreDrafts——非便携默认目录指向真实
     // %LOCALAPPDATA%\qcnote\qcnote\drafts，环境若存在用户真实缓存条目会被

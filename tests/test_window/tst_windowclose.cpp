@@ -1,14 +1,20 @@
-// 窗口关闭/退出流程 QML 集成测试（测试用例 TC-001 至 TC-009 的可自动化部分）
+// 窗口关闭/退出流程 QML 集成测试（窗口关闭一次生效 TC-001 至 TC-003、
+// 《测试用例-退出免提示与草稿缓存单例修复》TC-006 至 TC-009 的可自动化部分）
 //
 // 测试方式：offscreen 平台下经 QQmlComponent 实例化完整 Main.qml（真实
 // ApplicationWindow + DocumentManager QML 单例 + unsavedDialog/TitleBar 接线），
 // 以 QWindow::close() 驱动 QCloseEvent——标题栏关闭图标（X）、Alt+F4、
 // 任务栏关闭在 Qt 层汇聚为同一 close 事件并进入同一 onClosing 处理器；
-// 用 QMetaObject 调用 unsavedDialog 的 accept()/reject()/discard()，与
-// 确认框三按钮（保存/取消/放弃，DialogButtonBox 角色触发）等价。
+// 标签页关闭（Ctrl+W 等价）以 doCloseActive() 驱动三选确认框；
+// 用 QMetaObject 调用 unsavedDialog 的 accept()/reject()/discarded()，与
+// 确认框三按钮（保存/取消/不保存，DialogButtonBox 角色触发）等价。
 //
-// 覆盖：需求"窗口关闭一次生效"——onClosing 四分支（exiting 放行 /
-// uiLocked 拒绝 / 干净直接放行 / 有未保存修改弹确认框）与确认框各分支。
+// 覆盖（退出语义按《需求-退出免提示与草稿缓存单例修复》更新为热退出）：
+// - onClosing 两分支：无模态直接放行（热退出——脏文档也不弹确认，
+//   草稿条目经真实防抖落盘后保留，TC-006/TC-007）、uiLocked 拒绝（TC-008）；
+// - 标签页关闭三选确认保留：保存（含无路径转另存为）/不保存（清理草稿）
+//   /取消（TC-009；DEC-004：关闭标签是明确放弃意图的入口，退出免提示
+//   不改变此语义）。
 // 无法自动化项（真实鼠标点击关闭图标、真实 Alt+F4 按键、另存为平台
 // 对话框内交互）见测试报告"未执行"清单。
 //
@@ -20,10 +26,11 @@
 // QML 包装类型（如 "Dialog_QMLTYPE_13"、"Menu_QMLTYPE_30"），故按 QML
 // 类型短名（首个下划线前段）精确匹配；QtQuick.Dialogs 的 FileDialog
 // 实例（QQuickFileDialog）不是窗口的 QObject 子孙（树转储仅见其
-// QFileDialogOptions 附属），TC-008 改经 QML 行为断言（saveAsTarget）。
+// QFileDialogOptions 附属），TC-009 无路径转另存为分支改经 QML 行为
+// 断言（saveAsTarget）。
 //
 // 与 tests/test_core、tests/test_editor 互补：这里验证的是主窗口关闭/退出
-// 的完整业务流程（含 exiting 多文档逐个确认链路）。
+// 的完整业务流程（热退出放行与标签页关闭三选确认）。
 //
 // GUI 红线：main 中强制 QT_QPA_PLATFORM=offscreen，全程无可见窗口。
 
@@ -43,6 +50,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QStringLiteral>
 #include <QTemporaryDir>
 #include <QUrl>
@@ -61,6 +69,22 @@ QTemporaryDir &sessionRedirectDir()
 {
     static QTemporaryDir dir;
     return dir;
+}
+
+// 草稿缓存目录与条目列表：与 main() 的预清理/结束清理同源派生（按本测试
+// exe 名派生自 %LOCALAPPDATA%，独立于真实 qcnote 用户数据）。热退出用例
+// 断言「退出不清理草稿」、标签关闭「不保存」用例断言「清理草稿」时观测。
+// 便携模式对测试构建目录不适用（exe 旁无便携标记），与 main() 保持同一
+// 简单派生即可。
+QString draftsDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)
+           + QStringLiteral("/drafts");
+}
+
+QStringList draftEntries()
+{
+    return QDir(draftsDir()).entryList({ QStringLiteral("*.json") }, QDir::Files);
 }
 
 /**
@@ -297,23 +321,29 @@ private slots:
     // TC-003: 干净状态菜单"退出"一次生效（doQuit 为菜单退出入口）
     void tc003_menuQuit_onceCloses();
 
-    // TC-004: 有未保存修改点击关闭 → 弹"未保存的修改"确认框，窗口不关闭
-    void tc004_modifiedClose_showsUnsavedDialog();
+    // TC-006（热退出）: 文件文档脏 → close 直接放行、不弹确认框，
+    // 草稿条目经真实防抖落盘后保留（未被清理）
+    void tc006_hotExit_fileDirty_directCloseDraftKept();
 
-    // TC-005: 确认框"放弃"→ 关闭文档；无其他脏文档则退出，有则弹下一个
-    void tc005_discard_quitsAndIterates();
+    // TC-007（热退出）: 未命名文档脏 → 同 TC-006，草稿保留
+    void tc007_hotExit_untitledDirty_directCloseDraftKept();
 
-    // TC-006: 确认框"保存"（有路径）→ 写盘后关闭并退出
-    void tc006_accept_savesThenQuits();
+    // TC-008: 模态 UI（主菜单 / 错误框）打开时关闭请求仍被拒绝
+    void tc008_modalUI_closeIgnored();
 
-    // TC-007: 确认框"取消"→ 中止退出内容保留；再次关闭重新弹框
-    void tc007_cancel_abortsAndReconfirms();
+    // TC-009（标签关闭·保存）: 确认框"保存"（有路径）→ 写盘后关闭该文档，
+    // 窗口保留（热退出后保存流程不再驱动退出）
+    void tc009_tabCloseConfirm_save_writesAndClosesDoc();
 
-    // TC-008（可自动化部分）: 无路径脏文档选"保存" → 转另存为分支且不退出
-    void tc008_noUrlAccept_goesSaveAsBranch();
+    // TC-009（标签关闭·不保存）: 确认框"不保存"→ 关闭该文档并清理草稿
+    void tc009_tabCloseConfirm_discard_closesDocAndCleansDraft();
 
-    // TC-009: 模态 UI（主菜单 / 错误框）打开时关闭请求被忽略
-    void tc009_modalUI_closeIgnored();
+    // TC-009（标签关闭·取消）: 确认框"取消"→ 中止关闭内容保留；
+    // 再次关闭标签重新弹确认框
+    void tc009_tabCloseConfirm_cancel_abortsAndKeepsDoc();
+
+    // TC-009（可自动化部分）: 无路径脏文档选"保存" → 转另存为分支且流程挂起
+    void tc009_tabCloseConfirm_noUrlAccept_goesSaveAs();
 
     // TC-010（《测试用例-未保存状态基线比较》）: UI 冒烟——编辑→撤回基线
     // 后 Tab ● 与标题 * 随 modifiedChanged 消失、再编辑重现，无绑定循环
@@ -392,68 +422,12 @@ void TestWindowClose::tc003_menuQuit_onceCloses()
     QTRY_VERIFY(b2.win->isVisible()); // 未关闭
 }
 
-// TC-004: 有未保存修改时点击关闭 → 拒绝关闭并弹"未保存的修改"确认框。
-void TestWindowClose::tc004_modifiedClose_showsUnsavedDialog()
-{
-    Bench b;
-    QVERIFY2(b.init(), "testbench init failed");
-    Document *doc = b.newDoc(QStringLiteral("modified"));
-    QVERIFY(doc->modified());
-    QVERIFY(b.dm->hasUnsavedChanges());
-
-    QVERIFY(!b.win->close());                                  // 关闭请求被拒绝
-    QTRY_VERIFY(b.win->isVisible());                           // 窗口保留
-    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());   // 确认框弹出
-    QVERIFY(dialogText(b.unsavedDlg).contains(doc->displayName()));
-}
-
-// TC-005: 确认框"放弃"（DestructiveRole → discarded）→ finishCloseFlow →
-// 关闭该文档；无其他脏文档时 continueExit 置 exiting 并放行关闭（该
-// root.close() 在对话框按钮事件内调用，不受 close 事件重入保护影响）；
-// 还有脏文档时弹下一个确认框。
-void TestWindowClose::tc005_discard_quitsAndIterates()
-{
-    // 场景 a：单个脏文档 → 放弃后直接退出
-    {
-        Bench b;
-        QVERIFY2(b.init(), "testbench init failed");
-        Document *doc = b.newDoc(QStringLiteral("dirty"));
-        QVERIFY(!b.win->close());
-        QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
-
-        // 等价点"放弃"：Qt 6.11 Controls Dialog 的 QML 包装 metaObject 未暴露
-        // discard() 方法（accept()/reject() 暴露），这里直接激活 discarded()
-        // 信号——与 DialogButtonBox DestructiveRole 按钮点击后的信号分发
-        // 终点等价（Main.qml 的 onDiscarded 处理器被触发）
-        QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "discarded"));
-        QTRY_VERIFY(!b.win->isVisible());               // 应用退出
-        QVERIFY(!b.dm->documents().contains(doc));      // 文档已关闭
-    }
-    // 场景 b：两个脏文档 → 逐个确认后退出（多文档迭代链路）
-    {
-        Bench b;
-        QVERIFY2(b.init(), "testbench init failed");
-        Document *docA = b.newDoc(QStringLiteral("A"));
-        Document *docB = b.newDoc(QStringLiteral("B"));
-
-        QVERIFY(!b.win->close());
-        QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
-        QVERIFY(dialogText(b.unsavedDlg).contains(docA->displayName())); // 先问 A
-
-        QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "discarded")); // 放弃 A
-        QVERIFY(!b.dm->documents().contains(docA));
-        QTRY_VERIFY(b.win->isVisible());                        // 尚未退出
-        QTRY_VERIFY(b.unsavedDlg->property("visible").toBool()); // 弹出 B 的确认框
-        QVERIFY(dialogText(b.unsavedDlg).contains(docB->displayName()));
-
-        QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "discarded")); // 放弃 B
-        QTRY_VERIFY(!b.win->isVisible());                       // 全部处理完退出
-        QVERIFY(b.dm->documents().isEmpty());
-    }
-}
-
-// TC-006: 确认框"保存"（文档已有路径）→ 写盘成功 → 关闭文档并退出。
-void TestWindowClose::tc006_accept_savesThenQuits()
+// TC-006（热退出·文件文档脏）: 有路径文档重新置脏后 close() → 不弹未保存
+// 确认框、直接放行关闭（热退出）；文档不经 closeDocument（放弃清理不发生），
+// 真实防抖到期（≥1.2s，不手动 flush——那会绕过「contentChanged 信号经
+// 单例链路到达草稿管理器」的真实写盘路径）后草稿条目落盘且保留，
+// 下次启动恢复为未保存状态。
+void TestWindowClose::tc006_hotExit_fileDirty_directCloseDraftKept()
 {
     Bench b;
     QVERIFY2(b.init(), "testbench init failed");
@@ -465,71 +439,50 @@ void TestWindowClose::tc006_accept_savesThenQuits()
     QVERIFY(b.dm->saveAs(doc, QUrl::fromLocalFile(path))); // 有路径、清脏
     doc->setContent(QStringLiteral("v2"));                 // 重新置脏
     QVERIFY(doc->modified());
+    QVERIFY(b.dm->hasUnsavedChanges());
+    const QString uid = doc->uid();
 
-    QVERIFY(!b.win->close());
-    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+    QVERIFY(b.win->close());                              // 热退出：直接放行
+    QTRY_VERIFY(!b.win->isVisible());                     // 窗口已关闭
+    QVERIFY(!b.unsavedDlg->property("visible").toBool()); // 不弹确认框
+    QVERIFY(b.dm->documents().contains(doc));             // 不触发 closeDocument
 
-    QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "accept")); // 等价点"保存"
-    QTRY_VERIFY(!b.win->isVisible());                          // 保存后退出
-
-    QFile f(path);
-    QVERIFY(f.open(QIODevice::ReadOnly));
-    QCOMPARE(f.readAll(), QByteArrayLiteral("v2"));            // 磁盘内容为保存值
-    QVERIFY(b.dm->documents().isEmpty());
+    // 真实防抖到期 → 该文档草稿条目存在（未被清理）
+    QTest::qWait(1500);
+    QVERIFY2(draftEntries().contains(uid + QStringLiteral(".json")),
+             qPrintable(QStringLiteral("draft entry kept after hot exit; dir=%1 entries=%2")
+                            .arg(draftsDir(), draftEntries().join(u','))));
 }
 
-// TC-007: 确认框"取消"（RejectRole → rejected）→ resetCloseFlow 中止退出；
-// 应用继续运行、内容保留；再次关闭请求重新弹确认框（流程可重入）。
-void TestWindowClose::tc007_cancel_abortsAndReconfirms()
+// TC-007（热退出·未命名文档脏）: 未命名文档有内容 → close() 直接放行、
+// 不弹确认框；真实防抖到期后草稿条目落盘且保留（未命名文档的强杀/退出
+// 恢复即依赖该条目）。
+void TestWindowClose::tc007_hotExit_untitledDirty_directCloseDraftKept()
 {
     Bench b;
     QVERIFY2(b.init(), "testbench init failed");
-    Document *doc = b.newDoc(QStringLiteral("keep"));
-
-    QVERIFY(!b.win->close());
-    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
-
-    QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "reject")); // 等价点"取消"
-    QTRY_VERIFY(!b.unsavedDlg->property("visible").toBool());   // 框关闭
-    QVERIFY(b.win->isVisible());                                // 应用继续运行
-    QCOMPARE(doc->content(), QStringLiteral("keep"));           // 内容保留
-    QVERIFY(b.dm->documents().contains(doc));
-
-    // 再次关闭：重新弹确认框
-    QVERIFY(!b.win->close());
-    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
-}
-
-// TC-008（可自动化部分）: 无路径脏文档在确认框选"保存" → 进入另存为分支
-// （saveAsTarget 置位、确认框关闭、窗口不退出）。另存为 FileDialog 实例
-// （QQuickFileDialog）不是窗口的 QObject 子孙，无法直接断言其可见性；
-// "另存为对话框选取消 → 中止"链路也无法自动化（取消只能由对话框内部
-// 用户交互触发），均见报告"未执行"清单。
-void TestWindowClose::tc008_noUrlAccept_goesSaveAsBranch()
-{
-    Bench b;
-    QVERIFY2(b.init(), "testbench init failed");
-    Document *doc = b.newDoc(QStringLiteral("nosave")); // 无 url
+    Document *doc = b.newDoc(QStringLiteral("untitled-hot-exit"));
     QVERIFY(doc->url().isEmpty());
+    QVERIFY(doc->modified());
+    QVERIFY(b.dm->hasUnsavedChanges());
+    const QString uid = doc->uid();
 
-    QVERIFY(!b.win->close());
-    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+    QVERIFY(b.win->close());                              // 热退出：直接放行
+    QTRY_VERIFY(!b.win->isVisible());                     // 窗口已关闭
+    QVERIFY(!b.unsavedDlg->property("visible").toBool()); // 不弹确认框
+    QVERIFY(b.dm->documents().contains(doc));             // 不触发 closeDocument
 
-    QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "accept")); // 保存 → 转另存为
-    QTRY_VERIFY(!b.unsavedDlg->property("visible").toBool());   // 确认框关闭
-    QVERIFY(b.win->isVisible());                                // 流程挂起：等待另存为，未退出
-
-    // 进入另存为分支：saveAsTarget 指向该文档
-    const QVariant st = b.win->property("saveAsTarget");
-    QVERIFY(st.canConvert<QObject *>());
-    QCOMPARE(st.value<QObject *>(), static_cast<QObject *>(doc));
-    QCOMPARE(doc->content(), QStringLiteral("nosave")); // 内容保留
+    QTest::qWait(1500);
+    QVERIFY2(draftEntries().contains(uid + QStringLiteral(".json")),
+             qPrintable(QStringLiteral("draft entry kept after hot exit; dir=%1 entries=%2")
+                            .arg(draftsDir(), draftEntries().join(u','))));
 }
 
-// TC-009: 模态 UI 打开时关闭请求被忽略（uiLocked 分支，维持现状）。
-// 覆盖主菜单（menuVisible）与错误对话框两个模态入口；并验证 uiLocked
-// 优先于未保存检查（菜单展开 + 有脏文档时同样忽略且不弹确认框）。
-void TestWindowClose::tc009_modalUI_closeIgnored()
+// TC-008: 模态 UI 打开时关闭请求被拒绝（uiLocked 分支，维持现状——热退出
+// 只免未保存确认，模态打开时仍拒绝关闭）。覆盖主菜单（menuVisible）与
+// 错误对话框两个模态入口；并验证脏文档 + 模态打开时同样拒绝且不弹
+// 确认框（退出路径不越过模态拦截）。
+void TestWindowClose::tc008_modalUI_closeIgnored()
 {
     Bench b;
     QVERIFY2(b.init(), "testbench init failed");
@@ -543,7 +496,7 @@ void TestWindowClose::tc009_modalUI_closeIgnored()
     QVERIFY(!b.unsavedDlg->property("visible").toBool());    // 不弹确认框
     QMetaObject::invokeMethod(b.mainMenu, "close");
 
-    // 场景 b：主菜单展开 + 有未保存修改 → 同样忽略（uiLocked 分支在前）
+    // 场景 b：主菜单展开 + 有未保存修改 → 同样拒绝（uiLocked 语义不变）
     b.newDoc(QStringLiteral("m"));
     QVERIFY(QMetaObject::invokeMethod(b.mainMenu, "open"));
     QTRY_VERIFY(b.mainMenu->property("visible").toBool());
@@ -557,6 +510,119 @@ void TestWindowClose::tc009_modalUI_closeIgnored()
     QTRY_VERIFY(b.errDlg->property("visible").toBool());
     QVERIFY(!b.win->close());
     QVERIFY(b.win->isVisible());
+}
+
+// TC-009（标签关闭·保存）: 有路径脏文档经 Ctrl+W 等价入口（doCloseActive）
+// 关闭标签 → 弹"未保存的修改"确认框；选"保存"→ 写盘成功后 finishCloseFlow
+// 关闭该文档；窗口保留（热退出后保存流程不再驱动退出）。
+void TestWindowClose::tc009_tabCloseConfirm_save_writesAndClosesDoc()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("t.txt"));
+
+    Document *doc = b.newDoc(QStringLiteral("v1"));
+    QVERIFY(b.dm->saveAs(doc, QUrl::fromLocalFile(path))); // 有路径、清脏
+    doc->setContent(QStringLiteral("v2"));                 // 重新置脏
+    QVERIFY(doc->modified());
+
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // Ctrl+W 等价
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());    // 三选确认框弹出
+    QVERIFY(dialogText(b.unsavedDlg).contains(doc->displayName()));
+
+    QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "accept")); // 等价点"保存"
+    QTRY_VERIFY(!b.unsavedDlg->property("visible").toBool());   // 框关闭
+    QVERIFY(!b.dm->documents().contains(doc));                  // 文档已关闭
+    QVERIFY(b.win->isVisible());                                // 窗口保留（不退出）
+
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QCOMPARE(f.readAll(), QByteArrayLiteral("v2"));             // 磁盘内容为保存值
+}
+
+// TC-009（标签关闭·不保存）: "不保存"= 明确放弃 → 关闭该文档并清理其草稿
+// （DEC-004：关闭标签是明确放弃意图的入口，退出免提示不改变此清理语义）；
+// 窗口保留。清理的可观测前置：确认框打开期间先等真实防抖到期使条目落盘，
+// 再放弃并断言条目被删（重启不恢复）。
+void TestWindowClose::tc009_tabCloseConfirm_discard_closesDocAndCleansDraft()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    Document *doc = b.newDoc(QStringLiteral("dirty"));
+    QVERIFY(doc->modified());
+    const QString uid = doc->uid();
+
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // Ctrl+W 等价
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());    // 三选确认框弹出
+    QVERIFY(dialogText(b.unsavedDlg).contains(doc->displayName()));
+
+    // 真实防抖到期 → 条目落盘（使「不保存」的清理可观测）
+    QTest::qWait(1500);
+    QVERIFY2(draftEntries().contains(uid + QStringLiteral(".json")),
+             qPrintable(QStringLiteral("draft entry written before discard; dir=%1 entries=%2")
+                            .arg(draftsDir(), draftEntries().join(u','))));
+
+    // 等价点"不保存"：直接激活 discarded() 信号——Qt 6.11 Controls Dialog 的
+    // QML 包装 metaObject 未暴露 discard() 方法（accept()/reject() 暴露），
+    // 与 DialogButtonBox DestructiveRole 按钮点击后的信号分发终点等价
+    // （Main.qml 的 onDiscarded 处理器被触发）
+    QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "discarded"));
+    QVERIFY(!b.dm->documents().contains(doc)); // 文档已关闭
+    QVERIFY(b.win->isVisible());               // 窗口保留（不退出）
+    QVERIFY2(!draftEntries().contains(uid + QStringLiteral(".json")),
+             qPrintable(QStringLiteral("draft entry cleaned after discard; dir=%1 entries=%2")
+                            .arg(draftsDir(), draftEntries().join(u','))));
+}
+
+// TC-009（标签关闭·取消）: "取消"（RejectRole → rejected）→ resetCloseFlow
+// 中止关闭；应用继续运行、内容保留；再次关闭标签重新弹确认框（流程可重入）。
+void TestWindowClose::tc009_tabCloseConfirm_cancel_abortsAndKeepsDoc()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    Document *doc = b.newDoc(QStringLiteral("keep"));
+
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // Ctrl+W 等价
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+
+    QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "reject")); // 等价点"取消"
+    QTRY_VERIFY(!b.unsavedDlg->property("visible").toBool());   // 框关闭
+    QVERIFY(b.win->isVisible());                                // 应用继续运行
+    QCOMPARE(doc->content(), QStringLiteral("keep"));           // 内容保留
+    QVERIFY(b.dm->documents().contains(doc));
+
+    // 再次关闭标签：重新弹确认框
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive"));
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+}
+
+// TC-009（可自动化部分）: 无路径脏文档在确认框选"保存" → 进入另存为分支
+// （saveAsTarget 置位、确认框关闭、流程挂起不关闭文档、窗口保留）。
+// 另存为 FileDialog 实例（QQuickFileDialog）不是窗口的 QObject 子孙，
+// 无法直接断言其可见性；"另存为对话框选取消 → 中止"链路也无法自动化
+// （取消只能由对话框内部用户交互触发），均见报告"未执行"清单。
+void TestWindowClose::tc009_tabCloseConfirm_noUrlAccept_goesSaveAs()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
+    Document *doc = b.newDoc(QStringLiteral("nosave")); // 无 url
+    QVERIFY(doc->url().isEmpty());
+
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // Ctrl+W 等价
+    QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
+
+    QVERIFY(QMetaObject::invokeMethod(b.unsavedDlg, "accept")); // 保存 → 转另存为
+    QTRY_VERIFY(!b.unsavedDlg->property("visible").toBool());   // 确认框关闭
+    QVERIFY(b.win->isVisible());                                // 流程挂起：等待另存为
+    QVERIFY(b.dm->documents().contains(doc));                   // 文档未关闭
+
+    // 进入另存为分支：saveAsTarget 指向该文档
+    const QVariant st = b.win->property("saveAsTarget");
+    QVERIFY(st.canConvert<QObject *>());
+    QCOMPARE(st.value<QObject *>(), static_cast<QObject *>(doc));
+    QCOMPARE(doc->content(), QStringLiteral("nosave")); // 内容保留
 }
 
 // TC-010（《测试用例-未保存状态基线比较》）: UI 冒烟。

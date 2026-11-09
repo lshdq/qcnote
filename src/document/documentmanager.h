@@ -16,8 +16,9 @@ class QJSEngine;
 /**
  * @brief 文档生命周期管理器（QML 单例）。
  *
- * 可脱离 QML 引擎在 C++ 测试中直接 new 使用；QML 侧通过
- * create(QQmlEngine*, QJSEngine*) 复用同一实例。
+ * 可脱离 QML 引擎在 C++ 测试中直接 new 使用（须显式传 parent，可为
+ * nullptr）；QML 侧通过 create(QQmlEngine*, QJSEngine*) 复用同一实例
+ * （构造无默认参数，引擎被迫走 create 工厂——单实例保证，见构造注释）。
  * 构造函数中注册 PlainTextFormat（兜底格式）与 LocalStorage；
  * 其他格式经 registerFormat() 注册（兜底格式最后生效）。
  */
@@ -33,7 +34,14 @@ class DocumentManager : public QObject
     Q_PROPERTY(Document *activeDocument READ activeDocument WRITE setActiveDocument NOTIFY activeDocumentChanged)
 
 public:
-    explicit DocumentManager(QObject *parent = nullptr);
+    // 构造必须显式给出 parent（C++ 测试等直构场景传 nullptr）：Qt 6 单例
+    // 构造模式判定中 std::is_default_constructible 优先级高于 create 工厂，
+    // 若保留全默认参数（默认可构造），QML 引擎解析本单例时会绕过 create()
+    // 直接 new 出独立实例，与工厂链实例分裂——QML 界面用引擎直构实例、
+    // DraftCacheManager/SessionManager 连工厂实例，文档信号到不了草稿
+    // 管理器（「未命名标签草稿从不写盘」缺陷根因）。机制对齐 SessionManager/
+    // DraftCacheManager/SingleInstance（均无默认构造，一直走工厂链）。
+    explicit DocumentManager(QObject *parent);
     ~DocumentManager() override;
 
     /// QML 单例工厂：复用同一实例（生命周期归 C++ 管理）
@@ -56,10 +64,13 @@ public:
      *
      * 显示名尽量沿用 untitledName，与现有文档 displayName 冲突时按未命名计数器
      * 生成新名；记录名形如 未命名-N 时同步推进计数器（后续 newDocument 跳过占用号）。
-     * 只追加文档（建 model 行、发 documentsChanged），不激活、不发 documentOpened
-     * （草稿恢复不抢占活动标签，见需求 TC-015）。
+     * insertIndex = -1（默认）追加到尾部（既有调用方行为不变）；否则钳制到
+     * [0, size] 后按位插入内部列表与 QML model（行级增量通知）——关闭现场
+     * 还原：未命名标签按会话记录位置还原（DEC-002 升序稳定插入）。
+     * 不激活、不发 documentOpened（草稿恢复不抢占活动标签，见需求 TC-015）。
      */
-    Document *restoreUntitledDraft(const QString &content, const QString &untitledName);
+    Document *restoreUntitledDraft(const QString &content, const QString &untitledName,
+                                   int insertIndex = -1);
 
     /// 批量打开 URL；同 url 已存在则激活已有文档；空 URL 跳过；失败发 openFailed 并继续处理后续 URL
     Q_INVOKABLE void openUrls(const QList<QUrl> &urls);

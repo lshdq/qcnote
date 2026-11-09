@@ -187,6 +187,19 @@ Item {
                 id: editorScroll
                 anchors.fill: parent
 
+                // 滚动条常驻显示：Material 默认 AsNeeded 为 transient 指示条（交互结束
+                // 约 2.45s 后滑块淡出为 0，风格状态机：active 仅当
+                // policy===AlwaysOn || active&&size<1.0）。必须用链式写法
+                // （ScrollBar.vertical.policy: ...）仅覆盖属性——若写成
+                // ScrollBar.vertical: ScrollBar { ... } 整体替换，风格 ScrollView.qml
+                // 的定位绑定（parent/x/y/height）随之丢失，滚动条退化 0 尺寸完全
+                // 不可见（Qt 6 官方 ScrollView 文档 "Scroll Bars" 章写法）。size > 0
+                // 下限：未布局/空 delegate 时 size==0 按隐藏处理，避免短文档首帧闪现
+                ScrollBar.vertical.interactive: true
+                ScrollBar.vertical.policy: root.residentScrollBarPolicy(editorScroll.ScrollBar.vertical.size)
+                ScrollBar.horizontal.interactive: true
+                ScrollBar.horizontal.policy: root.residentScrollBarPolicy(editorScroll.ScrollBar.horizontal.size)
+
                 // 滚轮到顶/底（及 NoWrap 长行水平到左/右）不做过冲回弹：
                 // ScrollView 内部 Flickable 默认 DragAndOvershootBounds，滚轮越过
                 // 边界会过冲再回弹；桌面编辑器应停在边界（与 DocumentTabs 标签栏
@@ -663,6 +676,12 @@ Item {
     }
 
     // ---- 查找集成接口（供 Main.qml 的打开/关闭流程调用） ----
+
+    /// 滚动条 policy：可滚动（0 < size < 1）→ AlwaysOn 常驻；否则 AlwaysOff 隐藏
+    /// （size==1 不可滚动；size==0 未布局/空 delegate 亦按隐藏，防首帧闪现）
+    function residentScrollBarPolicy(barSize) {
+        return barSize > 0.0 && barSize < 1.0 ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+    }
 
     /// 退出活动编辑器的多光标（DEC-008：查找对话框打开前调用，互斥；
     /// 单光标时无操作，既有行为零变化）

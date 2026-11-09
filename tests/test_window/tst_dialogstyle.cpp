@@ -3,6 +3,11 @@
 // 007/008，弹窗拖动需求引入的《测试用例-弹窗拖动》TC-002/003/004/006/
 // 008/009）。
 //
+// 确认框打开驱动：退出已按《需求-退出免提示与草稿缓存单例修复》改为
+// 热退出免提示（close 不再弹未保存确认），unsavedDialog 的唯一打开入口
+// 收敛为标签页关闭（Ctrl+W 等价 doCloseActive）——本文件以该入口驱动
+// 确认框做样式/拖动断言；退出语义由 tst_windowclose 覆盖。
+//
 // 测试方式：offscreen 平台下实例化完整 Main.qml，按 QML 类型短名
 // MovableDialog + dialogTitle 属性定位五个对话框（unsavedDialog /
 // errorDialog / ctxMenuPromptDialog / reloadConfirmDialog /
@@ -406,14 +411,15 @@ private slots:
     void drag009_searchDialog_afterDrag();
 };
 
-// TC-001: 有未保存修改触发关闭 → 确认框弹出且居中；窗口 resize 后保持居中。
+// TC-001: 有未保存修改关闭标签（Ctrl+W 等价 doCloseActive）→ 确认框
+// 弹出且居中；窗口 resize 后保持居中。
 void TestDialogStyle::tc001_unsavedDialog_centered()
 {
     Bench b;
     QVERIFY2(b.init(), "testbench init failed");
     b.newDoc(QStringLiteral("dirty"));
 
-    QVERIFY(!b.win->close());                                  // 关闭被拒，弹确认框
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
 
     // 初始几何（1000x640，Windowed 默认）下居中（等一轮布局 polish）
@@ -437,7 +443,7 @@ void TestDialogStyle::tc002_footerButtons_layoutNamingAlignment()
     QVERIFY2(b.init(), "testbench init failed");
     b.newDoc(QStringLiteral("dirty"));
 
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
     QTest::qWait(50); // 等按钮布局 polish，取视觉坐标
 
@@ -463,7 +469,7 @@ void TestDialogStyle::tc002_footerButtons_layoutNamingAlignment()
 }
 
 // TC-004: 五个对话框 closePolicy 均为 Popup.CloseOnEscape；
-// 合成鼠标点击对话框外部遮罩 → 不关闭、退出流程未中止、内容保留。
+// 合成鼠标点击对话框外部遮罩 → 不关闭、关闭流程未中止、内容保留。
 void TestDialogStyle::tc004_closePolicy_escapeOnly()
 {
     Bench b;
@@ -478,7 +484,7 @@ void TestDialogStyle::tc004_closePolicy_escapeOnly()
 
     // 行为断言：点击对话框外部（遮罩区域）不关闭
     Document *doc = b.newDoc(QStringLiteral("dirty"));
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
     QTest::qWait(50); // 等布局就位，确保点击坐标在对话框边界外
 
@@ -486,13 +492,13 @@ void TestDialogStyle::tc004_closePolicy_escapeOnly()
     clickOutside(b.win, b.win->width() / 2.0, 20);
     QTest::qWait(150);
     QVERIFY(b.unsavedDlg->property("visible").toBool()); // 不关闭
-    QVERIFY(b.win->isVisible());                         // 退出流程未中止
+    QVERIFY(b.win->isVisible());                         // 关闭流程未中止
     QVERIFY(b.dm->documents().contains(doc));            // 内容保留
     QCOMPARE(doc->content(), QStringLiteral("dirty"));
 }
 
 // TC-005（Esc 部分）: Esc（closePolicy CloseOnEscape 的键盘路径）→ 取消：
-// 框关、流程中止、内容保留；再次关闭重新弹确认框（流程可重入）。
+// 框关、关闭流程中止、内容保留；再次关闭标签重新弹确认框（流程可重入）。
 void TestDialogStyle::tc005_escCancel()
 {
     Bench b;
@@ -506,7 +512,7 @@ void TestDialogStyle::tc005_escCancel()
     doc->setContent(QStringLiteral("v2"));                 // 重新置脏
     QVERIFY(doc->modified());
 
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
 
     QTest::keyClick(b.win, Qt::Key_Escape);
@@ -515,13 +521,13 @@ void TestDialogStyle::tc005_escCancel()
     QCOMPARE(doc->content(), QStringLiteral("v2"));           // 内容保留
     QVERIFY(b.dm->documents().contains(doc));
 
-    // 流程可重入：再次关闭重新弹确认框
-    QVERIFY(!b.win->close());
+    // 流程可重入：再次关闭标签重新弹确认框
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive"));
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
 }
 
 // TC-005（Enter 部分）: Enter（「保存」按钮持有焦点）→ 保存分支：写盘后
-// 关闭退出。
+// 关闭该文档（标签页关闭流程；退出已改为热退出免提示，窗口保留）。
 // 历史缺陷（Qt 源码级根因，已修复）：QQuickAbstractButton 的键盘激活键
 // 来自平台主题 ButtonPressKeys（QPlatformTheme 默认仅 Space/Select，
 // QWindowsTheme::themeHint 未覆盖该提示），Enter/Return 不在激活键内——
@@ -542,14 +548,16 @@ void TestDialogStyle::tc005_enterSave()
     doc->setContent(QStringLiteral("v2"));                 // 重新置脏
     QVERIFY(doc->modified());
 
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
 
     QQuickItem *saveBtn = buttonByText(footerBox(b.unsavedDlg), QStringLiteral("保存"));
     QVERIFY(saveBtn);
     QVERIFY(QMetaObject::invokeMethod(saveBtn, "forceActiveFocus"));
     QTest::keyClick(b.win, Qt::Key_Return);
-    QTRY_VERIFY(!b.win->isVisible()); // 保存成功 → 无其他脏文档 → 退出
+    QTRY_VERIFY(!b.unsavedDlg->property("visible").toBool()); // 框关闭
+    QVERIFY(!b.dm->documents().contains(doc));                // 文档已关闭
+    QVERIFY(b.win->isVisible());                              // 窗口保留（热退出）
 
     QFile f(path);
     QVERIFY(f.open(QIODevice::ReadOnly));
@@ -563,7 +571,7 @@ void TestDialogStyle::tc006_bodyTextFormat()
     QVERIFY2(b.init(), "testbench init failed");
     Document *doc = b.newDoc(QStringLiteral("dirty"));
 
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
 
     QCOMPARE(dialogText(b.unsavedDlg),
@@ -732,7 +740,7 @@ void TestDialogStyle::drag002_headerDrag_movesDialog()
     QVERIFY2(b.init(), "testbench init failed");
     b.newDoc(QStringLiteral("dirty"));
 
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
     QTest::qWait(50); // 等布局 polish（header 几何就位）
 
@@ -769,7 +777,7 @@ void TestDialogStyle::drag003_clampFourDirections()
     QVERIFY2(b.init(), "testbench init failed");
     b.newDoc(QStringLiteral("dirty"));
 
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
     // 几何取确定值：进程内会话文件可能携带此前用例写入的窗口几何
     //（SessionManager 防抖落盘，Component.onCompleted 会恢复），
@@ -837,8 +845,8 @@ void TestDialogStyle::drag004_reopen_resetsPosition()
     QVERIFY2(b.init(), "testbench init failed");
     b.newDoc(QStringLiteral("dirty"));
 
-    // 打开并拖离默认位置
-    QVERIFY(!b.win->close());
+    // 打开并拖离默认位置（关闭标签 → 弹确认框）
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive"));
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
     QTest::qWait(50);
     const QPointF c = headerGrabPoint(b.win, b.unsavedDlg);
@@ -849,10 +857,10 @@ void TestDialogStyle::drag004_reopen_resetsPosition()
     QVERIFY2(!isCentered(b.win, b.unsavedDlg, &why),
              qPrintable("precondition: dialog should be off-center, " + why));
 
-    // Esc 关闭（文档仍为脏）→ 再次关闭窗口重新弹确认框
+    // Esc 关闭（文档仍为脏）→ 再次关闭标签重新弹确认框
     QTest::keyClick(b.win, Qt::Key_Escape);
     QTRY_VERIFY(!b.unsavedDlg->property("visible").toBool());
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive"));
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
     QTest::qWait(50);
 
@@ -868,7 +876,7 @@ void TestDialogStyle::drag006_resizeAfterDrag_reclamps()
     QVERIFY2(b.init(), "testbench init failed");
     b.newDoc(QStringLiteral("dirty"));
 
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
     QTest::qWait(50);
 
@@ -917,7 +925,7 @@ void TestDialogStyle::drag008_focusChain_handleNotInTabChain()
     QVERIFY2(b.init(), "testbench init failed");
     b.newDoc(QStringLiteral("dirty"));
 
-    QVERIFY(!b.win->close());
+    QVERIFY(QMetaObject::invokeMethod(b.win, "doCloseActive")); // 关闭标签 → 弹确认框
     QTRY_VERIFY(b.unsavedDlg->property("visible").toBool());
     QTest::qWait(50); // 等布局 polish 与初始焦点落位（footer 主按钮）
 

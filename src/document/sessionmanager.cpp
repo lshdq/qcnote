@@ -70,6 +70,12 @@ SessionManager::SessionManager(DocumentManager *manager, const QString &filePath
 
     // 退出兜底：防抖挂起状态在退出前落盘
     connect(qApp, &QCoreApplication::aboutToQuit, this, &SessionManager::flush);
+
+    // 记录最新实例，供 instance() 获取（构造即登记；析构时置空）——
+    // DraftCacheManager 恢复期经此取会话暂存的未命名位置/活动 uid（DEC-001）；
+    // 生产路径仅 create() 构造一次，多实例竞态只存在于 C++ 测试（后建覆盖、
+    // 先析构者不误清后建者的登记）
+    s_instance = this;
 }
 
 SessionManager::~SessionManager()
@@ -94,6 +100,21 @@ SessionManager *SessionManager::create(QQmlEngine *qmlEngine, QJSEngine *jsEngin
     return s_instance;
 }
 
+SessionManager *SessionManager::instance()
+{
+    return s_instance;
+}
+
+int SessionManager::pendingDraftPosition(const QString &uid) const
+{
+    return m_pendingDraftPositions.value(uid, -1);
+}
+
+QString SessionManager::pendingActiveDraftUid() const
+{
+    return m_pendingActiveDraftUid;
+}
+
 void SessionManager::restoreDocuments()
 {
     if (!m_manager)
@@ -101,6 +122,9 @@ void SessionManager::restoreDocuments()
 
     // 恢复期间屏蔽连锁 scheduleSave（openUrls/设光标/激活都会触发信号），完成后统一写一次
     m_restoring = true;
+    // 清空上一轮暂存（重复调用/换会话数据场景），保证查询接口只反映本次恢复
+    m_pendingDraftPositions.clear();
+    m_pendingActiveDraftUid.clear();
 
     const int size = m_settings->value(QStringLiteral("documents/size"), 0).toInt();
     if (size <= 0) {
@@ -120,14 +144,23 @@ void SessionManager::restoreDocuments()
     for (int i = 1; i <= size; ++i) {
         const QString prefix = QStringLiteral("documents/") + QString::number(i);
         const QUrl url(m_settings->value(prefix + QStringLiteral("/url")).toString());
-        const int cursor = m_settings->value(prefix + QStringLiteral("/cursor"), 0).toInt();
-        if (url.isEmpty() || !url.isValid())
-            continue; // 空/损坏条目：丢弃，不阻断启动
+        if (url.isEmpty() || !url.isValid()) {
+            // 无 url：未命名条目（新格式记录 uid）→ 不开文档，暂存 uid→标签栏
+            // 0 基位置（条目编号-1，DEC-001），内容由草稿缓存的
+            // DraftCacheManager 按位还原；无 uid 键的空条目（旧格式不记录
+            // 未命名，仅防御）按损坏丢弃（DEC-005，现状行为）
+            const QString uid = m_settings->value(prefix + QStringLiteral("/uid")).toString();
+            if (!uid.isEmpty())
+                m_pendingDraftPositions.insert(uid, i - 1);
+            continue;
+        }
         if (url.isLocalFile() && !QFileInfo(url.toLocalFile()).isFile())
             continue; // 本地文件缺失或路径指向目录：与 LocalStorage::read 的"存在且是
                       // 常规文件"语义对齐，按坏条目静默跳过（不发 openFailed、不弹错、不打断启动）
         if (!m_manager->storageForUrl(url))
             continue; // 无可用存储（损坏/未知 scheme）：静默跳过，避免启动路径弹错
+
+        const int cursor = m_settings->value(prefix + QStringLiteral("/cursor"), 0).toInt();
 
         // 编码记忆：仅接受已知值；非法/缺失（旧会话文件）静默回退自动识别，不阻断启动
         std::optional<Document::Encoding> forcedEncoding;
@@ -162,9 +195,16 @@ void SessionManager::restoreDocuments()
     const QUrl activeUrl(m_settings->value(QStringLiteral("documents/active")).toString());
     if (Document *active = m_manager->documentForUrl(activeUrl))
         m_manager->setActiveDocument(active);
+    else if (activeUrl.isEmpty())
+        // 活动标签为未命名（无 active 键，与 activeUid 互斥）：暂存其 uid，草稿
+        // 恢复阶段按 DEC-003 一级优先匹配激活；activeUid 指向的草稿不存在
+        // （无内容未命名标签，DEC-004）时由 DraftCacheManager 依序回退
+        m_pendingActiveDraftUid =
+                m_settings->value(QStringLiteral("documents/activeUid")).toString();
 
     m_restoring = false;
-    saveNow(); // 会话与实际状态对齐：剔除缺失文件、编号重排为连续
+    saveNow(); // 会话与实际状态对齐：剔除缺失文件、编号重排为连续（新格式：
+               // 此刻未命名条目尚未还原，待草稿恢复触发防抖重写补全序列）
 }
 
 QVariantMap SessionManager::windowState() const
@@ -278,17 +318,24 @@ void SessionManager::saveNow()
 {
     m_debounce.stop();
 
-    // [documents]：先清残留键再按当前状态重写（编号重排、剔除已关闭/未命名文档）
+    // [documents]：先整组删除残留键（含 active/activeUid，保证两键不并存）再按
+    // 当前标签栏顺序重写：文件条目记 url/cursor/encoding（现状）；未命名条目记
+    // uid（与草稿条目主键同源，DEC-001），重启后按编号还原标签顺序；已关闭文档
+    // 随编号重排剔除
     m_settings->remove(QStringLiteral("documents"));
     m_settings->beginGroup(QStringLiteral("documents"));
     int index = 0;
     if (m_manager) {
         for (Document *doc : m_manager->documents()) {
-            const QUrl url = doc->url();
-            if (url.isEmpty())
-                continue; // 未命名文档（无路径）不记录
             ++index;
             const QString prefix = QString::number(index);
+            const QUrl url = doc->url();
+            if (url.isEmpty()) {
+                // 未命名文档（无路径）：该编号条目只写 uid，不写 url/cursor
+                // （光标随草稿条目恢复）
+                m_settings->setValue(prefix + QStringLiteral("/uid"), doc->uid());
+                continue;
+            }
             m_settings->setValue(prefix + QStringLiteral("/url"), url.toString());
             m_settings->setValue(prefix + QStringLiteral("/cursor"), doc->cursorPosition());
             // 编码一律写（含 utf8）：重启后按记忆编码打开，避免自动识别误判反复发生
@@ -302,8 +349,12 @@ void SessionManager::saveNow()
     if (m_manager) {
         if (Document *active = m_manager->activeDocument()) {
             const QUrl activeUrl = active->url();
-            if (!activeUrl.isEmpty())
+            if (!activeUrl.isEmpty()) {
                 m_settings->setValue(QStringLiteral("active"), activeUrl.toString());
+            } else {
+                // 活动标签为未命名：记 activeUid（整组重写保证与 active 不并存）
+                m_settings->setValue(QStringLiteral("activeUid"), active->uid());
+            }
         }
     }
     m_settings->endGroup();
