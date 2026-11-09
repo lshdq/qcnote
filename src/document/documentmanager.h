@@ -51,6 +51,16 @@ public:
     /// 新建"未命名-N"文档（N 从 1 递增）并激活
     Q_INVOKABLE void newDocument();
 
+    /**
+     * @brief 恢复未命名草稿：创建文档并写入内容（基线为空 → modified 必为 true）。
+     *
+     * 显示名尽量沿用 untitledName，与现有文档 displayName 冲突时按未命名计数器
+     * 生成新名；记录名形如 未命名-N 时同步推进计数器（后续 newDocument 跳过占用号）。
+     * 只追加文档（建 model 行、发 documentsChanged），不激活、不发 documentOpened
+     * （草稿恢复不抢占活动标签，见需求 TC-015）。
+     */
+    Document *restoreUntitledDraft(const QString &content, const QString &untitledName);
+
     /// 批量打开 URL；同 url 已存在则激活已有文档；空 URL 跳过；失败发 openFailed 并继续处理后续 URL
     Q_INVOKABLE void openUrls(const QList<QUrl> &urls);
 

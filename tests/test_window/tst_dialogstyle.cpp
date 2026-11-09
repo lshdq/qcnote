@@ -4,8 +4,9 @@
 // 008/009）。
 //
 // 测试方式：offscreen 平台下实例化完整 Main.qml，按 QML 类型短名
-// MovableDialog + dialogTitle 属性定位四个对话框（unsavedDialog /
-// errorDialog / ctxMenuPromptDialog / reloadConfirmDialog），断言：
+// MovableDialog + dialogTitle 属性定位五个对话框（unsavedDialog /
+// errorDialog / ctxMenuPromptDialog / reloadConfirmDialog /
+// draftConflictDialog），断言：
 // - 默认位置：MovableDialog 的 x/y 绑定居中（与窗口中心差 ≤1px），
 //   未拖动时 resize 后跟随；
 // - 拖动（弹窗拖动需求）：合成鼠标（左键 press → 分步 move → release，
@@ -30,10 +31,10 @@
 // 弹窗拖动的 TC-012（skill 文档验证）不属本目标。
 //
 // 对象定位说明：与 tst_windowclose 相同，按 QML 类型短名匹配；Main.qml
-// 四对话框经 MovableDialog（继承 Dialog，自绘 header 把手）接入，实例
+// 五对话框经 MovableDialog（继承 Dialog，自绘 header 把手）接入，实例
 // 类型短名为 "MovableDialog"，标题属性为 dialogTitle（Dialog.title 保持
-// 空）；errorDialog 的 dialogTitle 绑定 currentError，未打开时为空串，
-// 按排除法定位（另三个对话框按固定标题精确匹配）。SearchDialog.qml 根
+// 空）；全部按固定标题精确匹配定位，其中 errorDialog 的 dialogTitle
+// 绑定 currentError、未打开时为空串，按空串标题显式识别。SearchDialog.qml 根
 // 类型同为 MovableDialog，但实例类型短名仍为文件组件名 "SearchDialog"。
 // ctxMenuPromptDialog 的首启真实链路被 QCNOTE_TEST_SHELL_NOOP 隔离
 // （contextMenuPromptNeeded 恒 false），采用直接 open() 的等价模式。
@@ -54,6 +55,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QString>
 #include <QStringLiteral>
 #include <QTemporaryDir>
@@ -138,6 +140,7 @@ struct Bench
     QObject *errDlg = nullptr;          // errorDialog（dialogTitle 绑定 currentError，未打开为空）
     QObject *ctxPromptDlg = nullptr;    // ctxMenuPromptDialog（标题「添加右键菜单」）
     QObject *reloadDlg = nullptr;       // reloadConfirmDialog（标题「按编码重新加载」）
+    QObject *draftDlg = nullptr;        // draftConflictDialog（标题「恢复未保存的修改」）
     QObject *searchDlg = nullptr;       // SearchDialog（DEC-002 顶部对齐，drag009 用）
     QQuickItem *editorArea = nullptr;   // EditorArea（查找控制器持有者，drag009 用）
 
@@ -170,8 +173,9 @@ Main {}
         for (Document *d : docs)
             dm->closeDocument(d);
 
-        // 四个对话框按 QML 类型短名 MovableDialog + dialogTitle 属性定位；
-        // errorDialog 未打开时 dialogTitle 为空串走排除法
+        // 五个对话框按 QML 类型短名 MovableDialog + dialogTitle 属性定位；
+        // 四个按固定标题精确匹配，errorDialog 的 dialogTitle 绑定
+        // currentError、未打开时为空串，按空串标题显式识别
         QList<QObject *> dialogs;
         collectByQmlType(win, "MovableDialog", &dialogs);
         for (QObject *d : dialogs) {
@@ -182,15 +186,19 @@ Main {}
                 ctxPromptDlg = d;
             else if (t == QStringLiteral("按编码重新加载"))
                 reloadDlg = d;
-            else
+            else if (t == QStringLiteral("恢复未保存的修改"))
+                draftDlg = d;
+            else if (t.isEmpty())
                 errDlg = d;
         }
-        if (dialogs.size() != 4 || !unsavedDlg || !errDlg || !ctxPromptDlg || !reloadDlg) {
+        if (dialogs.size() != 5 || !unsavedDlg || !errDlg || !ctxPromptDlg
+            || !reloadDlg || !draftDlg) {
             qWarning() << "[bench] dialogs found:" << dialogs.size()
                        << "unsaved:" << (unsavedDlg != nullptr)
                        << "err:" << (errDlg != nullptr)
                        << "ctxPrompt:" << (ctxPromptDlg != nullptr)
-                       << "reload:" << (reloadDlg != nullptr);
+                       << "reload:" << (reloadDlg != nullptr)
+                       << "draft:" << (draftDlg != nullptr);
             return false;
         }
 
@@ -370,6 +378,11 @@ private slots:
     // （居中、WinLayout、按钮 重新加载(primary)/取消）与正文文案
     void tc010_reloadConfirm_layoutText();
 
+    // 「未保存修改临时缓存」需求：草稿冲突汇总对话框（draftConflictDialog）
+    // 的基本风格用例：居中、modal、宽 440、closePolicy 仅 Esc、footer
+    // WinLayout、按钮 恢复（primary）/丢弃
+    void tc011_draftConflict_layoutButtons();
+
     // ---- 弹窗拖动（《测试用例-弹窗拖动》可自动化部分）----
 
     // TC-002: header 把手合成鼠标拖动 → x/y 精确位移（±1px）
@@ -449,7 +462,7 @@ void TestDialogStyle::tc002_footerButtons_layoutNamingAlignment()
     QVERIFY(!buttonByText(box, QStringLiteral("取消"))->property("primary").toBool());
 }
 
-// TC-004: 四个对话框 closePolicy 均为 Popup.CloseOnEscape；
+// TC-004: 五个对话框 closePolicy 均为 Popup.CloseOnEscape；
 // 合成鼠标点击对话框外部遮罩 → 不关闭、退出流程未中止、内容保留。
 void TestDialogStyle::tc004_closePolicy_escapeOnly()
 {
@@ -457,7 +470,8 @@ void TestDialogStyle::tc004_closePolicy_escapeOnly()
     QVERIFY2(b.init(), "testbench init failed");
 
     // 属性断言：仅 Esc 关闭，不含任何点击外部关闭的位
-    for (QObject *dlg : { b.unsavedDlg, b.errDlg, b.ctxPromptDlg, b.reloadDlg }) {
+    for (QObject *dlg : { b.unsavedDlg, b.errDlg, b.ctxPromptDlg, b.reloadDlg,
+                          b.draftDlg }) {
         QVERIFY(dlg);
         QCOMPARE(dlg->property("closePolicy").toInt(), kCloseOnEscape);
     }
@@ -676,8 +690,39 @@ void TestDialogStyle::tc010_reloadConfirm_layoutText()
              QStringLiteral("通过 GBK 重新加载将丢弃未保存的修改"));
 }
 
-// ==================== 弹窗拖动（《测试用例-弹窗拖动》） ====================
+// 「未保存修改临时缓存」需求：草稿冲突汇总对话框（draftConflictDialog，
+// DEC-006「恢复」全量应用/「丢弃」全量丢弃）基本风格与其他对话框的
+// Windows 惯例一致：居中、modal、宽 440、WinLayout、自左向右
+// 恢复（primary）/丢弃。真实链路依赖启动期草稿冲突检测，此处按
+// tc008 的 open() 等价驱动模式做风格断言；恢复/丢弃的行为链路由
+// test_draftcache 覆盖。
+void TestDialogStyle::tc011_draftConflict_layoutButtons()
+{
+    Bench b;
+    QVERIFY2(b.init(), "testbench init failed");
 
+    QVERIFY(QMetaObject::invokeMethod(b.draftDlg, "open"));
+    QTRY_VERIFY(b.draftDlg->property("visible").toBool());
+    QTest::qWait(50);
+
+    // 居中 + 基本几何/模态（与 unsavedDialog 等同维度）
+    QString why;
+    QVERIFY2(isCentered(b.win, b.draftDlg, &why), qPrintable(why));
+    QCOMPARE(b.draftDlg->property("width").toReal(), 440.0);
+    QVERIFY(b.draftDlg->property("modal").toBool());
+    QCOMPARE(b.draftDlg->property("closePolicy").toInt(), kCloseOnEscape);
+
+    // footer：DialogButtonBox 为 WinLayout、按钮 恢复（primary）/丢弃
+    QObject *box = footerBox(b.draftDlg);
+    QVERIFY2(box, "draftConflictDialog footer DialogButtonBox not found");
+    QCOMPARE(box->property("buttonLayout").toInt(), kWinLayout);
+    QCOMPARE(buttonsLeftToRight(box),
+             QStringList({ QStringLiteral("恢复"), QStringLiteral("丢弃") }));
+    QVERIFY(buttonByText(box, QStringLiteral("恢复"))->property("primary").toBool());
+    QVERIFY(!buttonByText(box, QStringLiteral("丢弃"))->property("primary").toBool());
+}
+
+// ==================== 弹窗拖动（《测试用例-弹窗拖动》） ====================
 // 弹窗拖动 TC-002: 打开未保存确认框，合成鼠标左键拖 header 把手中心
 // 移动 (60, -30) → 弹窗 x/y 精确增加同位移（±1px 容差），拖动不触发
 // 关闭（模态行为不变）。
@@ -1004,12 +1049,26 @@ int main(int argc, char *argv[])
     sessionRedirectDir();
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        sessionRedirectDir().path());
+    // 草稿缓存隔离（审查应改 #2）：Main.qml 的 Component.onCompleted 每次实例化
+    // 都会调 DraftCacheManager.restoreDrafts()，其非便携默认目录按测试 exe 名
+    // 派生自 %LOCALAPPDATA%（本测试为 %LOCALAPPDATA%\test_dialogstyle\drafts），
+    // 跨运行持久。上一轮若以脏文档收场（QVERIFY 失败 return 跳过清理、或进程
+    // 被杀）且防抖在后续事件循环到期写盘，条目残留会让本轮恢复出额外文档，
+    // 文档计数类断言偶发失败。启动预清理隔离上一轮残留；结束清理避免测试产物
+    // 在用户 %LOCALAPPDATA% 积累。不用 setTestModeEnabled（避免影响既有
+    // QSettings 语义），不改应用名（目录不漂移、不积累）。
+    const QString draftsDir = QStandardPaths::writableLocation(
+                QStandardPaths::AppLocalDataLocation) + QStringLiteral("/drafts");
+    QDir(draftsDir).removeRecursively();
     // 窗口关闭（visible = false）不得触发自动退出，避免干扰 QTest 事件循环
     app.setQuitOnLastWindowClosed(false);
     // 与主程序一致的控件样式（Main.qml 使用 Material 附加属性）
     QQuickStyle::setStyle(QStringLiteral("Material"));
     TestDialogStyle t;
-    return QTest::qExec(&t, argc, argv);
+    const int testResult = QTest::qExec(&t, argc, argv);
+    // 结束清理：删除本轮测试写入的草稿条目，不在 %LOCALAPPDATA% 留测试产物
+    QDir(draftsDir).removeRecursively();
+    return testResult;
 }
 
 #include "tst_dialogstyle.moc"

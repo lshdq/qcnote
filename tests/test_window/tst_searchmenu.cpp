@@ -44,6 +44,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QString>
 #include <QStringLiteral>
 #include <QTemporaryDir>
@@ -824,12 +825,26 @@ int main(int argc, char *argv[])
     sessionRedirectDir();
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        sessionRedirectDir().path());
+    // 草稿缓存隔离（审查应改 #2）：Main.qml 的 Component.onCompleted 每次实例化
+    // 都会调 DraftCacheManager.restoreDrafts()，其非便携默认目录按测试 exe 名
+    // 派生自 %LOCALAPPDATA%（本测试为 %LOCALAPPDATA%\test_searchmenu\drafts），
+    // 跨运行持久。上一轮若以脏文档收场（QVERIFY 失败 return 跳过清理、或进程
+    // 被杀）且防抖在后续事件循环到期写盘，条目残留会让本轮恢复出额外文档，
+    // 文档计数类断言偶发失败。启动预清理隔离上一轮残留；结束清理避免测试产物
+    // 在用户 %LOCALAPPDATA% 积累。不用 setTestModeEnabled（避免影响既有
+    // QSettings 语义），不改应用名（目录不漂移、不积累）。
+    const QString draftsDir = QStandardPaths::writableLocation(
+                QStandardPaths::AppLocalDataLocation) + QStringLiteral("/drafts");
+    QDir(draftsDir).removeRecursively();
     // 窗口关闭（visible = false）不得触发自动退出，避免干扰 QTest 事件循环
     app.setQuitOnLastWindowClosed(false);
     // 与主程序一致的控件样式（Main.qml 使用 Material 附加属性）
     QQuickStyle::setStyle(QStringLiteral("Material"));
     TestSearchMenu t;
-    return QTest::qExec(&t, argc, argv);
+    const int testResult = QTest::qExec(&t, argc, argv);
+    // 结束清理：删除本轮测试写入的草稿条目，不在 %LOCALAPPDATA% 留测试产物
+    QDir(draftsDir).removeRecursively();
+    return testResult;
 }
 
 #include "tst_searchmenu.moc"

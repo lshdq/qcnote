@@ -1,5 +1,8 @@
+#include <QCryptographicHash>
+#include <QSet>
 #include <QSignalSpy>
 #include <QTest>
+#include <QUuid>
 #include <QUrl>
 
 #include "document/document.h"
@@ -11,6 +14,10 @@ class TestDocument : public QObject
 
 private slots:
     void defaultState();
+    void uidIsUniqueAcrossDocuments();
+    void uidIsStableAcrossReads();
+    void uidMatchesUuidFormat();
+    void savedContentHashTracksBaseline();
     void setContentMarksModified();
     void sameContentDoesNotChangeModified();
     void revertToBaselineClearsModified();
@@ -41,6 +48,59 @@ void TestDocument::defaultState()
     QCOMPARE(doc.lineEnding(), Document::LineEnding::Lf);
     QCOMPARE(doc.encoding(), Document::Encoding::Utf8); // 新建文档默认 UTF-8
     QCOMPARE(doc.hasBom(), false);                      // 默认无 BOM
+}
+
+// uid 唯一性：多个文档的 uid 互不相同（草稿缓存条目主键，DEC-002）
+void TestDocument::uidIsUniqueAcrossDocuments()
+{
+    QSet<QString> uids;
+    for (int i = 0; i < 8; ++i) {
+        Document doc;
+        uids.insert(doc.uid());
+    }
+    QCOMPARE(uids.size(), 8);
+}
+
+// uid 恒定性：同一文档多次读取一致；编辑/改 url/markSaved 均不改变
+void TestDocument::uidIsStableAcrossReads()
+{
+    Document doc;
+    const QString first = doc.uid();
+    doc.setContent(QStringLiteral("编辑不改变 uid"));
+    doc.setUrl(QUrl::fromLocalFile(QStringLiteral("C:/tmp/anything.txt")));
+    doc.markSaved();
+    QCOMPARE(doc.uid(), first);
+}
+
+// uid 格式：无大括号的规范 UUID 字符串，QUuid::fromString 可解析回非空值
+void TestDocument::uidMatchesUuidFormat()
+{
+    Document doc;
+    QVERIFY(!doc.uid().startsWith(QLatin1Char('{')));
+    QVERIFY(!doc.uid().endsWith(QLatin1Char('}')));
+    QVERIFY(!QUuid::fromString(doc.uid()).isNull());
+}
+
+// savedContentHash 基线语义：与手工 SHA-256(基线 UTF-8) 一致；修改内容后
+// 哈希不变（仍是原基线指纹）；markSaved 后更新为新基线哈希
+void TestDocument::savedContentHashTracksBaseline()
+{
+    const auto sha256Hex = [](const QString &text) {
+        return QString::fromLatin1(
+                QCryptographicHash::hash(text.toUtf8(), QCryptographicHash::Sha256).toHex());
+    };
+
+    Document doc;
+    doc.applyLoadedState(QUrl::fromLocalFile(QStringLiteral("C:/tmp/hash.txt")),
+                         QStringLiteral("abc"), Document::LineEnding::Lf,
+                         Document::Encoding::Utf8, false);
+    QCOMPARE(doc.savedContentHash(), sha256Hex(QStringLiteral("abc"))); // 与手工计算一致
+
+    doc.setContent(QStringLiteral("abcX"));
+    QCOMPARE(doc.savedContentHash(), sha256Hex(QStringLiteral("abc"))); // 修改不改基线
+
+    doc.markSaved();
+    QCOMPARE(doc.savedContentHash(), sha256Hex(QStringLiteral("abcX"))); // 新基线
 }
 
 // 不同内容写入置脏

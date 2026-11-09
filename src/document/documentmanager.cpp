@@ -2,6 +2,7 @@
 
 #include <QQmlEngine>
 #include <QJSEngine>
+#include <QRegularExpression>
 
 #include <algorithm>
 #include <optional>
@@ -81,6 +82,44 @@ void DocumentManager::newDocument()
     m_documentsModel->insert(m_documents.size() - 1, doc);
     emit documentsChanged();
     setActiveDocument(doc);
+}
+
+Document *DocumentManager::restoreUntitledDraft(const QString &content, const QString &untitledName)
+{
+    // 显示名尽量沿用记录值；记录名形如 未命名-N 时推进计数器（后续 newDocument
+    // 跳过占用号），与现有文档 displayName 冲突时按计数器生成新名
+    QString name = untitledName;
+    if (name.isEmpty()) {
+        ++m_untitledCounter;
+        name = QStringLiteral("未命名-%1").arg(m_untitledCounter);
+    } else {
+        static const QRegularExpression numbered(QStringLiteral("^未命名-(\\d+)$"));
+        const auto match = numbered.match(name);
+        if (match.hasMatch())
+            m_untitledCounter = qMax(m_untitledCounter, match.captured(1).toInt());
+    }
+    const auto nameExists = [this](const QString &candidate) {
+        for (const Document *doc : m_documents) {
+            if (doc->displayName() == candidate)
+                return true;
+        }
+        return false;
+    };
+    while (nameExists(name)) {
+        ++m_untitledCounter;
+        name = QStringLiteral("未命名-%1").arg(m_untitledCounter);
+    }
+
+    auto *doc = new Document(name, this);
+    m_documents.append(doc);
+    // 先建 model 行（rowsInserted，视图只新增对应 delegate），再发 documentsChanged；
+    // 不激活、不发 documentOpened（草稿恢复不抢占活动标签，TC-015）
+    m_documentsModel->insert(m_documents.size() - 1, doc);
+    emit documentsChanged();
+    // 入列后再写内容：DraftCacheManager 等经 documentsChanged 补连信号后，
+    // setContent 触发的 contentChanged 按新 uid 正常进入草稿续写防抖（预期行为）
+    doc->setContent(content);
+    return doc;
 }
 
 void DocumentManager::openUrls(const QList<QUrl> &urls)

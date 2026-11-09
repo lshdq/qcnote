@@ -1,7 +1,12 @@
 #include "document/document.h"
 
+#include <QCryptographicHash>
+#include <QUuid>
+
 Document::Document(const QString &untitledName, QObject *parent)
     : QObject(parent)
+    // uid 一次性生成、全生命周期不可变（草稿缓存条目主键，DEC-002）
+    , m_uid(QUuid::createUuid().toString(QUuid::WithoutBraces))
     , m_untitledName(untitledName.isEmpty() ? QStringLiteral("未命名") : untitledName)
 {
     updateDisplayName();
@@ -14,6 +19,12 @@ QUrl Document::url() const
     return m_url;
 }
 
+QString Document::uid() const
+{
+    // 不可变标识：C++ 专用（非 Q_PROPERTY），无 setter、不发信号
+    return m_uid;
+}
+
 QString Document::content() const
 {
     return m_content;
@@ -23,6 +34,15 @@ bool Document::modified() const
 {
     // 计算属性：仅反映内容相对基线的差异（编码/换行/BOM 元数据不参与）
     return m_content != m_savedContent;
+}
+
+QString Document::savedContentHash() const
+{
+    // 基线指纹：按内存统一形态（LF、无 BOM）的 UTF-8 字节计算，
+    // 与磁盘加载归一化后的内容可直接比较（外部修改检测判据）
+    return QString::fromLatin1(QCryptographicHash::hash(m_savedContent.toUtf8(),
+                                                        QCryptographicHash::Sha256)
+                                   .toHex());
 }
 
 QString Document::displayName() const

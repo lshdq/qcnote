@@ -16,8 +16,9 @@ import QtQuick.Layouts
  * - 会话恢复：启动时先恢复文档集（含光标/活动标签）再应用窗口几何、
  *   最后显示窗口（几何先就位再显示，避免默认几何闪跳）；运行期窗口
  *   几何与最大化标志变化经 SessionManager 防抖写盘；
- * - 启动时序：会话恢复 → 单实例启动参数刷出（叠加打开）→ 首启右键
- *   菜单提示；单实例激活请求（再次启动/打开）仅前置窗口。
+ * - 启动时序：会话恢复 → 草稿缓存恢复（静默应用未保存修改，磁盘被
+ *   外部修改/文件缺失时弹汇总对话框决策）→ 单实例启动参数刷出（叠加
+ *   打开）→ 首启右键菜单提示；单实例激活请求（再次启动/打开）仅前置窗口。
  */
 ApplicationWindow {
     id: root
@@ -62,6 +63,7 @@ ApplicationWindow {
                || openFileDlg.visible || saveFileDialog.visible
                || titleBar.menuVisible || ctxMenuPromptDialog.visible
                || reloadConfirmDialog.visible || searchDialog.visible
+               || draftConflictDialog.visible
     }
 
     function firstModifiedDoc() {
@@ -346,6 +348,9 @@ ApplicationWindow {
         visible = true
         // 首次上报：保证首启也写入 [window] 节（此后窗口创建会话文件窗口项）
         syncWindowState()
+        // 草稿缓存恢复：会话恢复之后进行（静默应用未保存修改；
+        // 有外部修改/文件缺失冲突时由 conflictsFound 弹统一对话框）
+        DraftCacheManager.restoreDrafts()
         // 单实例：恢复会话后叠加打开启动参数中的文件
         SingleInstance.openPendingUrls()
         // 首启提示：恢复与参数打开完成后再弹，避免被覆盖
@@ -713,6 +718,55 @@ ApplicationWindow {
         onRejected: root.reloadConfirmDoc = null
     }
 
+    // 草稿缓存冲突汇总对话框（DEC-006：单一对话框，「恢复」全量应用、
+    // 「丢弃」全量丢弃，不做逐文件交互）：启动恢复时磁盘被外部修改/
+    // 文件缺失的条目经 conflictsFound 汇总到此
+    MovableDialog {
+        id: draftConflictDialog
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        width: 440
+        dialogTitle: "恢复未保存的修改"
+
+        property var draftConflicts: []
+
+        contentItem: Label {
+            text: {
+                const list = draftConflictDialog.draftConflicts
+                if (list.length === 0)
+                    return "" // 对话框只在有冲突时打开，空列表仅初始态
+                const lines =
+                        ["下列文件在上次退出时有未保存的修改，可以恢复为未保存的修改或丢弃："]
+                for (let i = 0; i < list.length; ++i)
+                    lines.push(list[i].name
+                               + (list[i].missing ? "（文件已被删除或移动）" : ""))
+                return lines.join("\n")
+            }
+            wrapMode: Text.Wrap
+            width: draftConflictDialog.availableWidth
+        }
+
+        footer: DialogButtonBox {
+            buttonLayout: DialogButtonBox.WinLayout
+            DialogButton {
+                text: "恢复"
+                primary: true
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+            }
+            DialogButton {
+                text: "丢弃"
+                DialogButtonBox.buttonRole: DialogButtonBox.DestructiveRole
+            }
+        }
+
+        onAccepted: DraftCacheManager.resolveConflicts(true)
+        onDiscarded: DraftCacheManager.resolveConflicts(false)
+        // Esc = 稍后处理：不动作，条目保留在缓存目录，下次启动再次提示
+        onRejected: {
+        }
+    }
+
     // 查找与替换对话框（DEC-002 顶部对齐模态）：参数与匹配状态由
     // EditorArea 会话级 SearchController 持有，本实例只做输入/展示/转发；
     // 打开与预填逻辑见 doFind/doReplace（openSearchDialog）
@@ -750,6 +804,16 @@ ApplicationWindow {
                            ? doc.url.toString()
                            : (doc ? doc.displayName : "")
             root.queueError("保存失败", target + "\n" + error)
+        }
+    }
+
+    // 草稿缓存恢复冲突：汇总到 draftConflictDialog（DEC-006 统一决策）
+    Connections {
+        target: DraftCacheManager
+
+        function onConflictsFound(conflicts) {
+            draftConflictDialog.draftConflicts = conflicts
+            draftConflictDialog.open()
         }
     }
 

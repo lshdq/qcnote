@@ -16,6 +16,9 @@
  * 仅反映内容差异，编码/换行/BOM 元数据变化不置脏；内容回到基线（如撤消到
  * 打开时的样子）即自动清脏。改用基线比较而非粘性标志位，是为修复“撤消回到
  * 原始内容后仍提示未保存”的缺陷（回写内容相对脏内容是“变化”，曾导致误置脏）。
+ * uid 为构造时生成的不可变 UUID，作草稿缓存条目主键（未命名文档无 URL、
+ * 另存为后 URL 变化，uid 全生命周期稳定，DEC-002）；savedContentHash 为基线
+ * 内容的 SHA-256 指纹，供草稿恢复时检测磁盘是否被外部修改。
  * Document 只能由 DocumentManager 创建
  * （QML_UNCREATABLE），QML 侧通过 DocumentManager 的属性访问。
  */
@@ -57,8 +60,15 @@ public:
     ~Document() override;
 
     QUrl url() const;
+    /// 构造时生成的不可变 UUID（无大括号形式）：草稿缓存条目主键（DEC-002），
+    /// 供 DraftCacheManager 以 <uid>.json 定位条目；无 setter、不发信号
+    QString uid() const;
     QString content() const;
     bool modified() const;
+    /// 基线（m_savedContent，上次加载/保存内容）的 SHA-256 指纹（hex）：供草稿
+    /// 恢复时检测磁盘是否被外部修改。内存内容一律 LF、无 BOM，指纹按 UTF-8
+    /// 字节计算，与磁盘加载归一化后的内容可直接比较
+    QString savedContentHash() const;
     QString displayName() const;
     QString filePath() const;
     LineEnding lineEnding() const;
@@ -110,6 +120,7 @@ private:
 
     void updateDisplayName();
 
+    QString m_uid; ///< 构造时生成的不可变 UUID（草稿缓存条目主键，DEC-002）
     QUrl m_url;
     QString m_content;
     /// 基线：上次加载/保存的内容（内存统一 LF、无 BOM 形态）。modified = m_content != m_savedContent

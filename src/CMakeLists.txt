@@ -9,6 +9,8 @@ qt_add_library(qcnote_core STATIC
     document/documentlistmodel.cpp
     document/documentmanager.h
     document/documentmanager.cpp
+    document/draftcachemanager.h
+    document/draftcachemanager.cpp
     document/sessionmanager.h
     document/sessionmanager.cpp
     format/documentformat.h
