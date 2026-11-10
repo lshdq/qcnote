@@ -194,6 +194,33 @@ target_link_libraries(e2e_draft_driver PRIVATE
 )
 qt_import_qml_plugins(e2e_draft_driver)
 
+# 标签页右键菜单 QML 集成测试目标（offscreen，架构同上：单 main）：
+# 按 QML 类型短名定位 DocumentTabs，经「关闭右边所有」等文本反查其根级
+# 右键菜单，程序化设置 contextIndex 后 open()，对菜单项发送真实鼠标事件
+# （区别于直发 triggered()——批量关闭入口 closeRangeWithConfirm 带 uiLocked
+# 防重入检查，其结果与菜单可见性时序相关），断言置灰条件、关闭右边/左边/
+# 其他（锚点激活）、逐个三选确认顺序（从左到右）与取消中止，附直发
+# triggered() 对照组（《测试用例-标签页右键菜单》TC-002/003/005/006/007/010
+# 的可自动化部分）。
+qt_add_executable(test_tabcontextmenu
+    tst_tabcontextmenu.cpp
+)
+
+target_link_libraries(test_tabcontextmenu PRIVATE
+    Qt6::Test
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(test_tabcontextmenu)
+
+add_test(NAME test_tabcontextmenu COMMAND test_tabcontextmenu)
+# GUI 红线：自动化验证一律 offscreen，无可见窗口
+set_tests_properties(test_tabcontextmenu PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 # 窗口边界线 QML 集成测试目标（offscreen，架构同上：单 main）：
 # 按 特征（QQuickRectangle + z:999 + border.width:1 + 透明填充）定位
 # Main.qml 的 1px 窗口边界描边层，断言铺满窗口、最大化隐藏/还原恢复、

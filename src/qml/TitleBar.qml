@@ -25,6 +25,9 @@ Rectangle {
     signal requestSave()
     signal requestSaveAs()
     signal requestCloseTab(var doc)
+    /// 批量关闭标签（docs 为目标文档数组，anchorDoc 为完成后需激活的
+    /// 锚点文档，即被右键的标签）
+    signal requestCloseRange(var docs, var anchorDoc)
     signal requestQuit()
     /// 按指定编码重新加载（参数为 Document.Encoding 枚举值）
     signal requestReloadWithEncoding(int encoding)
@@ -64,8 +67,10 @@ Rectangle {
 
     readonly property int barHeight: 40
 
-    /// 主菜单是否打开（供 Main 屏蔽快捷键）
-    readonly property alias menuVisible: mainMenu.visible
+    /// 主菜单或标签右键菜单是否打开（供 Main 屏蔽快捷键）；
+    /// documentTabs 的 id 引用与声明顺序无关，绑定可用
+    readonly property bool menuVisible: mainMenu.visible
+                                       || documentTabs.contextMenuVisible
 
     color: AppTheme.titleBarBackground
     implicitHeight: barHeight
@@ -282,6 +287,7 @@ Rectangle {
         height: 32
 
         onCloseRequested: (doc) => root.requestCloseTab(doc)
+        onCloseRangeRequested: (docs, anchor) => root.requestCloseRange(docs, anchor)
     }
 
     Row {

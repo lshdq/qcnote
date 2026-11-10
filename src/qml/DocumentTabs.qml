@@ -10,13 +10,27 @@ import QtQuick.Controls
  *   等比收缩，收缩饱和后回退最小宽度 + 既有横向滚动；
  * - Tab 含：未保存 ● 标记（非颜色线索）、文档名（超长省略 + tooltip 完整名）、关闭按钮；
  * - 溢出时横向滚动（水平 ListView + 滚动条），窗口控制按钮在本组件之外、永不被挤压；
- * - 键盘：左右方向键在 Tab 间移动焦点（循环），Enter/Space 激活对应文档；
+ * - 键盘：左右方向键在 Tab 间移动焦点（循环），Enter/Space 激活对应文档，
+ *   Menu 键 / Shift+F10 在焦点标签下方弹出右键菜单；
+ * - 右键菜单：根级单实例 Menu（关闭当前文件 / 关闭右边所有 / 关闭左边所有 /
+ *   关闭其他文件），右键不激活标签；批量项经 closeRangeRequested 上抛，
+ *   由 Main 逐个三选确认、完成后激活被右键标签（锚点）；
  * - accessibleName 含未保存状态。
  */
 Item {
     id: root
 
     signal closeRequested(var doc)
+    /// 批量关闭请求（docs 为目标文档快照数组，anchorDoc 为批量完成后
+    /// 需激活的锚点文档，即被右键的标签）
+    signal closeRangeRequested(var docs, var anchorDoc)
+
+    /// 被右键（或键盘 Menu 键 / Shift+F10 弹出）的标签索引；-1 = 无
+    property int contextIndex: -1
+
+    /// 右键菜单是否打开（经 TitleBar.menuVisible 纳入 uiLocked，打开期间
+    /// 屏蔽窗口级快捷键）
+    readonly property alias contextMenuVisible: tabContextMenu.visible
 
     readonly property var documentsModel: DocumentManager.documentsModel
     // 双依赖重算：activeDocument 变化（NOTIFY activeDocumentChanged）或行增删
@@ -186,11 +200,54 @@ Item {
         tabList.positionViewAtIndex(index, ListView.Contain)
     }
 
+    // 收集索引区间 [from, to) 的文档快照（触发时现取，不缓存）；skip 为
+    // 需排除的索引（「关闭其他文件」排除被右键标签自身）
+    function collectDocs(from, to, skip) {
+        const docs = []
+        for (let i = Math.max(0, from); i < to && i < root.documentsModel.count; ++i) {
+            if (skip === undefined || i !== skip)
+                docs.push(root.documentsModel.at(i))
+        }
+        return docs
+    }
+
+    // 键盘弹出右键菜单（Menu 键 / Shift+F10）：作用于焦点标签。直接按
+    // focusIndex 取 delegate 实例（不依赖 tabList.currentIndex 与 focusIndex
+    // 平时的同步维护）；取不到（如滚动区外未实例化）时回退弹在组件左上
+    function openContextMenuAtFocus() {
+        if (focusIndex < 0 || focusIndex >= root.documentsModel.count)
+            return
+        contextIndex = focusIndex
+        const item = tabList.itemAtIndex(focusIndex)
+        if (item) {
+            // 标签左下角弹出（左缘对齐标签、菜单顶边贴标签底边）
+            const pos = item.mapToItem(root, 0, item.height)
+            tabContextMenu.popup(root, pos.x, pos.y)
+        } else {
+            tabContextMenu.popup(root, 0, 0)
+        }
+    }
+
     Keys.onLeftPressed: moveFocus(-1)
     Keys.onRightPressed: moveFocus(1)
     Keys.onReturnPressed: activateIndex(focusIndex)
     Keys.onEnterPressed: activateIndex(focusIndex)
     Keys.onSpacePressed: activateIndex(focusIndex)
+
+    // Menu 键弹出右键菜单（平台已把 Shift+F10 映射为 Menu 键时也走这里）
+    Keys.onMenuPressed: openContextMenuAtFocus()
+
+    // Shift+F10 兜底：未被平台映射为 Menu 键时在此处理。两条路径互斥——
+    // 已映射时事件以 Key_Menu 到达（被上方 onMenuPressed 接受，不会进入
+    // 本处理器）；未映射时以 Key_F10 到达，在此弹出并拦截；其余按键
+    // 显式放行，不影响既有传播
+    Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier)) {
+            openContextMenuAtFocus()
+            return
+        }
+        event.accepted = false
+    }
 
     // 共享文字测量：labelMetrics 与 tabLabel 同字体（仅 pixelSize、默认字体族）；
     // markMetrics 实测 ● 标记宽（同 unsavedMark 字号）
@@ -268,7 +325,16 @@ Item {
                 id: tabMouseArea
                 anchors.fill: parent
                 hoverEnabled: true
-                onClicked: root.activateIndex(tab.index)
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                // 右键弹上下文菜单（不激活该标签）；左键维持既有激活行为
+                onClicked: (mouse) => {
+                    if (mouse.button === Qt.RightButton) {
+                        root.contextIndex = tab.index
+                        tabContextMenu.popup(tabMouseArea, mouse.x, mouse.y)
+                    } else {
+                        root.activateIndex(tab.index)
+                    }
+                }
             }
 
             // 未保存标记：● 字形本身即线索（另有标题 * 线索）
@@ -350,6 +416,71 @@ Item {
             ToolTip.delay: 600
             ToolTip.text: (tab.doc ? tab.doc.displayName : "")
                           + (tab.doc && tab.doc.modified ? "（未保存）" : "")
+        }
+    }
+
+    // 标签页右键菜单：根级单实例（避免每 delegate 各建一份开销），随
+    // Material 主题样式（同 TitleBar.mainMenu），不写死颜色。
+    // - 「关闭当前文件」复用既有 closeRequested 单文档关闭流程；
+    // - 其余三项触发时现取目标文档快照数组，经 closeRangeRequested 上抛，
+    //   由 Main 走批量关闭队列（逐个三选确认，完成后激活锚点）；
+    // - 无可关闭对象时置灰（enabled），不隐藏
+    // - 时机注意：Qt 6.11.2 中 MenuItem 的 QML onTriggered 先于框架 dismiss()
+    //   执行，触发瞬间菜单仍 visible（Main.uiLocked() 会误判为菜单占用而
+    //   拦截批量关闭），故各 onTriggered 首行须显式 close()。
+    //   又因 Material 样式默认给 Menu 配 220ms 退出过渡（shrink_fade_out），
+    //   带过渡时 close() 的 visible=false 要等过渡结束（约 180ms 实测）才
+    //   生效——所以同时覆盖 exit 为空 Transition，使 close() 同步置
+    //   visible=false；代价仅为本菜单无淡出动画（关闭瞬时完成）。
+    Menu {
+        id: tabContextMenu
+
+        // 覆盖 Material 退出过渡，保证 close() 同步生效（见上方注释）
+        exit: Transition { }
+
+        MenuItem {
+            text: "关闭当前文件"
+            onTriggered: {
+                tabContextMenu.close()
+                // 恒可用；触发时防御索引失效（弹出期间模型被外部变动）
+                if (root.contextIndex < 0
+                        || root.contextIndex >= root.documentsModel.count)
+                    return
+                root.closeRequested(root.documentsModel.at(root.contextIndex))
+            }
+        }
+        MenuItem {
+            text: "关闭右边所有"
+            enabled: root.contextIndex >= 0
+                     && root.contextIndex < root.documentsModel.count - 1
+            onTriggered: {
+                tabContextMenu.close()
+                root.closeRangeRequested(
+                            root.collectDocs(root.contextIndex + 1,
+                                             root.documentsModel.count),
+                            root.documentsModel.at(root.contextIndex))
+            }
+        }
+        MenuItem {
+            text: "关闭左边所有"
+            enabled: root.contextIndex > 0
+            onTriggered: {
+                tabContextMenu.close()
+                root.closeRangeRequested(
+                            root.collectDocs(0, root.contextIndex),
+                            root.documentsModel.at(root.contextIndex))
+            }
+        }
+        MenuItem {
+            text: "关闭其他文件"
+            enabled: root.documentsModel.count > 1
+            onTriggered: {
+                tabContextMenu.close()
+                root.closeRangeRequested(
+                            root.collectDocs(0, root.documentsModel.count,
+                                             root.contextIndex),
+                            root.documentsModel.at(root.contextIndex))
+            }
         }
     }
 }

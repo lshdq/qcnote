@@ -9,7 +9,8 @@ import QtQuick.Layouts
  *
  * - 快捷键统一为窗口级 Shortcut；菜单仅展示快捷键文本；
  * - 标签页关闭三选确认：保存 / 不保存 / 取消，取消中止（「不保存」
- *   放弃并清理该文档草稿）；
+ *   放弃并清理该文档草稿）；右键菜单批量关闭（右边/左边/其他）逐个走
+ *   同一确认流程，取消中止剩余，完成后激活被右键标签；
  * - 退出热退出免提示：不弹确认直接退出，未保存修改经草稿缓存
  *   （DraftCacheManager）保留，下次启动恢复为未保存状态；
  * - 打开/保存失败统一错误对话框（排队展示），内容不丢失；
@@ -53,6 +54,11 @@ ApplicationWindow {
     property var closeFlowDoc: null
     /// 正在另存为的文档
     property var saveAsTarget: null
+    /// 批量关闭待处理队列（右键菜单「关闭右边/左边/其他」；从左到右
+    /// 逐个处理，见 processCloseQueue）
+    property var closeQueue: []
+    /// 批量关闭完成后需激活的锚点文档（被右键的标签；null = 非批量流程）
+    property var closeAnchorDoc: null
     /// 待展示错误队列
     property var errorQueue: []
     /// 按编码重载确认流程的目标文档与编码（确认框展示期间有效）
@@ -224,8 +230,8 @@ ApplicationWindow {
             searchDialog.doFindPrev()
     }
 
-    // ---- 关闭流程 ----（仅标签页关闭三选确认；退出已改为热退出免提示，
-    // 见 onClosing）
+    // ---- 关闭流程 ----（单文档三选确认 + 右键菜单批量关闭队列；
+    // 退出已改为热退出免提示，见 onClosing）
     function closeDocumentWithConfirm(doc) {
         if (doc.modified) {
             closeFlowDoc = doc
@@ -235,14 +241,66 @@ ApplicationWindow {
         }
     }
 
-    function finishCloseFlow(doc) {
-        resetCloseFlow()
-        DocumentManager.closeDocument(doc)
+    // 批量关闭入口（右键菜单「关闭右边/左边/其他文件」）：docs 从左到右
+    // 逐个走单文档关闭语义（未保存弹三选框挂起，见 processCloseQueue），
+    // 全部处理完后激活锚点文档 anchor（被右键的标签）
+    function closeRangeWithConfirm(docs, anchor) {
+        if (uiLocked())
+            return
+        closeQueue = docs.slice()
+        closeAnchorDoc = anchor
+        processCloseQueue()
     }
 
+    // 批量关闭队列状态机：逐个取队首——
+    // - 文档已不在列表（处理期间被外部移除，防御）→ 跳过；
+    // - 未保存 → 挂起等三选框（「保存/不保存」经 finishCloseFlow 续推，
+    //   「取消」含取消另存为经 resetCloseFlow 中止剩余）；
+    // - 无修改 → 直接关闭继续下一个；
+    // 队列空 → finishCloseBatch 收尾（锚点仍打开则激活）。
+    // 单文档路径（Ctrl+W / 关闭按钮）队列为空、锚点为 null，经此无副作用
+    function processCloseQueue() {
+        while (closeQueue.length > 0) {
+            const doc = closeQueue[0]
+            closeQueue = closeQueue.slice(1)
+            if (DocumentManager.documentsModel.indexOf(doc) < 0)
+                continue
+            if (doc.modified) {
+                closeFlowDoc = doc
+                unsavedDialog.open()
+                return
+            }
+            DocumentManager.closeDocument(doc)
+        }
+        finishCloseBatch()
+    }
+
+    // 批量收尾：锚点文档仍打开则激活（确定性回到被右键标签；被外部移除
+    // 时由 closeDocument 的既有邻居激活规则兜底）
+    function finishCloseBatch() {
+        if (closeAnchorDoc
+                && DocumentManager.documentsModel.indexOf(closeAnchorDoc) >= 0)
+            DocumentManager.activeDocument = closeAnchorDoc
+        closeAnchorDoc = null
+    }
+
+    // 单个文档关闭完成（三选框「保存/不保存」、另存为成功后）：清流程
+    // 状态（不清批量队列）→ 关闭 → 续推队列；队列空时经 finishCloseBatch
+    // 自然结束（锚点为 null，无副作用）
+    function finishCloseFlow(doc) {
+        closeFlowDoc = null
+        saveAsTarget = null
+        DocumentManager.closeDocument(doc)
+        processCloseQueue()
+    }
+
+    // 中止关闭流程（三选框「取消」/ 取消另存为 / 保存失败）：取消 =
+    // 中止剩余全部批量关闭（已关闭的不恢复）
     function resetCloseFlow() {
         closeFlowDoc = null
         saveAsTarget = null
+        closeQueue = []
+        closeAnchorDoc = null
     }
 
     function prefillSaveDialog(doc) {
@@ -369,6 +427,7 @@ ApplicationWindow {
             onRequestSave: root.doSave()
             onRequestSaveAs: root.doSaveAs()
             onRequestCloseTab: (doc) => root.closeDocumentWithConfirm(doc)
+            onRequestCloseRange: (docs, anchor) => root.closeRangeWithConfirm(docs, anchor)
             onRequestQuit: root.doQuit()
             onRequestReloadWithEncoding: (encoding) => root.doReloadWithEncoding(encoding)
             onRequestSaveWithEncoding: (encoding) => root.doSaveWithEncoding(encoding)
@@ -503,6 +562,10 @@ ApplicationWindow {
 
     MovableDialog {
         id: unsavedDialog
+        // 覆盖 Material Dialog 退出过渡（约 150ms 淡出）：使 close()/reject()
+        // 同步置 visible=false——批量关闭队列在「不保存」后立刻续推或收尾，
+        // 状态判定不与动画时序耦合
+        exit: Transition { }
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape
@@ -553,6 +616,9 @@ ApplicationWindow {
             }
         }
         onDiscarded: {
+            // 直发 discarded() 信号（测试/程序化路径）不经过 footer 按钮的
+            // 自动关闭接线，须显式关闭；真实点击路径下与框架关闭幂等无害
+            unsavedDialog.close()
             const doc = root.closeFlowDoc
             if (doc)
                 root.finishCloseFlow(doc)
