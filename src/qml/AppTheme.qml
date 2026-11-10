@@ -54,6 +54,11 @@ QtObject {
     readonly property color onAccentForeground: "#ffffff"
     /// 边框 / 分隔线
     readonly property color border: dark ? "#3a4150" : "#c3cad6"
+    /// 窗口外轮廓（活动窗口）：比内部分隔线 border 深一档（浅）/ 亮一档（深），
+    /// 保证窗口贴浅色/深色桌面时边界可辨
+    readonly property color windowBorder: dark ? "#4a5364" : "#a8b3c4"
+    /// 窗口外轮廓（非活动窗口）：变淡（Windows 桌面惯例：失焦窗口边界弱化）
+    readonly property color windowBorderInactive: dark ? "#333947" : "#c9cfda"
     /// 未保存 ● 标记（形状本身即线索，颜色仅辅助）
     readonly property color unsavedMark: dark ? "#ffb454" : "#b37700"
 

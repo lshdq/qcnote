@@ -6,12 +6,21 @@
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
 #include <QStringList>
+#include <QtGlobal>
 #include <QUrl>
 
 #include "platform/singleinstance.h"
 
 int main(int argc, char *argv[])
 {
+    // Windows D3D11 默认 flip-model swapchain 在窗口 resize 间隙会短暂显示
+    // 黑帧（拖边缩放时边缘出现黑色条状区域，flip 链固有行为，Chromium 等
+    // 同样存在）。切回 legacy blitting swapchain（DISCARD+STRETCH）消除黑块，
+    // 代价仅理论性能略降、HDR 不精确，桌面文本应用不可感知。用户显式设置
+    // 时不覆盖，保留外部调试/对比能力。必须在任何 Qt 对象创建前设置。
+    if (qEnvironmentVariableIsEmpty("QT_D3D_NO_FLIP"))
+        qputenv("QT_D3D_NO_FLIP", "1");
+
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("qcnote"));
     QGuiApplication::setApplicationVersion(QStringLiteral("0.1.0"));

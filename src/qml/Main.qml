@@ -16,6 +16,8 @@ import QtQuick.Layouts
  * - 查找替换（Ctrl+F/Ctrl+H）：模态对话框（顶部对齐）+ 全部匹配高亮 +
  *   F3/Shift+F3 关闭态跳转，与多光标互斥，见 SearchDialog/SearchController；
  * - 边缘 + 四角隐形命中区触发系统缩放，保留 Win+方向贴靠等原生行为；
+ * - 窗口边界 1px 描边（Windowed 显示，最大化隐藏；活动清晰/失焦变淡），
+ *   无输入处理，不影响缩放命中区与拖拽；
  * - 会话恢复：启动时先恢复文档集（含光标/活动标签）再应用窗口几何、
  *   最后显示窗口（几何先就位再显示，避免默认几何闪跳）；运行期窗口
  *   几何与最大化标志变化经 SessionManager 防抖写盘；
@@ -779,6 +781,20 @@ ApplicationWindow {
         errorQueue.push({ title: title, message: message })
         if (!errorDialog.visible)
             errorDialog.showNextError()
+    }
+
+    // ---- 窗口边界线 ----
+    // 1px 描边让无边框窗口与桌面背景可辨（浅色内容区贴白色桌面时尤甚）。
+    // 无输入处理，不影响边缘缩放命中区（z:1000）与标题栏拖拽；
+    // 仅普通窗口状态显示（最大化贴满工作区，Windows 惯例隐藏）；失焦变淡。
+    Rectangle {
+        anchors.fill: parent
+        color: "transparent"
+        border.width: 1
+        border.color: root.active ? AppTheme.windowBorder
+                                  : AppTheme.windowBorderInactive
+        z: 999
+        visible: root.visibility === Window.Windowed
     }
 
     // ---- 边缘缩放命中区（四边 + 四角） ----

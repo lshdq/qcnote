@@ -193,3 +193,28 @@ target_link_libraries(e2e_draft_driver PRIVATE
     qcnote_coreplugin
 )
 qt_import_qml_plugins(e2e_draft_driver)
+
+# 窗口边界线 QML 集成测试目标（offscreen，架构同上：单 main）：
+# 按 特征（QQuickRectangle + z:999 + border.width:1 + 透明填充）定位
+# Main.qml 的 1px 窗口边界描边层，断言铺满窗口、最大化隐藏/还原恢复、
+# 颜色随 active 状态取 windowBorder/windowBorderInactive、无输入接收且
+# z 低于全部 8 个边缘缩放命中区（《测试用例-窗口边界线》TC-003/004/
+# 005/006 的可自动化部分；视觉观感与交互手感需肉眼验收）。
+qt_add_executable(test_windowborder
+    tst_windowborder.cpp
+)
+
+target_link_libraries(test_windowborder PRIVATE
+    Qt6::Test
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(test_windowborder)
+
+add_test(NAME test_windowborder COMMAND test_windowborder)
+# GUI 红线：自动化验证一律 offscreen，无可见窗口
+set_tests_properties(test_windowborder PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
