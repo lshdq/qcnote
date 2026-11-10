@@ -801,6 +801,59 @@ private slots:
     // 终点随拖拽更新到 C；守卫期间选区持续由 PointHandler 驱动扩展
     void tcD012_shiftDrag_extendSelection();
 
+    // ---- 拖拽选区横向自动滚动抑制（需求：拖拽选区横向自动滚动抑制） ----
+    // 对应《测试用例-拖拽选区横向自动滚动抑制》TC-001 至 TC-010 的可
+    // 自动化部分：根因链 select() → cursorRectangleChanged →
+    // QQuickTextAreaPrivate::ensureCursorVisible → setContentX 为纯同步
+    // Qt Quick 逻辑（不依赖平台输入交付语义），offscreen 合成事件可复现。
+    // 核心断言对象：ScrollView 内部 Flickable（editorScroll.contentItem）
+    // 的 contentX（钳制跳滚的直接可观测面）与 delegate（holder）的
+    // hDragScrollGuard / dragContentXBase / dragMouseLocalX/Y 状态。
+
+    // TC-001（P0，核心缺陷场景）：NoWrap 超长单行、视口高于内容，视口
+    // 中部按下向下拖至末行以下空白 → 全程 contentX 恒 0（钳制跳滚被
+    // 回滚）、选区扩展到文档末尾、释放后保持
+    void tcE001_belowLastLine_drag_noHScroll();
+
+    // TC-002（P0）：按下即位于末行以下空白 → 光标钳到文档末尾但
+    // contentX 不跳（守卫先于光标定位赋值置位），释放后无选区
+    void tcE002_pressBelowLastLine_noJump();
+
+    // TC-003（P1）：短行行尾右侧空白拖拽不左跳（对称情形）——
+    // contentX > 0 滚动状态下拖至短行行尾右侧，钳制到行尾引发的
+    // 向左滚动被回滚，contentX 保持
+    void tcE003_shortLineTail_noLeftJump();
+
+    // TC-004（P0，防过度抑制）：右缘前瞻爬行保持——拖到距右缘约
+    // 1 字符内，contentX 照旧前进（合法滚动不被回滚，基准随之更新）
+    void tcE004_rightEdgeCreep_kept();
+
+    // TC-005（P1）：释放重放窗口——拖至末行以下释放、等待 ≥2 帧，
+    // contentX 恒定（重放的钳制跳滚被抑制窗口覆盖）；抑制复位后
+    // 合成滚轮横向滚动恢复正常
+    void tcE005_releaseReplay_wheelRecovered();
+
+    // DEC-002 混合路径（P0）：先右缘爬行（contentX 前进、基准更新）、
+    // 再拖到末行以下 → 仅回滚钳制跳变、保留爬行进度（最终 contentX
+    // == 爬行阶段认可值，非按下时快照）
+    void tcE006_creepThenClamp_basePreserved();
+
+    // TC-007（P0）：键盘移动光标（End/Home/方向键）滚动跟随回归——
+    // 非拖拽路径 ensureCursorVisible/scrollCursorIntoView 不受抑制影响
+    void tcE007_keyboardScrollFollow();
+
+    // TC-006（P1）：纵向行为完全不变——近底缘向下拖拽选区时
+    // contentY 照旧滚动跟随（本需求仅触碰横向）
+    void tcE008_verticalScrollUnchanged();
+
+    // TC-009（P2）：wrap 模式行为不变——开启自动换行后拖拽选区
+    //（含中部向下、近右缘），无横向滚动、选区正常、抑制逻辑无操作
+    void tcE009_wrapMode_noOp();
+
+    // TC-010（P1）：查找跳转与会话恢复的滚动跟随回归——findNext
+    // 跳到视口外匹配、doc 光标下行应用，contentX 均正常前进
+    void tcE010_searchJump_sessionRestore_scroll();
+
 private:
     // tc008b 对拍断言：selectionSegments 与朴素参考实现逐段一致
     //（段数/x/y/w、y 严格递增、宽高为正、右缘不超内容区右缘 + 1 字符宽）
@@ -3341,6 +3394,851 @@ void TestEditorIntegration::tcD012_shiftDrag_extendSelection()
     QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
     QCOMPARE(holder->property("nativeDragAnchor").toInt(), -1);
     QCOMPARE(holder->property("nativeDragLastPos").toInt(), -1);
+}
+
+// ==================== 拖拽选区横向自动滚动抑制（TC-001 至 TC-010 可自动化部分） ====================
+//
+// 需求：拖拽选区横向自动滚动抑制。根因在 Qt 框架私有连接
+// cursorRectangleChanged → QQuickTextAreaPrivate::ensureCursorVisible
+//（QML 层不可解绑）：拖拽选区期间光标被 positionAt/hitTest（FuzzyHit）
+// 钳到行尾/文档末尾时，NoWrap 长行末尾远在视口右侧，ensureCursorVisible
+// 一次大幅右滚 contentX（鼠标却在窗口内）。项目侧以"钳制检测 + 选择性
+// 回滚"规避（EditorArea.qml hDragScrollGuard 抑制窗口 +
+// contentXFromClampScroll 检测 + onContentXChanged 回滚）。
+//
+// 该链路为纯同步 Qt Quick 逻辑（不依赖平台输入交付语义），offscreen
+// 合成事件可复现；红-绿对照（git stash 暂存修复后本组核心用例失败、
+// 恢复后通过）见本轮测试报告。
+//
+// 公共文本：单行 200×"word "（1000 字符，NoWrap 下宽约 8000px >> 520px
+// 视口，横向可滚动；内容高约 18px << 400px 视口，末行以下存在窗口内
+// 空白区）——保证钳制跳滚的两个前提（横向可滚 + 末行以下空白可达）。
+// 坐标注意：press 点必须在窗口内（x < 520），故按下位置取视口内位置
+//（pointOf(30) 等）；拖拽到末行以下用绝对窗口 y（如 100），越过行底
+// 即触发 hitTest 钳制到文档末尾。
+
+// TC-001（P0，核心缺陷场景）：视口中部超长行上按下，向下拖至末行
+// 以下空白区并继续小幅移动。断言：
+// - 全程 contentX 恒 0（钳制引发的右滚被同步回滚）；
+// - 选区自按下点扩展到文档末尾（selectionEnd == length，选区语义不变）；
+// - 释放后等待 ≥2 帧（覆盖 Qt.callLater 重放与抑制窗口复位）：
+//   选区保留、contentX 仍 0、守卫复位、鼠标位置复位；
+// - 拖拽期间守卫状态：hDragScrollGuard == true、dragMouseLocalX/Y 有效。
+// 无修复预期（红）：select → ensureCursorVisible 把 contentX 一次拉到
+// 约 7500px，contentX 恒 0 断言失败。
+void TestEditorIntegration::tcE001_belowLastLine_drag_noHScroll()
+{
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    Bench b;
+    QVERIFY2(b.open(words), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0); // NoWrap（与用户配置解耦）
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    QQuickItem *scroll = ancestorScrollView(b.editor);
+    QVERIFY(scroll != nullptr);
+
+    // 前置：横向可滚动（钳制跳滚的前提）、视口高于内容（末行以下有
+    // 窗口内空白）、初始位于最左
+    QVERIFY2(flick->property("contentWidth").toDouble() > scroll->width(),
+             "content must overflow viewport horizontally");
+    QVERIFY2(flick->property("contentHeight").toDouble() < flick->property("height").toDouble(),
+             "viewport must be taller than content (blank below last line)");
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    const int len = words.size();
+    // 前置校验：末行以下空白（y=100）的 hitTest 钳到文档末尾——
+    // 本用例缺陷链路的存在性证明（布局异常时先行失败并诊断）
+    QCOMPARE(b.positionAt(260.0, 100.0), len);
+
+    const int pressPos = 30; // 视口中部（局部 x 约 240，窗口内）
+    const QPoint p0 = b.pointOf(pressPos);
+    QVERIFY2(p0.x() < 520 && p0.y() < 100,
+             qPrintable(QStringLiteral("press point must be inside viewport, "
+                                       "got (%1,%2)").arg(p0.x()).arg(p0.y())));
+
+    // 按下：守卫置位（先于光标定位）、鼠标位置记录、contentX 不跳
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), true);
+    QVERIFY2(holder->property("dragMouseLocalX").toDouble() >= 0.0,
+             "dragMouseLocalX must be valid after press");
+    QVERIFY2(holder->property("dragMouseLocalY").toDouble() >= 0.0,
+             "dragMouseLocalY must be valid after press");
+    QCOMPARE(holder->property("dragContentXBase").toDouble(), 0.0);
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    // 向下拖 3 步进入末行以下空白区：每步 contentX 恒 0、选区已到文档末尾
+    for (int i = 1; i <= 3; ++i) {
+        const QPoint p(240, 40 + i * 20); // y: 60/80/100，越过行底（约 20px）
+        b.sendMouse(QEvent::MouseMove, p, Qt::NoButton, Qt::LeftButton,
+                    Qt::NoModifier);
+        b.settleDrag();
+        QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+                 qPrintable(QStringLiteral("step %1: contentX %2 jumped "
+                                           "(clamp scroll not rolled back)")
+                                .arg(i)
+                                .arg(flick->property("contentX").toDouble())));
+        QVERIFY2(b.selectionStart() == pressPos && b.selectionEnd() == len,
+                 qPrintable(QStringLiteral("step %1: selection [%2,%3] != "
+                                           "[%4,%5] (must reach doc end)")
+                                .arg(i)
+                                .arg(b.selectionStart()).arg(b.selectionEnd())
+                                .arg(pressPos).arg(len)));
+        QCOMPARE(holder->property("hDragScrollGuard").toBool(), true);
+    }
+
+    // 末行以下继续小幅移动：抑制持续（无释放路径）
+    b.sendMouse(QEvent::MouseMove, QPoint(250, 100), Qt::NoButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+             qPrintable(QStringLiteral("extra move: contentX %1 jumped")
+                            .arg(flick->property("contentX").toDouble())));
+    QVERIFY2(b.selectionEnd() == len, "selection must still reach doc end");
+
+    // 释放：等待 ≥2 帧（覆盖重放 select 与守卫复位的两级 callLater）
+    b.sendMouse(QEvent::MouseButtonRelease, QPoint(250, 100), Qt::LeftButton,
+                Qt::NoButton, Qt::NoModifier);
+    QTest::qWait(40);
+    QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+             qPrintable(QStringLiteral("after release: contentX %1 jumped "
+                                       "(replay clamp scroll not covered)")
+                            .arg(flick->property("contentX").toDouble())));
+    // 选区保留：锚 = 按下点、终点 = 文档末尾
+    QVERIFY2(b.selectionStart() == pressPos && b.selectionEnd() == len,
+             qPrintable(QStringLiteral("after release: selection [%1,%2] != "
+                                       "[%3,%4]")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())
+                            .arg(pressPos).arg(len)));
+    // 守卫复位、鼠标位置复位（延迟一拍后）
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+    QCOMPARE(holder->property("dragMouseLocalX").toDouble(), -1.0);
+    QCOMPARE(holder->property("dragMouseLocalY").toDouble(), -1.0);
+}
+
+// TC-002（P0）：按下即位于末行以下空白（无拖拽）。onPressed 中守卫
+// 先于光标定位赋值置位——positionAt 把光标钳到文档末尾，随之而来的
+// ensureCursorVisible 右滚已被抑制窗口覆盖并回滚。断言：
+// - press 后光标位于文档末尾（钳制语义）、contentX 保持 0；
+// - 小幅移动不产生选区（anchor == pos == 末尾，空选区）；
+// - 释放后无选区、守卫复位、contentX 仍 0。
+// 无修复预期（红）：press 同步把 contentX 拉到约 7500px。
+void TestEditorIntegration::tcE002_pressBelowLastLine_noJump()
+{
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    Bench b;
+    QVERIFY2(b.open(words), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    const int len = words.size();
+    QCOMPARE(b.positionAt(260.0, 100.0), len); // 按下点即钳到文档末尾
+
+    // 直接在末行以下空白按下（视口中部 x=260、行底以下 y=100）
+    b.sendMouse(QEvent::MouseButtonPress, QPoint(260, 100), Qt::LeftButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    // 光标被钳到文档末尾（TC-002 预期语义），但 contentX 不跳
+    QCOMPARE(b.cursorPosition(), len);
+    QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+             qPrintable(QStringLiteral("press below last line: contentX %1 "
+                                       "jumped").arg(flick->property("contentX").toDouble())));
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), true);
+    QCOMPARE(holder->property("dragContentXBase").toDouble(), 0.0);
+
+    // 末行以下小幅拖动：仍钳末尾，空选区（anchor == pos），contentX 恒 0
+    b.sendMouse(QEvent::MouseMove, QPoint(280, 100), Qt::NoButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(b.selectionStart(), b.selectionEnd());
+    QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+             "move below last line must not scroll horizontally");
+
+    // 释放：无选区、守卫复位、contentX 仍 0
+    b.sendMouse(QEvent::MouseButtonRelease, QPoint(280, 100), Qt::LeftButton,
+                Qt::NoButton, Qt::NoModifier);
+    QTest::qWait(40);
+    QCOMPARE(b.selectionStart(), b.selectionEnd());
+    QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+             "after release: contentX must stay 0");
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+}
+
+// TC-003（P1）：短行行尾右侧空白拖拽不左跳（对称情形）。
+// 文档两行：行 1 超长（1000 字符）、行 2 短（"ab"）。先把光标移到行 1
+// 视口外位置使 contentX > 0（短行行尾随之处于视口左侧之外），然后自
+// 行 1 视口内按下拖至行 2 行尾右侧空白：终点被钳到短行行尾（文档末），
+// 光标矩形远在视口左侧之外 → ensureCursorVisible 向左滚动 → 须被回滚。
+// 断言：全程 contentX 保持前置滚动值（不向左跳）、选区终点钳到文档末。
+void TestEditorIntegration::tcE003_shortLineTail_noLeftJump()
+{
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    const QString text = words + QStringLiteral("\nab"); // 行 2 短行
+    Bench b;
+    QVERIFY2(b.open(text), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+
+    // 前置滚动：光标移到行 1 远端（位置 600，局部 x 约 4800 >> 视口），
+    // 非拖拽路径 ensureCursorVisible 正常左对齐滚动 → contentX > 0
+    b.setCursorPosition(600);
+    b.settle();
+    const qreal baseX = flick->property("contentX").toDouble();
+    QVERIFY2(baseX > 1000.0,
+             qPrintable(QStringLiteral("precondition: contentX %1 must be "
+                                       "> 1000 (scrolled right)").arg(baseX)));
+    const int len = text.size();
+
+    // 行 1 视口内位置按下（窗口 x=300：局部 x 约 4800，行 1 命中真实位置）
+    const qreal row1Y = b.rowCenterY(0);
+    const int pressPos = b.positionAt(300.0 + baseX, row1Y);
+    QVERIFY2(pressPos > 0 && pressPos < len - 3,
+             qPrintable(QStringLiteral("press hit %1 must be on line 1").arg(pressPos)));
+
+    const qreal row2Y = b.rowCenterY(len - 1); // 行 2 中心（文档末字符）
+    b.sendMouse(QEvent::MouseButtonPress, QPoint(300, qRound(row1Y)),
+                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), true);
+    QVERIFY2(qAbs(flick->property("contentX").toDouble() - baseX) <= 0.5,
+             "press on line 1 must not change contentX");
+
+    // 拖到行 2 行尾右侧空白（窗口 x=300 >> 行 2 行尾局部 x 约 16+baseX??
+    // 行 2 行尾局部 x 约 16，鼠标局部 x = 300 + contentX ≈ baseX+300，
+    // 分离超 2 字符容差 → 判定钳制）。分 3 步下移。
+    for (int i = 1; i <= 3; ++i) {
+        const qreal y = row1Y + (row2Y - row1Y) * i / 3.0;
+        b.sendMouse(QEvent::MouseMove, QPoint(300, qRound(y)), Qt::NoButton,
+                    Qt::LeftButton, Qt::NoModifier);
+        b.settleDrag();
+        QVERIFY2(qAbs(flick->property("contentX").toDouble() - baseX) <= 0.5,
+                 qPrintable(QStringLiteral("step %1: contentX %2 left-jumped "
+                                           "(expected %3)")
+                                .arg(i)
+                                .arg(flick->property("contentX").toDouble())
+                                .arg(baseX)));
+    }
+
+    // 终点钳到短行行尾（= 文档末尾），选区跨行 1 尾至文档末
+    QCOMPARE(b.selectionEnd(), len);
+    QVERIFY2(b.selectionStart() == pressPos,
+             qPrintable(QStringLiteral("anchor %1 != press hit %2")
+                            .arg(b.selectionStart()).arg(pressPos)));
+
+    // 释放 + 等待重放：contentX 仍保持（重放的左滚同样被抑制）
+    b.sendMouse(QEvent::MouseButtonRelease, QPoint(300, qRound(row2Y)),
+                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QTest::qWait(40);
+    QVERIFY2(qAbs(flick->property("contentX").toDouble() - baseX) <= 0.5,
+             qPrintable(QStringLiteral("after release: contentX %1 left-jumped "
+                                       "(expected %2)")
+                            .arg(flick->property("contentX").toDouble())
+                            .arg(baseX)));
+    QCOMPARE(b.selectionEnd(), len);
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+}
+
+// TC-004（P0，防过度抑制）：右缘前瞻爬行保持。
+// 在长行右缘约 1 字符内（光标矩形距视口右缘 < 1 字符宽）按下并向右
+// 小幅拖动：光标真实命中紧邻鼠标（非钳制）→ 右缘前瞻滚动为合法滚动，
+// 不被回滚，contentX 照旧前进；认可基准随合法滚动更新。
+// 本用例在无修复版本同样通过（前瞻滚动为 Qt 原生行为）——它守护的是
+// "不得过度抑制"，与 tcE001（红）互补。
+void TestEditorIntegration::tcE004_rightEdgeCreep_kept()
+{
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    Bench b;
+    QVERIFY2(b.open(words), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    QQuickItem *scroll = ancestorScrollView(b.editor);
+    QVERIFY(scroll != nullptr);
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    // 找"光标矩形距视口右缘 2 字符内"的文档位置（TextArea 有内边距，
+    // 等宽字符步进与字符宽并不严格相等，取满足窗口的最右位置）：
+    // 光标 + 1 字符右缘超视口右界 → 前瞻右滚触发
+    const qreal viewW = flick->property("width").toDouble();
+    const qreal charW = b.rectOf(1).x() - b.rectOf(0).x();
+    QVERIFY2(charW > 0, "char width must be positive (layout not ready?)");
+    int pressPos = -1;
+    for (int p = 1; p < words.size(); ++p) {
+        const qreal x = b.rectOf(p).x();
+        if (x > viewW - 2.0 * charW && x < viewW - 0.5)
+            pressPos = p; // 不提前退出：取窗口内最右（最靠近右缘）者
+    }
+    QVERIFY2(pressPos > 0,
+             qPrintable(QStringLiteral("no cursor rect within 2 chars of right "
+                                       "edge (viewW=%1 charW=%2)")
+                            .arg(viewW).arg(charW)));
+
+    const QPoint p0 = b.pointOf(pressPos); // 光标左缘中点（视口内）
+    QVERIFY2(p0.x() < qRound(viewW),
+             "press point must be inside viewport");
+
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), true);
+
+    // 向右小幅拖 6 步（每步 3px）：光标随鼠标真实命中（局部 x 随 contentX
+    // 前进而增大）→ 前瞻滚动逐次触发，contentX 单调不减且总体前进
+    qreal prevX = flick->property("contentX").toDouble();
+    for (int i = 1; i <= 6; ++i) {
+        b.sendMouse(QEvent::MouseMove, p0 + QPoint(i * 3, 0), Qt::NoButton,
+                    Qt::LeftButton, Qt::NoModifier);
+        b.settleDrag();
+        const qreal curX = flick->property("contentX").toDouble();
+        QVERIFY2(curX >= prevX - 0.01,
+                 qPrintable(QStringLiteral("step %1: contentX %2 regressed "
+                                           "(prev %3)")
+                                .arg(i).arg(curX).arg(prevX)));
+        // 光标矩形保持可见（滚动跟随光标）
+        const QRectF crect = b.rectOf(b.cursorPosition());
+        QVERIFY2(crect.x() + crect.width() >= prevX - 1.0
+                 && crect.x() <= curX + viewW + charW,
+                 "cursor rect must stay visible while creeping");
+        prevX = curX;
+    }
+    // 前瞻爬行确实发生（防"把合法滚动也吞掉"的过度抑制）
+    QVERIFY2(prevX > 2.0,
+             qPrintable(QStringLiteral("right-edge creep must advance "
+                                       "contentX, got %1").arg(prevX)));
+    // 认可基准随合法滚动更新（DEC-002 前半）
+    QVERIFY2(qAbs(holder->property("dragContentXBase").toDouble() - prevX) <= 0.5,
+             qPrintable(QStringLiteral("dragContentXBase %1 must follow "
+                                       "approved contentX %2")
+                            .arg(holder->property("dragContentXBase").toDouble())
+                            .arg(prevX)));
+    // 光标未被钳制（紧邻鼠标）：选区自按下点连续产生
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             "creep drag must produce selection");
+
+    b.sendMouse(QEvent::MouseButtonRelease, p0 + QPoint(18, 0), Qt::LeftButton,
+                Qt::NoButton, Qt::NoModifier);
+    QTest::qWait(40);
+    QVERIFY2(flick->property("contentX").toDouble() > 2.0,
+             "creep progress must survive release");
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+}
+
+// TC-005（P1）：释放重放窗口与滚轮恢复。
+// tcE001 场景拖至末行以下后释放、等待 ≥2 帧：释放前后 contentX 恒定
+//（重放的钳制跳滚被抑制窗口覆盖——抑制比 nativeDragGuard 多存活一拍）；
+// 抑制复位后合成滚轮横向滚动，Flickable 正常响应（守卫无残留禁用）。
+void TestEditorIntegration::tcE005_releaseReplay_wheelRecovered()
+{
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    Bench b;
+    QVERIFY2(b.open(words), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    const int len = words.size();
+    // tcE001 场景：中部按下 → 拖至末行以下
+    const QPoint p0 = b.pointOf(30);
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    b.sendMouse(QEvent::MouseMove, QPoint(240, 100), Qt::NoButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    QVERIFY2(b.selectionEnd() == len, "precondition: selection reaches doc end");
+    QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+             "precondition: contentX stays 0 during drag");
+
+    // 释放（于末行以下，重放终点来自钳制）
+    b.sendMouse(QEvent::MouseButtonRelease, QPoint(240, 100), Qt::LeftButton,
+                Qt::NoButton, Qt::NoModifier);
+    // 释放瞬间（守卫仍存活一拍）：contentX 恒定
+    QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+             "immediately after release: contentX must stay 0");
+    // 等待 ≥2 帧：覆盖重放（第 1 拍 callLater）与守卫复位（第 2 拍）
+    QTest::qWait(80);
+    QVERIFY2(qAbs(flick->property("contentX").toDouble()) <= 0.5,
+             qPrintable(QStringLiteral("after replay window: contentX %1 "
+                                       "jumped").arg(flick->property("contentX").toDouble())));
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+    QCOMPARE(holder->property("nativeDragGuard").toBool(), false);
+    QCOMPARE(flick->property("interactive").toBool(), true);
+    // 选区经重放保留：锚 = 按下点、终点 = 文档末尾
+    QVERIFY2(b.selectionStart() == 30 && b.selectionEnd() == len,
+             qPrintable(QStringLiteral("replayed selection [%1,%2] != [30,%3]")
+                            .arg(b.selectionStart()).arg(b.selectionEnd()).arg(len)));
+
+    // 抑制复位后：合成滚轮横向滚动恢复正常（无残留禁用/抑制）
+    const QPointF pos(260, 200);
+    QWheelEvent wheel(pos, QPointF(b.view.mapToGlobal(pos.toPoint())),
+                      QPoint(0, 0), QPoint(-120, 0), Qt::NoButton,
+                      Qt::NoModifier, Qt::ScrollUpdate, false);
+    QCoreApplication::sendEvent(&b.view, &wheel);
+    QTRY_VERIFY2(flick->property("contentX").toDouble() > 0.0,
+                 qPrintable(QStringLiteral("horizontal wheel scroll dead "
+                                           "after suppression reset "
+                                           "(contentX=%1)")
+                                .arg(flick->property("contentX").toDouble())));
+}
+
+// DEC-002 混合路径（P0）：同一次拖拽先右缘合法爬行、后末行以下钳制。
+// 回滚基准取"变化前认可值"（非按下时快照）：爬行阶段 contentX 前进且
+// 基准随之更新；随后拖到末行以下触发钳制跳滚，仅消除该次跳变——
+// 最终 contentX == 爬行阶段的认可值（爬行进度保留）。
+// 若实现误用按下时快照（0）作回滚基准，本用例失败（contentX 回 0）。
+void TestEditorIntegration::tcE006_creepThenClamp_basePreserved()
+{
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    Bench b;
+    QVERIFY2(b.open(words), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    QQuickItem *scroll = ancestorScrollView(b.editor);
+    QVERIFY(scroll != nullptr);
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    // ---- 阶段 1：右缘前瞻爬行（同 tcE004 前置） ----
+    const qreal viewW = flick->property("width").toDouble();
+    const qreal charW = b.rectOf(1).x() - b.rectOf(0).x();
+    int pressPos = -1;
+    for (int p = 1; p < words.size(); ++p) {
+        const qreal x = b.rectOf(p).x();
+        if (x > viewW - 2.0 * charW && x < viewW - 0.5)
+            pressPos = p; // 取窗口内最右者
+    }
+    QVERIFY2(pressPos > 0, "no press pos near right edge");
+    const QPoint p0 = b.pointOf(pressPos);
+
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    for (int i = 1; i <= 4; ++i) {
+        b.sendMouse(QEvent::MouseMove, p0 + QPoint(i * 3, 0), Qt::NoButton,
+                    Qt::LeftButton, Qt::NoModifier);
+        b.settleDrag();
+    }
+    const qreal creepX = flick->property("contentX").toDouble();
+    QVERIFY2(creepX > 2.0,
+             qPrintable(QStringLiteral("phase1: creep must advance contentX, "
+                                       "got %1").arg(creepX)));
+    QVERIFY2(qAbs(holder->property("dragContentXBase").toDouble() - creepX) <= 0.5,
+             "phase1: base must follow approved creep value");
+    const int selEndCreep = b.selectionEnd();
+
+    // ---- 阶段 2：向下急拖到末行以下（钳制跳滚应被回滚到 creepX） ----
+    const int curX = p0.x() + 12; // 保持当前窗口 x（右缘附近）
+    b.sendMouse(QEvent::MouseMove, QPoint(curX, 60), Qt::NoButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    b.sendMouse(QEvent::MouseMove, QPoint(curX, 100), Qt::NoButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+
+    const int len = words.size();
+    QVERIFY2(b.selectionEnd() == len,
+             qPrintable(QStringLiteral("phase2: selection end %1 must reach "
+                                       "doc end %2").arg(b.selectionEnd()).arg(len)));
+    QVERIFY2(b.selectionEnd() > selEndCreep,
+             "phase2: selection must extend beyond creep end");
+    // 钳制跳变被回滚，且保留阶段 1 的爬行进度（非按下时快照 0）
+    QVERIFY2(qAbs(flick->property("contentX").toDouble() - creepX) <= 0.5,
+             qPrintable(QStringLiteral("phase2: contentX %1 must equal creep "
+                                       "base %2 (clamped jump rolled back, "
+                                       "creep progress kept)")
+                            .arg(flick->property("contentX").toDouble())
+                            .arg(creepX)));
+    QVERIFY2(qAbs(holder->property("dragContentXBase").toDouble() - creepX) <= 0.5,
+             "phase2: base must stay at approved creep value");
+
+    // ---- 释放：重放的钳制跳滚同样回滚到 creepX ----
+    b.sendMouse(QEvent::MouseButtonRelease, QPoint(curX, 100), Qt::LeftButton,
+                Qt::NoButton, Qt::NoModifier);
+    QTest::qWait(40);
+    QVERIFY2(qAbs(flick->property("contentX").toDouble() - creepX) <= 0.5,
+             qPrintable(QStringLiteral("after release: contentX %1 must equal "
+                                       "creep base %2")
+                            .arg(flick->property("contentX").toDouble())
+                            .arg(creepX)));
+    QVERIFY2(b.selectionStart() == pressPos && b.selectionEnd() == len,
+             "after release: selection must span press pos to doc end");
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+}
+
+// TC-007（P0）：键盘移动光标的滚动跟随回归（非拖拽路径不受抑制）。
+// NoWrap 长行 + 多短行文档：
+// - End：光标到长行末（远超视口）→ ensureCursorVisible 右滚，光标可见；
+// - Home：光标回行首 → 左滚回 0；
+// - 方向键 Down 连按：光标下移出视口 → contentY 滚动跟随。
+// 守卫恒 false（无按下），contentX 变化走"跟随认可"分支。
+void TestEditorIntegration::tcE007_keyboardScrollFollow()
+{
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    QString lines;
+    for (int i = 0; i < 30; ++i)
+        lines += QStringLiteral("\nline %1").arg(i);
+    Bench b;
+    QVERIFY2(b.open(words + lines), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    QQuickItem *scroll = ancestorScrollView(b.editor);
+    QVERIFY(scroll != nullptr);
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+    QCOMPARE(flick->property("contentY").toDouble(), 0.0);
+
+    const qreal viewW = scroll->width();
+    const int len1 = words.size(); // 行 1 末位置
+
+    // End：光标到长行末 → 右滚到位、光标矩形右缘可见
+    b.setCursorPosition(0);
+    b.settle();
+    b.key(Qt::Key_End);
+    QCOMPARE(b.cursorPosition(), len1);
+    const qreal xAfterEnd = flick->property("contentX").toDouble();
+    QVERIFY2(xAfterEnd > 1000.0,
+             qPrintable(QStringLiteral("End: contentX %1 must follow cursor "
+                                       "rightward").arg(xAfterEnd)));
+    {
+        const QRectF r = b.rectOf(len1);
+        QVERIFY2(r.x() + r.width() <= xAfterEnd + viewW + 1.0,
+                 "End: cursor rect must be visible after scroll");
+        QVERIFY2(r.x() >= xAfterEnd - 1.0,
+                 "End: cursor rect must not be left outside viewport");
+    }
+
+    // Home：光标回行首 → 左滚回 0
+    b.key(Qt::Key_Home);
+    QCOMPARE(b.cursorPosition(), 0);
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    // Down ×25：光标下移出视口 → contentY 滚动跟随（纵向回归）
+    for (int i = 0; i < 25; ++i)
+        b.key(Qt::Key_Down);
+    QVERIFY2(b.cursorPosition() > len1,
+             "cursor must have moved below line 1");
+    QVERIFY2(flick->property("contentY").toDouble() > 0.0,
+             qPrintable(QStringLiteral("Down: contentY %1 must follow cursor "
+                                       "downward")
+                          .arg(flick->property("contentY").toDouble())));
+    // 键盘路径的 contentX 变化被"跟随认可"（基准同步，供下次拖拽用）
+    QVERIFY2(qAbs(holder->property("dragContentXBase").toDouble()
+                  - flick->property("contentX").toDouble()) <= 0.5,
+             "keyboard scroll must be approved (base follows)");
+}
+
+// TC-006（P1）：纵向行为完全不变。多行可滚动文档，光标在近底缘行，
+// 按住向下拖拽：光标（选区活动端）下移超出视口底 → 纵向
+// ensureCursorVisible 照旧滚动跟随（本需求仅抑制横向，不触碰纵向）。
+void TestEditorIntegration::tcE008_verticalScrollUnchanged()
+{
+    QString lines;
+    for (int i = 0; i < 200; ++i)
+        lines += QStringLiteral("line %1\n").arg(i);
+    Bench b;
+    QVERIFY2(b.open(lines), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QVERIFY2(flick->property("contentHeight").toDouble()
+                     > flick->property("height").toDouble(),
+             "content must overflow viewport vertically");
+
+    // 光标移到约第 23 行（近底缘：位置 170 落在 i=22 行，y≈374px，近视口高 400 底部）
+    const int nearBottomPos = 24 * 7 + 2;
+    b.setCursorPosition(nearBottomPos);
+    b.settle();
+    const qreal y0 = flick->property("contentY").toDouble();
+    const qreal x0 = flick->property("contentX").toDouble();
+
+    // 近底缘行上按下，向下拖 6 步（每步 12px）：光标被 PointHandler
+    // 驱动到视口底缘以下行 → 纵向滚动跟随逐行推进
+    const QPoint p0 = b.pointOf(nearBottomPos);
+    b.sendMouse(QEvent::MouseButtonPress, p0, Qt::LeftButton, Qt::LeftButton,
+                Qt::NoModifier);
+    b.settleDrag();
+    qreal prevY = flick->property("contentY").toDouble();
+    for (int i = 1; i <= 6; ++i) {
+        b.sendMouse(QEvent::MouseMove, QPoint(p0.x(), p0.y() + i * 12),
+                    Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        b.settleDrag();
+        const qreal curY = flick->property("contentY").toDouble();
+        QVERIFY2(curY >= prevY - 0.01,
+                 qPrintable(QStringLiteral("step %1: contentY %2 regressed "
+                                           "(prev %3)")
+                                .arg(i).arg(curY).arg(prevY)));
+        prevY = curY;
+    }
+    // 纵向滚动确实跟随（近底缘拖拽逐行爬行，行为与修复前一致）
+    QVERIFY2(prevY > y0,
+             qPrintable(QStringLiteral("vertical follow-scroll must happen "
+                                       "near bottom edge (contentY %1 -> %2)")
+                            .arg(y0).arg(prevY)));
+    // 横向无滚动（本文档行短无横向能力），contentX 恒定
+    QCOMPARE(flick->property("contentX").toDouble(), x0);
+    // 选区自按下点向下扩展
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             "near-bottom drag must extend selection");
+
+    b.sendMouse(QEvent::MouseButtonRelease,
+                QPoint(p0.x(), p0.y() + 72), Qt::LeftButton, Qt::NoButton,
+                Qt::NoModifier);
+    b.settle();
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+             "selection must survive release");
+}
+
+// TC-009（P2）：wrap 模式行为不变。开启自动换行后（无横向滚动条，
+// contentWidth == 视口宽）拖拽选区（中部向下至末行以下 + 近右缘）：
+// contentX 恒 0（无横向滚动能力，抑制逻辑天然无操作）、选区正常产生
+// 与扩展、守卫照常置位/复位（抑制窗口存在但不误伤）。
+void TestEditorIntegration::tcE009_wrapMode_noOp()
+{
+    QString words;
+    for (int i = 0; i < 200; ++i)
+        words += QStringLiteral("word ");
+    Bench b;
+    QVERIFY2(b.open(words), "testbench open failed");
+    b.editor->setProperty("wrapMode", 4); // WrapAtWordBoundaryOrAnywhere
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    QQuickItem *scroll = ancestorScrollView(b.editor);
+    QVERIFY(scroll != nullptr);
+
+    // 前置：wrap 下内容收窄至视口宽（无横向滚动）、折为多可视行、
+    // 末行以下仍有窗口内空白（16 行 × ~17px ≈ 280 < 400）
+    QVERIFY2(flick->property("contentWidth").toDouble() <= scroll->width() + 1.0,
+             "wrap: content width must equal viewport (no h-scroll)");
+    const int len = words.size();
+    int visualLines = 1;
+    for (int p = 1; p <= len; ++p) {
+        if (b.rectOf(p).y() != b.rectOf(p - 1).y())
+            ++visualLines;
+    }
+    QVERIFY2(visualLines >= 3,
+             qPrintable(QStringLiteral("wrap: expected >= 3 visual lines, "
+                                       "got %1").arg(visualLines)));
+    QVERIFY2(flick->property("contentHeight").toDouble()
+                     < flick->property("height").toDouble(),
+             "wrap: blank must exist below last visual line");
+
+    // ---- 中部可视行按下，向下拖至末行以下 ----
+    const qreal midY = b.rowCenterY(len / 2); // 中部可视行中心
+    b.sendMouse(QEvent::MouseButtonPress, QPoint(260, qRound(midY)),
+                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), true);
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    // 末行以下：wrap 下 hitTest 仍钳到文档末尾，选区到末尾
+    b.sendMouse(QEvent::MouseMove, QPoint(260, 380), Qt::NoButton,
+                Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+    QVERIFY2(b.selectionEnd() == len,
+             qPrintable(QStringLiteral("wrap: selection end %1 must reach "
+                                       "doc end %2").arg(b.selectionEnd()).arg(len)));
+    // 纵向也不滚动（内容矮于视口，无纵向滚动能力）
+    QCOMPARE(flick->property("contentY").toDouble(), 0.0);
+
+    b.sendMouse(QEvent::MouseButtonRelease, QPoint(260, 380), Qt::LeftButton,
+                Qt::NoButton, Qt::NoModifier);
+    QTest::qWait(40);
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+    QVERIFY2(b.selectionEnd() == len, "wrap: selection must survive release");
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+
+    // ---- 近右缘拖拽：wrap 下无横向滚动，抑制逻辑无操作不误伤 ----
+    b.plainClick(0);
+    b.settle();
+    // 右缘外（最后可视字符之后）：hitTest 钳到折行点/行尾——空选区
+    //（钳制语义），但 contentX 恒 0（wrap 无横向滚动能力）
+    const qreal topY = b.rowCenterY(0);
+    b.sendMouse(QEvent::MouseButtonPress, QPoint(qRound(scroll->width()) - 4,
+                                                 qRound(topY)),
+                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+    for (int i = 1; i <= 3; ++i) {
+        b.sendMouse(QEvent::MouseMove,
+                    QPoint(qRound(scroll->width()) - 4 + i * 2, qRound(topY)),
+                    Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        b.settleDrag();
+        QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+    }
+    b.sendMouse(QEvent::MouseButtonRelease,
+                QPoint(qRound(scroll->width()) - 4 + 6, qRound(topY)),
+                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    b.settle();
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    // 可视行内右半部分拖拽（真实命中，非钳制）：选区正常产生
+    const qreal midY2 = b.rowCenterY(len / 2);
+    const int midPos = b.positionAt(260.0, midY2); // 中部可视行视口中部命中
+    QVERIFY2(midPos > 0 && midPos < len, "mid-row hit must be inside doc");
+    b.sendMouse(QEvent::MouseButtonPress, QPoint(260, qRound(midY2)),
+                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    b.settleDrag();
+    for (int i = 1; i <= 3; ++i) {
+        b.sendMouse(QEvent::MouseMove, QPoint(260 + i * 8, qRound(midY2)),
+                    Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        b.settleDrag();
+        QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+        QVERIFY2(b.selectionEnd() > b.selectionStart(),
+                 qPrintable(QStringLiteral("wrap: in-row drag step %1 must "
+                                           "produce selection [%2,%3]")
+                                .arg(i).arg(b.selectionStart()).arg(b.selectionEnd())));
+    }
+    b.sendMouse(QEvent::MouseButtonRelease, QPoint(260 + 24, qRound(midY2)),
+                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    b.settle();
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+    QVERIFY2(b.selectionEnd() > b.selectionStart(),
+              "wrap: in-row drag selection must survive release");
+}
+
+// TC-010（P1）：查找跳转与会话恢复的滚动跟随回归（非拖拽路径）。
+// - findNext 跳到视口外匹配：控制器经 target.select 设选区 + EditorArea
+//   的 stateChanged → scrollCursorIntoView → contentX 前进使光标可见；
+// - doc.cursorPosition 下行应用（会话恢复链路）：Connections 应用光标 +
+//   scrollCursorIntoView → contentX 前进；回 0 → 回滚左端。
+// 全程守卫 false，抑制逻辑不影响这些合法滚动。
+void TestEditorIntegration::tcE010_searchJump_sessionRestore_scroll()
+{
+    // 行 1：needle ...（600 字符填充）... needle —— 第二个匹配在视口外
+    const QString line = QStringLiteral("needle")
+            + QStringLiteral(" x").repeated(300)
+            + QStringLiteral("needle");
+    const int secondStart = 6 + 300 * 2; // 第二个 needle 起点（606）
+    Bench b;
+    QVERIFY2(b.open(line), "testbench open failed");
+    b.editor->setProperty("wrapMode", 0);
+    b.settle();
+
+    QQuickItem *flick = b.flick();
+    QVERIFY2(flick != nullptr,
+             "editor ScrollView contentItem is not a Flickable (or is null)");
+    QQuickItem *holder = dragGuardHolder(b.editor);
+    QVERIFY2(holder != nullptr, "nativeDragGuard holder (delegate) not found");
+    QQuickItem *scroll = ancestorScrollView(b.editor);
+    QVERIFY(scroll != nullptr);
+    const qreal viewW = scroll->width();
+    QCOMPARE(holder->property("hDragScrollGuard").toBool(), false);
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
+
+    // ---- 查找跳转 ----
+    QObject *searchCtl = b.root->property("searchController").value<QObject *>();
+    QVERIFY2(searchCtl != nullptr, "searchController not exposed on EditorArea");
+    searchCtl->setProperty("pattern", QStringLiteral("needle"));
+    b.settle();
+    QCOMPARE(searchCtl->property("matchCount").toInt(), 2);
+    // restartSearch：pattern 变更即把当前匹配归零到首个（currentIndex 0）
+    QCOMPARE(searchCtl->property("currentIndex").toInt(), 0);
+
+    // 第一个匹配（[0,6)，视口内）：findNext 从归零态前进一步到第二处
+    QMetaObject::invokeMethod(searchCtl, "findNext");
+    b.settle();
+    QCOMPARE(searchCtl->property("currentIndex").toInt(), 1);
+    const qreal xAfterJump = flick->property("contentX").toDouble();
+    QVERIFY2(xAfterJump > 400.0,
+             qPrintable(QStringLiteral("search jump: contentX %1 must scroll "
+                                       "to off-viewport match").arg(xAfterJump)));
+    {
+        const QRectF r = b.rectOf(b.cursorPosition());
+        QVERIFY2(r.x() + r.width() <= xAfterJump + viewW + 1.0,
+                 "search jump: cursor rect must be visible after scroll");
+        QVERIFY2(r.x() >= xAfterJump - 1.0,
+                 "search jump: cursor rect must not be left outside");
+    }
+    // 匹配被设为原生选区
+    QVERIFY2(b.selectionStart() == secondStart && b.selectionEnd() == secondStart + 6,
+             qPrintable(QStringLiteral("search jump: selection [%1,%2] != "
+                                       "[%3,%4]")
+                            .arg(b.selectionStart()).arg(b.selectionEnd())
+                            .arg(secondStart).arg(secondStart + 6)));
+
+    // ---- 会话恢复（doc 光标下行应用链路） ----
+    // 光标移到视口外位置 100（局部 x 约 800）：scrollCursorIntoView 前进
+    b.doc->setCursorPosition(100);
+    b.settle();
+    QCOMPARE(b.cursorPosition(), 100);
+    const qreal xAfterRestore = flick->property("contentX").toDouble();
+    QVERIFY2(xAfterRestore > 200.0,
+             qPrintable(QStringLiteral("session restore: contentX %1 must "
+                                       "follow cursor").arg(xAfterRestore)));
+    {
+        const QRectF r = b.rectOf(100);
+        QVERIFY2(r.x() >= xAfterRestore - 1.0
+                 && r.x() + r.width() <= xAfterRestore + viewW + 1.0,
+                 "session restore: cursor rect must be visible");
+    }
+    // 光标回 0：滚回左端
+    b.doc->setCursorPosition(0);
+    b.settle();
+    QCOMPARE(flick->property("contentX").toDouble(), 0.0);
 }
 
 int main(int argc, char *argv[])

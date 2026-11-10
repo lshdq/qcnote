@@ -142,6 +142,44 @@ Item {
             /// 释放时原生 replay 会清空选区（延迟按下窗口内 release 先补放
             /// press 再放 release），onReleased 据此延迟一拍重放选区
             property int nativeDragLastPos: -1
+            /// 拖拽期间最近鼠标位置（TextArea 局部坐标，<0 为无效）：
+            /// onPressed 记录、PointHandler.onPointChanged 更新（active 过滤
+            /// 内，防释放时 point 归零 (0,0) 污染判定）。钳制检测的输入
+            property real dragMouseLocalX: -1
+            property real dragMouseLocalY: -1
+            /// 横向抑制回滚基准：最近一次"认可的"contentX。合法滚动（右缘
+            /// 前瞻爬行）每次认可后更新基准，钳制跳滚以此值回滚——保留拖拽
+            /// 前段右缘爬行的合法滚动进度，仅消除钳制引发的单次跳变
+            /// （DEC-002：基准取"变化前认可值"而非按下时快照）
+            property real dragContentXBase: 0
+            /// 横向抑制窗口标志：从左键按下起，到释放后选区重放
+            /// （Qt.callLater）完成之后一拍止——比 nativeDragGuard 多存活
+            /// 一拍，覆盖"释放时原生补放/重放把光标设到钳制端点"仍触发
+            /// ensureCursorVisible 的窗口（DEC-003）；失焦兜底同步复位，
+            /// 防标志卡死导致横向滚动长期失效
+            property bool hDragScrollGuard: false
+
+            /// 钳制检测：判定"本次光标位置是否来自命中钳制"。
+            /// 拖拽期间鼠标位于末行以下/行尾右侧空白时，positionAt/hitTest
+            /// （FuzzyHit）把光标钳到行尾/文档末尾——NoWrap 长行末尾远在
+            /// 视口右侧，光标矩形与最近鼠标位置（同为 TextArea 局部坐标）
+            /// 严重分离；而须保留的右缘前瞻爬行中光标始终紧邻鼠标。以容差
+            /// （横向 2 字符宽、纵向约 0.3 行高（≥3px））四向判定二者分离即认定钳制。
+            /// 纵向容差取小值：hitTest 的 Y 向行归属判定是精确行界（Fuzzy 仅
+            /// 作用于 X），真实命中的纵向偏差仅为行距 leading（约 3~4px）；
+            /// 整行高容差会在末行以下留出约一行高的漏检带（带内钳制跳滚不被检测）。
+            /// 鼠标位置无效（<0，未拖拽/已复位）时保守放行（不抑制）
+            function contentXFromClampScroll() {
+                if (editorHolder.dragMouseLocalX < 0 || editorHolder.dragMouseLocalY < 0)
+                    return false
+                const rect = editor.cursorRectangle
+                const tolX = monoMetrics.advanceWidth("00")
+                const tolY = Math.max(3, monoMetrics.height * 0.3)
+                return editorHolder.dragMouseLocalX < rect.x - tolX
+                        || editorHolder.dragMouseLocalX > rect.x + rect.width + tolX
+                        || editorHolder.dragMouseLocalY < rect.y - tolY
+                        || editorHolder.dragMouseLocalY > rect.y + rect.height + tolY
+            }
 
             visible: isActive
             anchors.fill: parent
@@ -419,6 +457,13 @@ Item {
                             if (!active || !editorHolder.nativeDragGuard
                                     || editorHolder.nativeDragAnchor < 0)
                                 return
+                            // 先记录鼠标位置再 select：select 同步触发
+                            // cursorRectangleChanged → ensureCursorVisible →
+                            // contentXChanged，钳制检测须与选区驱动读到
+                            // 同一批最新鼠标/光标值；point.position 与
+                            // onPressed 的 event.x/y 同为 TextArea 局部坐标
+                            editorHolder.dragMouseLocalX = point.position.x
+                            editorHolder.dragMouseLocalY = point.position.y
                             const pos = editor.positionAt(point.position.x, point.position.y)
                             editorHolder.nativeDragLastPos = pos
                             editor.select(editorHolder.nativeDragAnchor, pos)
@@ -437,6 +482,17 @@ Item {
                         // 守卫卡死导致滚轮长期失效）
                         if (event.button === Qt.LeftButton) {
                             editorHolder.nativeDragGuard = true
+                            // 横向抑制窗口同步开启，且必须先于下方光标定位
+                            // 赋值/Shift 分支 select——按下即位于末行以下空白
+                            // 时，positionAt 把光标钳到文档末尾，随之而来的
+                            // ensureCursorVisible 右滚须已被本窗口覆盖
+                            //（验收 2）；基准取当前认可值（非抑制期持续跟随）
+                            editorHolder.hDragScrollGuard = true
+                            editorHolder.dragContentXBase = editorScroll.contentItem
+                                    ? editorScroll.contentItem.contentX : 0
+                            // event.x/y 即 TextArea 局部坐标，钳制检测同系
+                            editorHolder.dragMouseLocalX = event.x
+                            editorHolder.dragMouseLocalY = event.y
                             if (event.modifiers & Qt.ShiftModifier) {
                                 // Shift+按下：原生 KeepAnchor 扩展语义——锚保持当前
                                 // 光标；已有选区时锚为光标对端（连续 Shift+click 锚
@@ -477,6 +533,20 @@ Item {
                                     editor.select(anchor, last)
                                 })
                             }
+                            // 横向抑制窗口须覆盖释放重放：重放终点可能来自钳制
+                            //（如释放于末行以下，重放仍触发一次
+                            // ensureCursorVisible 右滚）。上方重放的 callLater
+                            // 先入队、下方复位后入队，FIFO 保证重放先执行、
+                            // 复位后执行——抑制多存活一拍（毫秒级），期间无
+                            // 其他合法 contentX 写入方（DEC-003）。鼠标位置
+                            // 必须随守卫同拍失效：重放终点的钳制检测依赖最后
+                            // 一次鼠标位置仍有效，同步提前复位会使检测读到
+                            // 无效值而保守放行，重放的钳制跳滚不被回滚
+                            Qt.callLater(function() {
+                                editorHolder.hDragScrollGuard = false
+                                editorHolder.dragMouseLocalX = -1
+                                editorHolder.dragMouseLocalY = -1
+                            })
                             editorHolder.nativeDragGuard = false
                             editorHolder.nativeDragAnchor = -1
                             editorHolder.nativeDragLastPos = -1
@@ -489,6 +559,12 @@ Item {
                             editorHolder.nativeDragGuard = false
                             editorHolder.nativeDragAnchor = -1
                             editorHolder.nativeDragLastPos = -1
+                            // 横向抑制标志同步兜底复位：丢失 release 的中断
+                            // 同样会使 hDragScrollGuard 卡死，导致横向滚动
+                            // 长期失效（下次按下自愈，此处消除窗口期）
+                            editorHolder.hDragScrollGuard = false
+                            editorHolder.dragMouseLocalX = -1
+                            editorHolder.dragMouseLocalY = -1
                         }
                     }
 
@@ -669,6 +745,41 @@ Item {
                         root.cursorColumn = pos - lastNl
                         syncSelectionLength()
                         root.cursorCount = mc.active ? mc.cursorCount : 1
+                    }
+                }
+            }
+
+            // 拖拽期横向钳制跳滚的选择性回滚（DEC-001 方案 3）：TextArea 进入
+            // ScrollView 时被 Qt 私有连接 cursorRectangleChanged →
+            // ensureCursorVisible 附着（QML 不可解绑），拖拽中光标被
+            // positionAt/hitTest 钳到行尾/文档末尾时会一次大幅右滚 contentX。
+            // 此处在抑制窗口内检测"光标是否来自钳制"（与鼠标位置分离），
+            // 仅回滚钳制引发的跳变；右缘前瞻爬行（光标紧邻鼠标）照旧放行。
+            // 拖拽期间 contentX 的其他写入方（Flickable 拖动/滚轮）已被
+            // nativeDragGuard（interactive=false）禁用，回滚不会误伤合法
+            // 滚动。任何路径都不触碰 contentY（纵向行为完全不变）
+            Connections {
+                target: editorScroll.contentItem
+
+                function onContentXChanged() {
+                    const flick = editorScroll.contentItem
+                    if (!flick)
+                        return
+                    if (!editorHolder.hDragScrollGuard) {
+                        // 非抑制期：跟随认可（键盘移动光标/查找跳转/会话
+                        // 恢复/wrap 切换等合法滚动一律放行并更新基准）
+                        editorHolder.dragContentXBase = flick.contentX
+                        return
+                    }
+                    // 回滚写回自身/微抖动（<0.5px）：退出防递归
+                    if (Math.abs(flick.contentX - editorHolder.dragContentXBase) < 0.5)
+                        return
+                    if (editorHolder.contentXFromClampScroll()) {
+                        // 钳制跳滚：同步写回认可值（同帧不上屏，无闪烁）
+                        flick.contentX = editorHolder.dragContentXBase
+                    } else {
+                        // 合法滚动（右缘前瞻爬行）：更新认可基准（DEC-002）
+                        editorHolder.dragContentXBase = flick.contentX
                     }
                 }
             }
