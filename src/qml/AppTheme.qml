@@ -18,18 +18,22 @@ QtObject {
     property bool dark: false
 
     // ---- 表面 ----
-    readonly property color titleBarBackground: dark ? "#1d222b" : "#e8ebf1"
+    /// 标题栏 / 标签条背景：较工具栏深一档（浅 #dde2ec / 深 #171c24），
+    /// 拉开与活动标签（= 工具栏色）的对比——非活动标签透明透出此色，
+    /// 活动"浮起"卡片效果可辨（Win11 资源管理器做法：标签条整条深于命令栏）
+    readonly property color titleBarBackground: dark ? "#171c24" : "#dde2ec"
     readonly property color toolbarBackground:  dark ? "#232833" : "#f2f4f8"
     readonly property color contentBackground:  dark ? "#262b34" : "#ffffff"
+    /// 状态栏：保持与原标题栏同值（DEC-102：本轮仅加深标题栏/标签条，
+    /// 状态栏不随动，上下不再同色；如需同步另行决策）
     readonly property color statusBarBackground: dark ? "#1d222b" : "#e8ebf1"
 
     // ---- 标签 ----
-    /// 活动标签：与内容区同色（浅色主题为白色，形成与内容区的连续感）
-    readonly property color activeTab: dark ? "#262b34" : "#ffffff"
-    /// 非活动标签：灰蓝色
-    readonly property color inactiveTab: dark ? "#39404e" : "#adb8cc"
-    /// 非活动标签悬停
-    readonly property color inactiveTabHover: dark ? "#424a5a" : "#9daac2"
+    /// 活动标签：引用绑定 toolbarBackground（连通式约束：活动标签必须与工具栏
+    /// 同色，标签底边与工具栏顶边的衔接处才能无缝；调整工具栏色时活动标签自动
+    /// 跟随，两 token 永不脱节）。非活动标签为透明底 + 悬停半透明叠加（hover），
+    /// 不再需要独立色 token
+    readonly property color activeTab: toolbarBackground
 
     // ---- 文本 ----
     readonly property color textPrimary:   dark ? "#e8eaf0" : "#212734"

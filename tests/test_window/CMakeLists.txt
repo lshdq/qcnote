@@ -245,3 +245,52 @@ add_test(NAME test_windowborder COMMAND test_windowborder)
 set_tests_properties(test_windowborder PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+# 标签页 Win11 风格改造 QML 集成测试目标（offscreen，架构同上：单 main）：
+# 按 QML 类型短名定位 TitleBar/DocumentTabs/其内 ListView，经 itemAtIndex
+# 取 delegate 后按特征定位背景结构（radius 5 主背景/底部补角矩形/radius 4
+# 悬停高亮/border 2 焦点环），断言活动标签连通式（token 引用 toolbarBackground、
+# 同色顶圆角无描边、贴底高度 34）、非活动透明 + 合成悬停高亮（深浅两主题，
+# DEC-002）、关闭按钮移除（无 Canvas/无多余 Text，TC-005）、关闭入口
+# （主菜单直发 triggered/Ctrl+W 合成按键，TC-006）、未保存 ● 标记（TC-007）、
+# 自然宽度公式 + 等比收缩 + 饱和溢出（TC-008）、溢出 interactive 联动
+# （TC-009）、键盘导航与焦点环（TC-010）、文字右边距与省略（TC-011）
+# （《测试用例-标签页Win11风格改造》的可自动化部分）。
+qt_add_executable(test_win11tabs
+    tst_win11tabs.cpp
+)
+
+target_link_libraries(test_win11tabs PRIVATE
+    Qt6::Test
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(test_win11tabs)
+
+add_test(NAME test_win11tabs COMMAND test_win11tabs)
+# GUI 红线：自动化验证一律 offscreen，无可见窗口
+set_tests_properties(test_win11tabs PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
+# 标签页 Win11 风格改造截图取证 harness（不注册 ctest，手动/编排脚本运行）：
+# 《测试用例-标签页Win11风格改造》TC-002/003/004/008 视觉证据与 DEC-002/
+# DEC-004 预约验证点的截图侧执行器，由 tests\verify-win11tabs.ps1 启动。
+# 加载真实 Main.qml，按场景（浅/深 × 单标签/多标签悬停/收缩/溢出/焦点环）
+# 构造后 grabWindow() 落 PNG（整窗 + 标题栏 2x 放大）到指定输出目录。
+qt_add_executable(e2e_tabshot_driver
+    e2e_tabshot_driver.cpp
+)
+set_target_properties(e2e_tabshot_driver PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+target_link_libraries(e2e_tabshot_driver PRIVATE
+    Qt6::Quick
+    qcnote_core
+    qcnote_coreplugin
+)
+
+qt_import_qml_plugins(e2e_tabshot_driver)

@@ -3,12 +3,18 @@ import QtQuick
 import QtQuick.Controls
 
 /**
- * 文档 Tab 区（自绘，非默认 TabBar）。
+ * 文档 Tab 区（自绘，非默认 TabBar），Win11 连通式样式。
  *
- * - 活动 Tab 白底（AppTheme.activeTab）、非活动 Tab 灰蓝底（AppTheme.inactiveTab）；
+ * - 活动 Tab 与工具栏同色（AppTheme.activeTab 引用 toolbarBackground）的顶圆角
+ *   卡片，无描边；底边与组件底边重合（组件贴标题栏底边），与下方工具栏无缝连通；
+ * - 非活动 Tab 透明背景，悬停显示半透明圆角高亮（AppTheme.hover）；
+ * - 标签间竖分隔线：非活动标签左缘 1px 竖线（AppTheme.border，高约为
+ *   标签高的 60%、垂直居中上下留空），显示规则 index>0 && 本标签非活动
+ *   && 左邻标签非活动（活动标签为凸起卡片，两侧不画线；DEC-103/104）；
+ * - 无每标签关闭按钮：关闭走标签右键菜单 / Ctrl+W / 主菜单「关闭标签页」；
  * - Tab 宽度自适应：按文字自然宽度取宽（上限 minTabWidth~cap），空间不足按可收缩量
  *   等比收缩，收缩饱和后回退最小宽度 + 既有横向滚动；
- * - Tab 含：未保存 ● 标记（非颜色线索）、文档名（超长省略 + tooltip 完整名）、关闭按钮；
+ * - Tab 含：未保存 ● 标记（非颜色线索）、文档名（超长省略 + tooltip 完整名）；
  * - 溢出时横向滚动（水平 ListView + 滚动条），窗口控制按钮在本组件之外、永不被挤压；
  * - 键盘：左右方向键在 Tab 间移动焦点（循环），Enter/Space 激活对应文档，
  *   Menu 键 / Shift+F10 在焦点标签下方弹出右键菜单；
@@ -53,11 +59,11 @@ Item {
     readonly property int leftMarginWithMark: 8   // 有未保存 ● 标记时的左边距
     readonly property int leftMarginPlain: 10     // 无标记时的左边距
     readonly property int markToLabelSpacing: 5   // ● 标记与标签文字的间距
-    readonly property int labelToCloseSpacing: 2  // 标签文字与关闭按钮的间距
-    readonly property int closeButtonSize: 20     // 关闭按钮边长
-    readonly property int closeRightEdge: 4       // 关闭按钮距 Tab 右缘
+    readonly property int rightPadding: 10        // 标签文字右内边距
     readonly property int markPixelSize: 9        // ● 标记字号
     readonly property int labelPixelSize: 13      // Tab 标签字号，测量与渲染共用
+    readonly property int tabRadius: 5            // 活动 Tab 顶部圆角半径
+    readonly property int tabSeparatorHeight: 20  // 标签间竖分隔线高度（≈标签高 34 的 60%，垂直居中上下留空）
 
     // 各 Tab 的自然宽度（文字自然宽度 + 装饰宽度），由 recomputeNaturalWidths() 集中计算。
     // 不用绑定求值：绑定内写共享 TextMetrics.text 会同步触发 advanceWidthChanged，
@@ -76,13 +82,12 @@ Item {
         for (let i = 0; i < root.documentsModel.count; ++i) {
             const doc = root.documentsModel.at(i)
             labelMetrics.text = doc ? doc.displayName : ""
-            // 装饰宽：● 标记出现时（左边距 + 标记宽 + 间距）或纯左边距，
-            // 再加 标签-关闭按钮间距 + 关闭按钮宽 + 右缘
+            // 装饰宽：● 标记出现时（左边距 + 标记宽 + 间距）或纯左边距，再加右内边距
             const decor = (doc && doc.modified
                            ? root.leftMarginWithMark + markMetrics.advanceWidth
                              + root.markToLabelSpacing
                            : root.leftMarginPlain)
-                          + root.labelToCloseSpacing + root.closeButtonSize + root.closeRightEdge
+                          + root.rightPadding
             widths.push(labelMetrics.advanceWidth + decor)
         }
         root.naturalWidths = widths
@@ -298,23 +303,65 @@ Item {
             Accessible.name: (doc ? doc.displayName : "")
                              + (doc && doc.modified ? "（未保存）" : "")
 
+            // Win11 连通式标签背景：
+            // - 活动标签：主矩形顶部圆角（tabRadius）+ 底部同色补角矩形补直底两角
+            //   （Rectangle 不支持仅顶圆角，DEC-003：补角为声明式零开销、颜色绑定
+            //   主矩形随主题自动重算），同工具栏色（activeTab 引用 toolbarBackground）、
+            //   无描边；底边与组件底边重合（组件贴标题栏底边），与工具栏无缝连通；
+            // - 非活动标签：透明背景，悬停时半透明圆角高亮（AppTheme.hover）
             Rectangle {
                 id: tabBackground
                 anchors.fill: parent
-                radius: 3
-                color: tab.isActive
-                       ? AppTheme.activeTab
-                       : (tabMouseArea.containsMouse || closeButtonHover.containsMouse
-                          ? AppTheme.inactiveTabHover : AppTheme.inactiveTab)
-                border.width: 1
-                border.color: AppTheme.border
+                radius: root.tabRadius
+                color: tab.isActive ? AppTheme.activeTab : "transparent"
+
+                // 补角矩形：仅活动标签可见，补直主矩形底部两圆角（同色，无圆角）
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: root.tabRadius
+                    visible: tab.isActive
+                    color: tabBackground.color
+                }
+
+                // 非活动标签悬停高亮：半透明叠加（深浅主题各有一档，可辨）
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 4
+                    visible: !tab.isActive && tabMouseArea.containsMouse
+                    color: AppTheme.hover
+                }
             }
 
-            // 键盘焦点环（不依赖颜色深浅，双线框 + accent 色）
+            // 标签间竖分隔线（DEC-103 复用 border 语义；DEC-104 可见性规则）：
+            // 本标签非活动且左邻标签非活动时在本标签左缘画线；活动标签为
+            // 凸起卡片，其两侧不画线；首标签（index 0）左侧无线。线在标签
+            // 内部左缘、不占宽度（宽度公式/文字左边距均不动）。双依赖重算：
+            // at() 为 Q_INVOKABLE 调用、不产生绑定依赖，显式引用 count 使
+            // 行增删（countChanged）触发重求值；活动切换经 isActive（依赖
+            // activeDocument）自动重算（同 root.activeIndex 的"双依赖"先例）
+            Rectangle {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: 1
+                height: root.tabSeparatorHeight
+                color: AppTheme.border
+                visible: {
+                    root.documentsModel.count
+                    return tab.index > 0
+                           && !tab.isActive
+                           && root.documentsModel.at(tab.index - 1)
+                                !== DocumentManager.activeDocument
+                }
+            }
+
+            // 键盘焦点环（不依赖颜色深浅，双线框 + accent 色）；
+            // radius 适配新标签形状，活动（工具栏同色底）与非活动（透明底）上均可见
             Rectangle {
                 anchors.fill: parent
                 anchors.margins: 1
-                radius: 2
+                radius: 4
                 visible: tab.isFocused
                 color: "transparent"
                 border.color: AppTheme.focus
@@ -358,58 +405,10 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 anchors.left: unsavedMark.visible ? unsavedMark.right : parent.left
                 anchors.leftMargin: unsavedMark.visible ? root.markToLabelSpacing : root.leftMarginPlain
-                anchors.right: closeButton.left
-                anchors.rightMargin: root.labelToCloseSpacing
+                anchors.right: parent.right
+                anchors.rightMargin: root.rightPadding
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
-            }
-
-            // 关闭按钮（Canvas 绘制 ×，悬停可见）
-            Item {
-                id: closeButton
-                width: root.closeButtonSize
-                height: root.closeButtonSize
-                anchors.right: parent.right
-                anchors.rightMargin: root.closeRightEdge
-                anchors.verticalCenter: parent.verticalCenter
-
-                Accessible.role: Accessible.Button
-                Accessible.name: tab.doc ? "关闭标签页 " + tab.doc.displayName : "关闭标签页"
-                Accessible.onPressAction: root.closeRequested(tab.doc)
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 2
-                    color: closeButtonHover.containsMouse ? AppTheme.pressed : "transparent"
-                }
-
-                Canvas {
-                    id: closeCanvas
-                    anchors.centerIn: parent
-                    width: 8
-                    height: 8
-                    property color paintColor: AppTheme.textSecondary
-                    onPaintColorChanged: requestPaint()
-                    onPaint: {
-                        const ctx = getContext("2d")
-                        ctx.reset()
-                        ctx.strokeStyle = paintColor
-                        ctx.lineWidth = 1.1
-                        ctx.beginPath()
-                        ctx.moveTo(0.5, 0.5)
-                        ctx.lineTo(7.5, 7.5)
-                        ctx.moveTo(7.5, 0.5)
-                        ctx.lineTo(0.5, 7.5)
-                        ctx.stroke()
-                    }
-                }
-
-                MouseArea {
-                    id: closeButtonHover
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    onClicked: root.closeRequested(tab.doc)
-                }
             }
 
             ToolTip.visible: tabMouseArea.containsMouse

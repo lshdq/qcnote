@@ -283,8 +283,9 @@ Rectangle {
         anchors.right: windowControls.left
         anchors.leftMargin: 4
         anchors.rightMargin: 8
-        anchors.verticalCenter: parent.verticalCenter
-        height: 32
+        // 贴底：标签底边与标题栏底边（= 工具栏顶边）重合，活动标签与工具栏连通
+        anchors.bottom: parent.bottom
+        height: 34
 
         onCloseRequested: (doc) => root.requestCloseTab(doc)
         onCloseRangeRequested: (docs, anchor) => root.requestCloseRange(docs, anchor)
