@@ -1,2 +1,10 @@
-// Windows executable icon (embedded by windres)
+// qcnote 应用图标：复用 Qt 版资产 src/icons/qcnote.ico（多尺寸 16~256，需求 D4）。
+// 图标相对路径由 rc.exe 按 CMake 传入的 src/ 包含目录解析（见根 CMakeLists.txt）。
+#define IDI_ICON1 101
 IDI_ICON1 ICON "icons/qcnote.ico"
+
+// 应用 manifest（Per-Monitor V2 DPI 声明，需求 E1）：
+// 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID（进程默认 manifest），24 = RT_MANIFEST。
+// 配合 CMake 的 /MANIFEST:NO——manifest 只由此处嵌入，防止链接器/mt 生成默认
+// manifest 覆盖本资源（main.cpp 另有 SetProcessDpiAwarenessContext 双保险）。
+1 24 "qcnote.manifest"

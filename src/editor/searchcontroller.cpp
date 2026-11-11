@@ -1,337 +1,262 @@
+// 查找替换控制器实现。indicator 配置见 scintillaedit.cpp（每实例统一）：
+//   indicator 8 = 全部匹配（INDIC_ROUNDBOX + alpha，searchMatch 色）
+//   indicator 9 = 当前匹配（INDIC_BOX 描边，searchMatchBorder 色）
 #include "editor/searchcontroller.h"
 
-#include <QMetaObject>
-#include <QQuickItem>
-#include <QQuickTextDocument>
-#include <QTextCursor>
-#include <QTextDocument>
+#include <algorithm>
 
-namespace qcnote {
+#include "Scintilla.h"
+#include "editor/scintillaedit.h"
 
-// ==================== 构造 / 目标与文档 ====================
+namespace editor {
 
-SearchController::SearchController(QObject *parent)
-    : QObject(parent)
-{
+namespace {
+
+auto send(HWND sci, UINT msg, WPARAM w = 0, LPARAM l = 0) {
+    return ::SendMessageW(sci, msg, w, l);
 }
 
-SearchController::~SearchController() = default;
+}  // namespace
 
-QQuickItem *SearchController::target() const
-{
-    return m_target;
+void SearchController::bind(core::Document* doc, HWND sci) {
+    doc_ = doc;
+    sci_ = sci;
+    restartSearch();  // 文档对象变化：按新文档重算（索引归 0）；参数保留
 }
 
-void SearchController::setTarget(QQuickItem *target)
-{
-    if (m_target == target)
+void SearchController::setPattern(std::string_view utf8) {
+    if (params_.pattern == utf8) return;
+    params_.pattern = utf8;
+    restartSearch();  // 参数变更 = 全新查找会话
+}
+
+void SearchController::setReplacement(std::string_view utf8) {
+    params_.replacement = utf8;  // 不影响匹配集合
+    if (onChanged) onChanged();
+}
+
+void SearchController::setOptions(core::SearchOptions options) {
+    if (params_.options.matchCase == options.matchCase &&
+        params_.options.wholeWord == options.wholeWord &&
+        params_.options.regex == options.regex) {
         return;
-    m_target = target;
-    emit stateChanged();
-}
-
-QQuickTextDocument *SearchController::textDocument() const
-{
-    return m_textDocument;
-}
-
-void SearchController::setTextDocument(QQuickTextDocument *textDocument)
-{
-    if (m_textDocument == textDocument)
-        return;
-    if (m_doc)
-        disconnect(m_doc, &QTextDocument::contentsChange,
-                   this, &SearchController::onDocumentContentsChanged);
-    m_textDocument = textDocument;
-    m_doc = textDocument ? textDocument->textDocument() : nullptr;
-    if (m_doc) {
-        // 监听文档内容变化（含本控制器替换编辑之外的一切修改：正常键入、
-        // 原生撤销/重做、外部整体重置）：重算匹配并钳制当前索引，保证对话
-        // 框打开期间匹配列表与文本始终一致（需求边界：外部重置防御性钳制）
-        connect(m_doc, &QTextDocument::contentsChange,
-                this, &SearchController::onDocumentContentsChanged);
     }
-    // 文档对象变化：匹配状态按新文档重算；查找串/选项保留（会话内保留），
-    // 同一会话切换文档后无需重新输入
+    params_.options = options;
     restartSearch();
 }
 
-// ==================== 查找参数属性 ====================
-
-QString SearchController::pattern() const
-{
-    return m_engine.pattern();
+void SearchController::recompute() {
+    matches_.clear();
+    overflowed_ = false;
+    errorMessage_.clear();
+    const std::string& content = doc_ ? doc_->content() : std::string();
+    if (params_.pattern.empty()) return;  // 空查找串：恒无匹配（不报错）
+    const core::SearchResult r = core::searchFindAll(content, params_.pattern, params_.options);
+    matches_ = std::move(r.matches);
+    overflowed_ = r.overflowed;
+    errorMessage_ = r.errorMessage;
 }
 
-void SearchController::setPattern(const QString &pattern)
-{
-    if (m_engine.pattern() == pattern)
-        return;
-    m_engine.setPattern(pattern, m_engine.options());
-    restartSearch();
-}
-
-QString SearchController::replacement() const
-{
-    return m_replacement;
-}
-
-void SearchController::setReplacement(const QString &replacement)
-{
-    if (m_replacement == replacement)
-        return;
-    // 替换串不影响匹配集合（只参与未来替换的展开）：无需重算匹配，仅通知
-    m_replacement = replacement;
-    emit stateChanged();
-}
-
-bool SearchController::caseSensitive() const
-{
-    return m_engine.options().caseSensitive;
-}
-
-void SearchController::setCaseSensitive(bool on)
-{
-    SearchOptions options = m_engine.options();
-    if (options.caseSensitive == on)
-        return;
-    options.caseSensitive = on;
-    m_engine.setPattern(m_engine.pattern(), options);
-    restartSearch();
-}
-
-bool SearchController::wholeWord() const
-{
-    return m_engine.options().wholeWord;
-}
-
-void SearchController::setWholeWord(bool on)
-{
-    SearchOptions options = m_engine.options();
-    if (options.wholeWord == on)
-        return;
-    options.wholeWord = on;
-    m_engine.setPattern(m_engine.pattern(), options);
-    restartSearch();
-}
-
-bool SearchController::useRegex() const
-{
-    return m_engine.options().useRegex;
-}
-
-void SearchController::setUseRegex(bool on)
-{
-    SearchOptions options = m_engine.options();
-    if (options.useRegex == on)
-        return;
-    options.useRegex = on;
-    m_engine.setPattern(m_engine.pattern(), options);
-    restartSearch();
-}
-
-// ==================== 匹配状态属性 ====================
-
-int SearchController::matchCount() const
-{
-    return m_matches.size();
-}
-
-int SearchController::currentIndex() const
-{
-    return m_currentIndex;
-}
-
-QVariantList SearchController::matchRanges() const
-{
-    return m_matchRanges;
-}
-
-QVariantList SearchController::currentRange() const
-{
-    if (m_currentIndex < 0 || m_currentIndex >= m_matches.size())
-        return {};
-    const SearchMatch &m = m_matches.at(m_currentIndex);
-    return QVariantList{m.start, m.end};
-}
-
-bool SearchController::overflowed() const
-{
-    return m_overflowed;
-}
-
-QString SearchController::errorMessage() const
-{
-    return m_engine.errorMessage();
-}
-
-// ==================== 状态维护 ====================
-
-void SearchController::recomputeMatches()
-{
-    const SearchResult result = m_engine.findAll(m_doc ? m_doc->toPlainText() : QString());
-    m_matches = result.matches;
-    m_overflowed = result.overflowed;
-    // matchRanges 属性缓存：高亮层绑定按次整体取值，预构建避免每次取值重建
-    m_matchRanges.clear();
-    m_matchRanges.reserve(m_matches.size());
-    for (const SearchMatch &m : std::as_const(m_matches))
-        m_matchRanges.append(QVariantList{m.start, m.end});
-}
-
-void SearchController::restartSearch()
-{
-    recomputeMatches();
-    // 查找参数变更 = 全新查找会话：当前匹配定位到首个（无匹配则清除）。
-    // 不尝试从光标就近定位——控制器不追踪光标，QML 侧如需就近语义可依
-    // currentRange 二次调整
-    m_currentIndex = m_matches.isEmpty() ? -1 : 0;
-    emit stateChanged();
-}
-
-void SearchController::onDocumentContentsChanged()
-{
-    // 自身编辑（applyEdits）期间跳过：匹配状态已静默清空，编辑完成后由
-    // 调用方显式重算并定位（replaceCurrent/replaceAll），此处重算徒劳且
-    // 会在 endEditBlock 同步通知里读到中间状态
-    if (m_applyingEdits || !m_doc)
-        return;
-    recomputeMatches();
-    // 外部内容变化（正常键入/撤销/整体重置）：保持当前索引钳制到合法范围；
-    // 原本无当前匹配（-1）保持不变——外部编辑不应凭空制造当前选区
-    m_currentIndex = SearchEngine::clampedIndex(m_currentIndex, m_matches.size());
-    emit stateChanged();
-}
-
-void SearchController::reset()
-{
-    m_matches.clear();
-    m_matchRanges.clear();
-    m_currentIndex = -1;
-    m_overflowed = false;
-    emit stateChanged();
-}
-
-// ==================== 编辑应用 ====================
-
-void SearchController::applyEdits(const QList<SearchEdit> &edits)
-{
-    if (!m_doc || edits.isEmpty())
-        return;
-    // 先清空对外匹配状态并立即发 stateChanged：编辑提交（endEditBlock）会
-    // 同步发出 contentsChange/textChanged 通知，QML 高亮层的绑定随之立即
-    // 重算；此刻若仍暴露旧匹配区间，替换使文档缩短时旧区间越界，经
-    // positionToRectangle 触发 QTextCursor::setPosition 越界告警（与
-    // MultiCursorController::applyBatch 的“先切新状态再编辑”同因）。若只
-    // 清空不发信号，QML 绑定不重估、仍持旧 matchRanges，在文档已变短的
-    // 窗口内求段即产生告警——故必须同步补发 stateChanged 让 QML 拉取空
-    // 匹配状态（空列表对任何文档长度恒合法），彻底消除观察窗口。编辑完成
-    // 后由调用方重算并统一发 stateChanged；此处的信号不会引起重入（下一行
-    // 才置 m_applyingEdits，且本控制器不发 contentsChange）。
-    m_matches.clear();
-    m_matchRanges.clear();
-    m_currentIndex = -1;
-    emit stateChanged();
-
-    m_applyingEdits = true; // 本控制器编辑触发的 contentsChange 不重算（防重入）
-    QTextCursor cursor(m_doc);
-    cursor.beginEditBlock(); // 单 editBlock：「替换」一步/「全部替换」整体 = 单次撤销
-    for (const SearchEdit &e : std::as_const(edits)) {
-        // edits 已按 start 降序：从后往前应用，前面的编辑偏移不受影响
-        cursor.setPosition(e.start);
-        cursor.setPosition(e.end, QTextCursor::KeepAnchor);
-        cursor.insertText(e.text);
+void SearchController::clampIndex() {
+    const int n = static_cast<int>(matches_.size());
+    if (n == 0) {
+        currentIndex_ = -1;
+    } else if (currentIndex_ >= n) {
+        currentIndex_ = n - 1;  // 外部编辑收缩匹配表：钳制（保持当前定位）
     }
-    cursor.endEditBlock();
-    m_applyingEdits = false;
 }
 
-void SearchController::selectInTarget(int start, int end)
-{
-    if (!m_target || !m_doc)
+void SearchController::restartSearch() {
+    recompute();
+    currentIndex_ = matches_.empty() ? -1 : 0;
+    ++generation_;
+    refreshHighlights();
+    if (onChanged) onChanged();
+}
+
+void SearchController::onContentChanged() {
+    if (applying_ || !doc_) return;
+    recompute();
+    clampIndex();
+    refreshHighlights();
+    if (onChanged) onChanged();
+}
+
+int SearchController::firstMatchAtOrAfter(int pos) const {
+    const int n = static_cast<int>(matches_.size());
+    if (n == 0) return -1;
+    for (int i = 0; i < n; ++i) {
+        if (matches_[static_cast<size_t>(i)].start >= pos) return i;
+    }
+    return 0;  // 环绕到首个
+}
+
+void SearchController::applyCurrentSelection() {
+    if (!sci_ || currentIndex_ < 0 ||
+        currentIndex_ >= static_cast<int>(matches_.size())) {
         return;
-    // TextArea 的 select(start,end) 是 QML 可调用方法（TextEdit 暴露），
-    // 经元对象调用把区间设为原生选区（start==end 即光标定位）。位置钳制到
-    // 文档合法范围；target 未设置或不是 TextArea 时调用落空，静默忽略
-    //（QML 侧可改用 currentRange 属性自行联动）
-    const int maxPos = int(m_doc->characterCount()) - 1;
-    QMetaObject::invokeMethod(m_target, "select",
-                              Q_ARG(int, qBound(0, start, maxPos)),
-                              Q_ARG(int, qBound(0, end, maxPos)));
+    }
+    const core::SearchMatch& m = matches_[static_cast<size_t>(currentIndex_)];
+    send(sci_, SCI_SETSEL, static_cast<WPARAM>(m.start), static_cast<LPARAM>(m.start + m.length));
+    send(sci_, SCI_SCROLLCARET, 0, 0);
+    refreshHighlights();
 }
 
-void SearchController::selectCurrentInTarget()
-{
-    if (m_currentIndex < 0 || m_currentIndex >= m_matches.size())
-        return;
-    const SearchMatch &m = m_matches.at(m_currentIndex);
-    selectInTarget(m.start, m.end);
+void SearchController::findNext() {
+    // 计数重载：免构造 SearchResult 临时（其按值拷贝整个 matches_ 向量）
+    const int next = core::searchNextIndex(static_cast<int>(matches_.size()), currentIndex_,
+                                           true);
+    if (next < 0) return;
+    currentIndex_ = next;
+    applyCurrentSelection();
+    if (onChanged) onChanged();
 }
 
-// ==================== 导航与替换 ====================
-
-void SearchController::findNext()
-{
-    const int next = SearchEngine::nextIndex(m_matches.size(), m_currentIndex);
-    if (next < 0)
-        return; // 无匹配：无操作
-    m_currentIndex = next;
-    selectCurrentInTarget(); // 当前匹配 → 原生选区（DEC-007）
-    emit stateChanged();
+void SearchController::findPrev() {
+    const int next = core::searchNextIndex(static_cast<int>(matches_.size()), currentIndex_,
+                                           false);
+    if (next < 0) return;
+    currentIndex_ = next;
+    applyCurrentSelection();
+    if (onChanged) onChanged();
 }
 
-void SearchController::findPrev()
-{
-    const int prev = SearchEngine::prevIndex(m_matches.size(), m_currentIndex);
-    if (prev < 0)
-        return; // 无匹配：无操作
-    m_currentIndex = prev;
-    selectCurrentInTarget();
-    emit stateChanged();
+void SearchController::selectCurrent() {
+    if (currentIndex_ < 0 || !sci_) return;
+    applyCurrentSelection();
+    if (onChanged) onChanged();
 }
 
-void SearchController::replaceCurrent()
-{
-    if (!m_doc || m_matches.isEmpty() || !m_engine.isValid() || m_engine.pattern().isEmpty())
-        return;
-    if (m_currentIndex < 0 || m_currentIndex >= m_matches.size())
-        m_currentIndex = 0; // 无当前匹配时从第一个开始（对话框打开即点替换的场景）
+bool SearchController::replaceCurrent() {
+    if (!sci_ || !doc_ || matches_.empty() || params_.pattern.empty() ||
+        !errorMessage_.empty()) {
+        return false;
+    }
+    if (currentIndex_ < 0 || currentIndex_ >= static_cast<int>(matches_.size())) {
+        currentIndex_ = 0;  // 打开即点替换：从第一个开始
+    }
+    const core::SearchMatch match = matches_[static_cast<size_t>(currentIndex_)];
+    const std::string& content = doc_->content();
 
-    const SearchMatch match = m_matches.at(m_currentIndex);
-    SearchEdit edit;
-    edit.start = match.start;
-    edit.end = match.end;
-    edit.text = SearchEngine::expandReplacement(match.captured, m_replacement);
+    // 捕获组展开（正则模式重建匹配数据；纯文本直插）
+    const void* matchData =
+        core::searchRebuildMatchData(content, params_.pattern, params_.options, match);
+    const std::string replacement = core::searchExpandReplacement(
+        params_.replacement, content, match, matchData);
+    core::searchFreeMatchData(matchData);
 
-    // “替换文本之后”的新文本坐标：replaceCurrent 的光标落点与下一个匹配
-    // 的查找起点（编辑本身不改变其前方文本，原坐标 start 在新文本中有效）
-    const int caret = edit.start + edit.text.length();
-
-    applyEdits(QList<SearchEdit>{edit}); // 单 editBlock：一步一次撤销
-    recomputeMatches();
-    // 指向下一个匹配：从 caret 起首个匹配，无则环绕到第一个（与环绕导航
-    // 语义一致）；全部替换完则无当前匹配
-    m_currentIndex = SearchEngine::nextMatchIndexFrom(m_matches, caret);
-    selectInTarget(caret, caret); // 光标设置到替换文本之后
-    emit stateChanged();
+    applying_ = true;
+    // 一次 SCI_REPLACETARGET 自成一步撤销（B5「替换」= 一步一次撤销）
+    send(sci_, SCI_SETTARGETRANGE, static_cast<WPARAM>(match.start),
+         static_cast<LPARAM>(match.start + match.length));
+    send(sci_, SCI_REPLACETARGET, replacement.size(),
+         reinterpret_cast<LPARAM>(replacement.c_str()));
+    const int caret = match.start + static_cast<int>(replacement.size());
+    recompute();
+    // 指向替换文本之后的下一个匹配（环绕）；全部替换完则无当前匹配
+    currentIndex_ = firstMatchAtOrAfter(caret);
+    if (currentIndex_ >= 0) {
+        // 光标落在替换文本之后（不选中新匹配——旧版 selectInTarget(caret,caret)）
+        send(sci_, SCI_SETSEL, static_cast<WPARAM>(caret), static_cast<LPARAM>(caret));
+    }
+    applying_ = false;
+    refreshHighlights();
+    if (onChanged) onChanged();
+    return true;
 }
 
-int SearchController::replaceAll()
-{
-    if (!m_doc || m_matches.isEmpty() || !m_engine.isValid() || m_engine.pattern().isEmpty())
+int SearchController::replaceAll() {
+    if (!sci_ || !doc_ || matches_.empty() || params_.pattern.empty() ||
+        !errorMessage_.empty()) {
         return 0;
-    // 按原文本坐标一次性计算（替换产物不参与本轮）；edits 已按 start 降序
-    const QList<SearchEdit> edits =
-            SearchEngine::computeReplaceEdits(m_doc->toPlainText(), m_matches, m_replacement);
-    if (edits.isEmpty())
-        return 0;
-    applyEdits(edits); // 单 editBlock：全部替换整体 = 单次撤销
-    recomputeMatches();
-    // 替换产物不参与本轮，但新一轮查找会话从新文本重新计算（如 “aa”→“a”
-    // 替换后仍可能有 “aa” 残留匹配，如实呈现）；当前匹配指向首个剩余匹配
-    m_currentIndex = m_matches.isEmpty() ? -1 : 0;
-    emit stateChanged();
-    return edits.size();
+    }
+    // 按原文本坐标一次性计算每处替换文本（替换产物不参与本轮——升序缝合
+    // 与 core::searchReplaceAll 契约产物一致），从后往前应用，单批撤销
+    const std::string& content = doc_->content();
+    std::vector<std::pair<core::SearchMatch, std::string>> edits;
+    edits.reserve(matches_.size());
+    for (const core::SearchMatch& m : matches_) {
+        const void* matchData =
+            core::searchRebuildMatchData(content, params_.pattern, params_.options, m);
+        edits.emplace_back(
+            m, core::searchExpandReplacement(params_.replacement, content, m, matchData));
+        core::searchFreeMatchData(matchData);
+    }
+
+    applying_ = true;
+    send(sci_, SCI_BEGINUNDOACTION, 0, 0);
+    for (auto it = edits.rbegin(); it != edits.rend(); ++it) {
+        send(sci_, SCI_SETTARGETRANGE, static_cast<WPARAM>(it->first.start),
+             static_cast<LPARAM>(it->first.start + it->first.length));
+        send(sci_, SCI_REPLACETARGET, it->second.size(),
+             reinterpret_cast<LPARAM>(it->second.c_str()));
+    }
+    send(sci_, SCI_ENDUNDOACTION, 0, 0);
+    // 光标落在首处替换文本之后（旧版 editBlock 从后往前应用后的落点）
+    const int caret = edits.front().first.start +
+                      static_cast<int>(edits.front().second.size());
+    recompute();
+    currentIndex_ = matches_.empty() ? -1 : 0;
+    send(sci_, SCI_SETSEL, static_cast<WPARAM>(caret), static_cast<LPARAM>(caret));
+    applying_ = false;
+    refreshHighlights();
+    if (onChanged) onChanged();
+    return static_cast<int>(edits.size());
 }
 
-} // namespace qcnote
+void SearchController::clearHighlights() {
+    // DEC-009：关闭对话框——清全部高亮，匹配状态（matches/currentIndex/
+    // 参数）保留供 F3 继续跳转
+    if (!sci_) return;
+    const int len = static_cast<int>(send(sci_, SCI_GETLENGTH, 0, 0));
+    send(sci_, SCI_SETINDICATORCURRENT, editor::kIndicatorSearchMatch, 0);
+    send(sci_, SCI_INDICATORCLEARRANGE, 0, static_cast<LPARAM>(len));
+    send(sci_, SCI_SETINDICATORCURRENT, editor::kIndicatorSearchCurrent, 0);
+    send(sci_, SCI_INDICATORCLEARRANGE, 0, static_cast<LPARAM>(len));
+}
+
+void SearchController::setHighlightsEnabled(bool on) {
+    highlightsOn_ = on;
+    if (on) {
+        refreshHighlights();
+    } else {
+        clearHighlights();
+    }
+}
+
+bool SearchController::currentMatchRange(int* start, int* length) const {
+    if (!start || !length || currentIndex_ < 0 ||
+        currentIndex_ >= static_cast<int>(matches_.size())) {
+        return false;
+    }
+    const core::SearchMatch& m = matches_[static_cast<size_t>(currentIndex_)];
+    *start = m.start;
+    *length = m.length;
+    return true;
+}
+
+void SearchController::refreshHighlights() {
+    if (!sci_) return;
+    clearHighlights();
+    if (!highlightsOn_) return;  // 对话框关闭态：不绘制（DEC-009）
+    // >10000（溢出）：停止绘制全部匹配底色（导航/替换仍可用，DEC-004）
+    if (!overflowed_) {
+        send(sci_, SCI_SETINDICATORCURRENT, editor::kIndicatorSearchMatch, 0);
+        for (const core::SearchMatch& m : matches_) {
+            if (m.length <= 0) continue;  // 零长度匹配不高亮（DEC-005）
+            send(sci_, SCI_INDICATORFILLRANGE, static_cast<WPARAM>(m.start),
+                 static_cast<LPARAM>(m.length));
+        }
+    }
+    // 当前匹配描边（单段开销可忽略，溢出时保留——旧版语义）
+    if (currentIndex_ >= 0 && currentIndex_ < static_cast<int>(matches_.size())) {
+        const core::SearchMatch& m = matches_[static_cast<size_t>(currentIndex_)];
+        if (m.length > 0) {
+            send(sci_, SCI_SETINDICATORCURRENT, editor::kIndicatorSearchCurrent, 0);
+            send(sci_, SCI_INDICATORFILLRANGE, static_cast<WPARAM>(m.start),
+                 static_cast<LPARAM>(m.length));
+        }
+    }
+}
+
+}  // namespace editor

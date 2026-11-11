@@ -1,169 +1,141 @@
+// qcnote 多光标 Scintilla 交互映射层（M3-B，B4）。
+//
+// 职责边界（与 core/multicursor 纯逻辑的三层模式，对齐旧版
+// MultiCursorController + MultiCursorEngine）：
+//   - core/multicursor 只计算「目标光标/选区集合」（字节偏移）；
+//   - 本层做交互映射：子类化 Scintilla 子窗口拦截 Alt 系鼠标与多光标
+//     触发键，把核心层结果经 SCI_SETSELECTION/ADDSELECTION 应用到
+//     Scintilla 原生多选区（渲染/同步编辑/撤销合并全由 Scintilla 承担）；
+//   - 组装层（main.cpp）经 EditorHost 的 onWindowCreated/Destroyed 挂接。
+//
+// 旧语义 → Scintilla 映射（详表见 M3-B 报告）：
+//   Alt+单击加光标      → 拦截 WM_LBUTTONDOWN（wParam MK_ALT，无 Shift）→
+//                          SCI_POSITIONFROMPOINTCLOSE + 集合重建（去重后
+//                          SETSELECTION+ADDSELECTION，主光标=位置最末，与
+//                          旧版 primary 语义一致）
+//   Alt+Shift+拖拽列选  → 放行原生（ButtonDownWithModifiers 对 Alt 键置
+//                          selType=rectangle，拖拽/自动滚动/逐行视觉展开/
+//                          短行钳制全原生；中文全角对齐由
+//                          SetRectangularRange 的视觉 x 命中保证）；
+//                          WM_LBUTTONUP 时把矩形选区转普通多选区
+//                          （SETSELECTIONMODE(STREAM)+CANCEL，对齐旧版
+//                          finishColumnSelect「定格为普通多选区」——否则原生
+//                          Enter/方向键会 DropAdditionalRanges 塌缩）
+//   Ctrl+Alt+↑/↓        → core::multicursorAddLine → 全量重设 selections
+//   Ctrl+Alt+Shift+方向  → 键盘列选：↑/↓ 放行原生 SCI_LINE*RECTEXTEND
+//                          （lastXChosen 即期望 x 粘性）；←/→ 自实现
+//                          「字符步进不跨行」（原生 CharLeft/RightRectExtend
+//                          会跨行），步进后 SETRECTANGULARSELECTIONCARET +
+//                          把主选区指到活动角（使 CHOOSECARETX 更新的
+//                          lastXChosen 取活动角 x，粘性正确传递给后续原生
+//                          ↑/↓）+ SCI_SCROLLRANGE 保持两角可见
+//   Shift+Alt+I         → core::multicursorLineEnds 行尾集合
+//   Ctrl+D              → 无选区：每光标各自选词（wordRangeAt）；有选区：
+//                          core::multicursorNextOccurrence 追加（环绕、严格
+//                          重叠跳过）
+//   Ctrl+Shift+L        → core::multicursorAllOccurrences
+//   Esc（多光标激活）    → core::multicursorCollapse 收缩末光标
+//   Ctrl+C/X（多选区）  → 自定义剪贴板：按位置排序后每选区一行 \n 拼接
+//                          （空选区光标贡献空行；不写 cfColumnSelect 标记——
+//                          原生复制矩形选区会标记列剪贴板，导致单光标粘贴
+//                          触发 PasteRectangular，偏离旧版纯文本语义）
+//   Ctrl+V（多选区）    → core::multicursorPasteDistributes 判定：行数==光标
+//                          数逐行分发（剪贴板行拆分 + 每选区替换，单批撤销）；
+//                          否则每光标整份替换（BEGINUNDOACTION 合并）
+//   键入/Backspace/Delete/Enter/方向/Home/End → 原生（依赖
+//                          SCI_SETADDITIONALSELECTIONTYPING(true)，逐光标
+//                          执行且单批撤销；矩形选区例外：先转普通多选区）
+//   IME 提交分发        → 原生：WM_IME_COMPOSITION(GCS_RESULTSTR) →
+//                          AddWString → InsertCharacter 与键入同一代码路径，
+//                          分发所有选区并单批撤销（源码级验证 + 自测注入
+//                          WM_CHAR 等价路径断言）；组合窗/预编辑由原生
+//                          inline IME 呈现
+//
+// 单批撤销：本层所有批量编辑（粘贴分发/剪切删除）显式包
+// SCI_BEGINUNDOACTION/ENDUNDOACTION；键入/Enter 等原生路径由 Scintilla
+// UndoGroup 内建合并——一次按键一步回滚（B4）。
 #pragma once
 
-#include <QtQmlIntegration/qqmlintegration.h>
-#include <QObject>
-#include <QQuickItem>
-#include <QQuickTextDocument>
-#include <QRectF>
-#include <QString>
-#include <QVariantList>
+#include <windows.h>
 
-#include "editor/multicursorengine.h"
+#include <functional>
+#include <string>
+#include <vector>
 
-// moc 生成的元对象要求指针属性指向完整类型，QQuickItem/QQuickTextDocument
-// 须完整包含；QTextDocument/QEvent 仅在实现中使用，前置声明即可
-class QTextDocument;
-class QEvent;
+#include "core/multicursor.h"
 
-namespace qcnote {
+namespace editor {
 
-/**
- * @brief 多光标 QML 控制器：在 MultiCursorEngine 纯逻辑之上对接 QML TextArea。
- *
- * 职责边界：
- * - 引擎（multicursorengine）只做纯文本坐标计算；本控制器负责把引擎结果
- *   应用到 QTextDocument（QQuickTextDocument），并把光标/选区状态以属性
- *   形式暴露给 QML（覆盖层渲染、状态栏提示）。
- * - active=false 时不拦截任何按键/输入法事件，引擎内保留单光标状态与
- *   原生光标同步（QML 经 syncNativeCursor 维护）。
- *
- * QML 侧典型接入（T3）：
- * - target 绑定对应 TextArea（用于捕捉输入法提交）；
- * - textDocument 绑定 editor.textDocument；
- * - TextArea 的 Keys.onPressed 调 handleKey(...)，返回 true 时置
- *   event.accepted = true；
- * - active 为 false 时在 cursorPosition/selection 变化时调
- *   syncNativeCursor(...)；
- * - Alt+单击 / Alt+Shift+拖拽分别调 altClick / columnDragBeginAt-
- *   UpdateAt-End（拖拽传原始坐标，控制器经布局逐行命中）；
- * - 文档内容被外部重置或关闭文档时调 reset()。
- *
- * 所有属性共用同一个 stateChanged 通知信号：任何命令执行后统一发射，
- * QML 绑定按需重新拉取最新值。
- */
-class MultiCursorController : public QObject
-{
-    Q_OBJECT
-    QML_ELEMENT
-
-    Q_PROPERTY(QQuickItem *target READ target WRITE setTarget NOTIFY stateChanged)
-    Q_PROPERTY(QQuickTextDocument *textDocument READ textDocument WRITE setTextDocument NOTIFY stateChanged)
-    Q_PROPERTY(bool active READ active NOTIFY stateChanged)
-    Q_PROPERTY(bool columnSelecting READ columnSelecting NOTIFY stateChanged)
-    Q_PROPERTY(int cursorCount READ cursorCount NOTIFY stateChanged)
-    Q_PROPERTY(int primaryPosition READ primaryPosition NOTIFY stateChanged)
-    Q_PROPERTY(QVariantList cursorPositions READ cursorPositions NOTIFY stateChanged)
-    Q_PROPERTY(QVariantList selectionRanges READ selectionRanges NOTIFY stateChanged)
-
+class MultiCursorHost {
 public:
-    explicit MultiCursorController(QObject *parent = nullptr);
-    ~MultiCursorController() override;
+    MultiCursorHost() = default;
+    ~MultiCursorHost();
 
-    QQuickItem *target() const;
-    void setTarget(QQuickItem *target);
+    MultiCursorHost(const MultiCursorHost&) = delete;
+    MultiCursorHost& operator=(const MultiCursorHost&) = delete;
 
-    QQuickTextDocument *textDocument() const;
-    void setTextDocument(QQuickTextDocument *textDocument);
+    // 子窗口生命周期（EditorHost onWindowCreated/Destroyed 挂接）
+    void attachWindow(HWND sci);
+    void detachWindow(HWND sci);
+    void detachAll();
+    bool owns(HWND sci) const;
 
-    /// 引擎是否已接管编辑（多光标或存在多光标选区）
-    bool active() const;
-    /// 是否处于列选拖拽中（透传引擎状态）
-    bool columnSelecting() const;
-    int cursorCount() const;
-    /// 排序最末光标的 position（QML 用于同步 TextArea.cursorPosition）
-    int primaryPosition() const;
-    /// 全部光标 position 升序
-    QVariantList cursorPositions() const;
-    /// 每个非空选区一对 [start,end]（内嵌 QVariantList），按 start 升序
-    QVariantList selectionRanges() const;
+    // —— 交互入口（子类化消息的真实路径；mod 显式传入便于自测注入）——
 
-    /// active==false 时由 QML 在原生 cursorPosition/selection 变化时调用
-    /// （有选区 anchor=selectionStart，否则 anchor=position），维护引擎基础状态
-    Q_INVOKABLE void syncNativeCursor(int position, int anchor);
+    // 键盘拦截：返回 true = 已消费（不透传 Scintilla）
+    bool handleKeyDown(HWND sci, UINT vk, bool ctrl, bool shift, bool alt);
 
-    /// 集中按键分发；返回 true 表示已消费（QML 将 event.accepted = true）
-    Q_INVOKABLE bool handleKey(int key, int modifiers, const QString &text);
+    // 鼠标左键按下拦截（wParamFlags = WM_LBUTTONDOWN 的 wParam，真实与
+    // 合成消息均携带 MK_ALT/MK_SHIFT）：返回 true = 已消费
+    bool handleMouseButtonDown(HWND sci, UINT wParamFlags, POINT pt);
 
-    /// Alt+单击加光标
-    Q_INVOKABLE void altClick(int position);
+    // 鼠标左键抬起：矩形选区 → 普通多选区（列选定格，旧版语义）
+    void handleMouseButtonUp(HWND sci);
 
-    /// Alt+Shift+鼠标拖拽列选（视觉列选：x/y 为 TextArea 子项坐标系原始
-    /// 坐标，由控制器经真实布局逐行命中，中文/全角宽度与短行钳制均由
-    /// 布局保证；旧位置式接口已移除，位置语义无法表达视觉对齐）
-    Q_INVOKABLE void columnDragBeginAt(qreal x, qreal y);
-    Q_INVOKABLE void columnDragUpdateAt(qreal x, qreal y);
-    Q_INVOKABLE void columnDragEnd();
+    // DEC-008：打开查找对话框前退出多光标（收缩末光标，同 Esc）
+    void collapseIfActive(HWND sci);
 
-    /// 多光标剪贴板操作（active 时有效；copy 无任何选区时不写剪贴板）
-    Q_INVOKABLE void copy();
-    Q_INVOKABLE void cut();
-    Q_INVOKABLE void paste();
+    // 多光标激活（选区数 > 1）
+    static bool active(HWND sci);
 
-    /// 退单光标并清引擎状态（文档内容外部重置/关闭文档时 QML 调用）
-    Q_INVOKABLE void reset();
+    // —— 自动化测试直调入口（显式修饰键；与真实路径同一内部函数）——
+    void testKeyDown(HWND sci, UINT vk, bool ctrl, bool shift, bool alt) {
+        handleKeyDown(sci, vk, ctrl, shift, alt);
+    }
+    void testAltClick(HWND sci, POINT pt) {
+        handleMouseButtonDown(sci, MK_ALT, pt);
+        handleMouseButtonUp(sci);
+    }
+    void testPaste(HWND sci);  // Ctrl+V 多光标粘贴路径（读注入/系统剪贴板）
 
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override;
+    // 剪贴板存取注入（自动化测试用内存实现规避系统剪贴板可用性抖动；
+    // 空指针恢复系统实现——真实用户路径不变）
+    void setClipboardAccessForTest(std::function<std::string(HWND)> read,
+                                   std::function<bool(HWND, const std::string&)> write);
 
-signals:
-    /// 全部属性共用的变更通知
-    void stateChanged();
+    // 状态栏刷新挂点（集合重建后调用；常规键入/移动经 SCN_UPDATEUI 已覆盖）
+    std::function<void(HWND)> onSelectionsRebuilt;
 
 private:
-    /// 应用编辑批次：单 editBlock 从后往前应用（一次按键 = 单次撤销），
-    /// 然后重设引擎光标并发 stateChanged
-    void applyBatch(const McEditBatch &batch);
+    std::vector<HWND> windows_;
+    // 剪贴板存取（默认系统实现；测试可注入内存实现）
+    std::function<std::string(HWND)> readClipboard_ = nullptr;
+    std::function<bool(HWND, const std::string&)> writeClipboard_ = nullptr;
 
-    /// 外部文本变化（不经 applyBatch，如 text 绑定整体替换、原生撤销）后，
-    /// 把引擎光标/选区位置静默钳制到当前文档合法范围（防越界告警，见实现）
-    void clampCursorsToDocument();
-
-    /// Ctrl+Alt+Shift+方向键：键盘列选（首次进入列选模式，之后逐格扩展）
-    void keyboardColumnSelect(int key, const QString &text);
-
-    /// 布局查询：经 QMetaObject 按名称调用 target（Controls TextArea）的
-    /// positionAt/positionToRectangle（均为 Qt 文档化 QML 方法）。不直接
-    /// include QQuickTextEdit 头（该公共头未随安装布局转发，编译期不可依赖）
-    int layoutPositionAt(qreal x, qreal y) const;   // 失败返回 -1 并 qWarning
-    QRectF layoutCursorRect(int position) const;    // 失败返回空 QRectF() 并 qWarning
-
-    /// 视觉列选的逐行命中：对 [yTop, yBottom] 覆盖的每个可视行，以行中心
-    /// y 对 x1/x2 各做一次 positionAt 命中，归一为正向区间对 [min,max)。
-    /// 短行命中天然钳制行末（不越界到下一行）；查询失败返回空表（DEC-002）
-    QList<QPair<int, int>> visualColumnPairs(qreal x1, qreal x2,
-                                             qreal yTop, qreal yBottom) const;
-
-    /// active = 多光标或存在选区（任一引擎命令实际改变光标/选区状态即接管）
-    void syncActiveFromEngine();
-
-    bool hasSelection() const;
-
-    /// Esc/未支持命令：clearToLast + active=false + stateChanged
-    void deactivateToLast();
-
-    /// 结束键盘列选会话（引擎列选状态定格为普通多选区）
-    void endKbColumnSession();
-
-    MultiCursorEngine m_engine;
-    QQuickItem *m_target = nullptr;
-    QQuickTextDocument *m_textDocument = nullptr;
-    QTextDocument *m_doc = nullptr;
-    bool m_active = false;
-
-    /// applyBatch 编辑文档期间为真：此时引擎已持有批次后新光标，
-    /// contentsChange 钳制跳过（避免干扰批次应用）
-    bool m_applyingBatch = false;
-
-    // 视觉列选会话状态（鼠标与键盘共用同一套逐行命中，量均为 TextArea
-    // 子项坐标系视觉量）：矩形两边由“锚点视觉 x + 活动点期望视觉 x”决定，
-    // 期望 x 粘性——垂直移动不改，经过短行再移出后自动恢复
-    bool m_kbColumnActive = false;  // 键盘列选会话进行中
-    qreal m_colDragAnchorX = 0;     // 鼠标列选锚点视觉 x（按下点）
-    qreal m_colDragAnchorY = 0;     // 鼠标列选锚点行顶 y（命中位光标矩形归一）
-    qreal m_kbAnchorX = 0;          // 键盘列选锚点视觉 x
-    qreal m_kbAnchorY = 0;          // 键盘列选锚点行顶 y
-    qreal m_kbCursorX = 0;          // 键盘活动点期望视觉 x（粘性）
-    qreal m_kbCursorY = 0;          // 键盘活动点行顶 y
+    std::string clipboardRead(HWND owner);
+    bool clipboardWrite(HWND owner, const std::string& utf8);
 };
 
-} // namespace qcnote
+// —— 共享工具（供查找控制器等复用）——
+
+// 收集 Scintilla 全部选区（按 (caret, anchor) 升序；矩形选区取逐行展开结果）
+std::vector<core::SelRange> CollectSelections(HWND sci);
+
+// 按升序全量重设 selections（SETSELECTION+ADDSELECTION；先转普通流式
+// 多选区并清 moveExtends；主光标 = 位置最末，对齐旧版 primary 语义）
+void ApplySelections(HWND sci, const std::vector<core::SelRange>& selections);
+
+// 活动文档当前不含换行的选区文本（无选区/多行选区返回空；供查找预填）
+std::string SelectionTextForSearch(HWND sci);
+
+}  // namespace editor

@@ -1,120 +1,98 @@
+// qcnote M5：单实例转发（D1）——Win32 命名互斥量 + 主窗口域标签 + WM_COPYDATA。
+//
+// 旧版（Qt QLocalServer，基线 4e313f0）语义对照与本版决策：
+// - 旧服务名 qcnote-<USERNAME>：机器级命名管道 + 用户名后缀隔离 → **全局唯一，
+//   不含 exe 路径成分**（便携复制到不同目录也并入同一单实例域）。本版对齐：
+//   命名互斥量固定 Local\qcnote.singleinstance（Local\ 前缀天然按登录会话隔离，
+//   无需再拼用户名）——不按 exe 路径派生（决策记录见 M5 报告）。
+// - 二次启动：参数转发既有实例后以退出码 0 结束（空列表也发送：对方仅前置
+//   窗口不开新标签）；转发失败（窗口枚举不到 / WM_COPYDATA 超时或返回失败）
+//   → **降级为独立运行，不阻断启动**（D1「IPC 不可用时降级」）。
+// - 主实例侧：转发到达 → 参数入待打开队列（WM_COPYDATA 处理内只入队 + 投递
+//   消息，立即返回 TRUE 解除对端阻塞）→ 消息循环消化时经「打开文件」语义打开
+//   （去重激活已有标签、失败弹错误框，非会话恢复的静默跳过）→ 前置主窗口
+//   （最小化先还原；旧版 requestActivate 语义）。
+//
+// 域标签（窗口属性）机制：主实例在主窗口挂 SetProp 域标签；转发方枚举候选
+// 窗口后按域匹配。目的：同机多域并存时（--userdir 测试隔离域 vs 真实实例的
+// 基础域，或降级产生的多实例）不把参数错投给别的域的窗口。
+//
+// 测试隔离：互斥量域可由 --userdir（仅测试钩子）派生——不同 userdir = 不同
+// 互斥量名 + 不同域标签，e2e 场景互不干扰、绝不触碰真实实例的基础域；
+// SelectPrimaryWindow 的属性读取经函数注入，单测可 fake（tests/test_platform.cpp）。
 #pragma once
 
-#include <QtQmlIntegration/qqmlintegration.h>
-#include <QByteArray>
-#include <QHash>
-#include <QList>
-#include <QObject>
-#include <QString>
-#include <QUrl>
+#include <windows.h>
 
-class QLocalServer;
-class QLocalSocket;
-class QQmlEngine;
-class QJSEngine;
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <optional>
+#include <string>
+#include <vector>
 
-/**
- * @brief 单实例转发（QML 单例）。
- *
- * 资源管理器右键“用qcnote打开”经 "<exe>" "%1" 启动 qcnote 时的单实例语义：
- * - 启动早期（main 中、引擎加载前）调用 initialize()：能连上既有服务 →
- *   参数经本地 IPC 转发，调用方直接以退出码 0 结束；连不上 → 清理残留后
- *   监听，本实例成为主实例（监听失败降级，启动流程不中断）。
- * - 主实例侧收到 URL：追加待打开队列；DocumentManager 已就绪则立即刷出
- *   （openUrls + urlsOpened），未就绪仅入队（QML 稍后经 openPendingUrls()
- *   刷出）；每次 IPC 到达均发 activationRequested()（供 QML 前置窗口）。
- * - IPC 协议（UTF-8）：单行 JSON {"urls":["file:///D:/a%20b.txt",...]} +
- *   '\n' 结尾。encodeFrame/decodeFrame 为静态纯函数，编解码可独立单测；
- *   服务端按连接缓冲、按 '\n' 分帧，容忍半包累积与粘包，可处理多个先后
- *   到达的连接。
- *
- * 服务名默认 qcnote-<USERNAME>（环境变量不可得时回退 qcnote）；测试注入
- * 随机名隔离，绝不以默认名监听。可脱离 QML 引擎在 C++ 测试中直接 new；
- * main 在引擎加载前经 create(nullptr, nullptr) 创建并初始化（默认服务名），
- * QML 侧 create() 复用同一实例（生命周期归 C++ 管理）。
- *
- * 本类必须保持不可默认构造（首参 serverName 必填）：Qt 6 单例构造模式判定
- * 中 std::is_default_constructible 优先级高于 create 工厂，若默认可构造，
- * QML 引擎会绕过 create() 直接 new SingleInstance()，导致与 main 预建实例
- * 分裂（IPC 服务与待打开队列归属另一对象）——缺陷 D1 教训，机制对齐
- * SessionManager（首参必填）。
- */
-class SingleInstance : public QObject
-{
-    Q_OBJECT
-    QML_ELEMENT
-    QML_SINGLETON
+namespace platform::singleinstance {
 
-public:
-    /// initialize() 的启动角色结果
-    enum class StartupRole {
-        Forwarded,       ///< 已转发给既有主实例（调用方应直接以退出码 0 结束）
-        Primary,         ///< 本实例成为主实例（持有本地 IPC 服务）
-        PrimaryDegraded, ///< 主实例但监听失败（无 IPC，启动流程不中断）
-    };
-    Q_ENUM(StartupRole)
+/// WM_COPYDATA.dwData 魔数（'Q''C''N''1' 小端 = 0x314E4351）：首实例侧帧识别
+constexpr ULONG_PTR kForwardMagic = 0x314E4351;
 
-    /**
-     * @param serverName 本地 IPC 服务名；为空时用默认 qcnote-<USERNAME>
-     *                   （测试注入随机名，避免与真实运行实例冲突）
-     */
-    explicit SingleInstance(const QString &serverName, QObject *parent = nullptr);
-    ~SingleInstance() override;
+/// 基础域互斥量名（全局唯一；Local\ = 登录会话命名空间）
+extern const wchar_t* const kBaseMutexName;
 
-    /// QML 单例工厂：复用同一实例（生命周期归 C++ 管理，QML 引擎不负责销毁）；
-    /// main 在引擎加载前已先调用 create(nullptr, nullptr) 完成初始化
-    static SingleInstance *create(QQmlEngine *qmlEngine, QJSEngine *jsEngine);
+/// 主窗口域标签的窗口属性名（SetPropW/GetPropW）
+extern const wchar_t* const kDomainWindowProp;
 
-    /// C++ 侧单例访问（未经 create() 创建时为 nullptr）
-    static SingleInstance *instance();
+/// 基础域标签（= 空 userDir 的 FNV-1a 64 偏移基，见 DomainTag）
+constexpr ULONG_PTR kBaseDomainTag = 0xcbf29ce484222325ull;
 
-    /**
-     * @brief 单实例初始化（main 在引擎加载前调用一次；重复调用返回上次结果）。
-     *
-     * 尝试连接既有服务（约 1000ms 超时）：成功 → 发送载荷并返回 Forwarded
-     * （空列表也发送：对方仅前置窗口不开新标签）；失败 → removeServer 清残留
-     * 后 listen：成功 → 本次启动 URL 入待打开队列并返回 Primary；失败 →
-     * qWarning 警告并返回 PrimaryDegraded（URL 仍入队，仅无 IPC）。
-     */
-    StartupRole initialize(const QList<QUrl> &urls);
+/// 域标签：userDir 为空 → 基础域固定值；非空 → 路径小写化后 FNV-1a 64。
+/// 互斥量名（MutexName）与主窗口属性（AttachDomainTag）共用同一派生
+ULONG_PTR DomainTag(const std::wstring& userDir);
 
-    /// 刷出全部待打开 URL：管理器存在时经 openUrls 打开发 urlsOpened；
-    /// 管理器未就绪则保留队列（无丢失），供 QML 在就绪后再次调用
-    Q_INVOKABLE void openPendingUrls();
+/// 互斥量名：基础域 → kBaseMutexName；注入域 → Local\qcnote.si.<16hex 标签>
+std::wstring MutexName(const std::wstring& userDir);
 
-    /// 默认服务名：qcnote-<USERNAME>（不可得时回退 qcnote）
-    static QString defaultServerName();
+// —— WM_COPYDATA 载荷编解码（纯函数；UTF-16 路径数组，空列表合法 = 仅激活）——
+/// 帧结构（小端）：u32 路径数 + 逐路径 { u32 wchar 长度 + UTF-16 内容（无 NUL）}
+std::vector<std::uint8_t> EncodeForwardPayload(const std::vector<std::filesystem::path>& paths);
 
-    /// 编码为完整 IPC 帧：单行紧凑 JSON + '\n' 结尾（UTF-8，可直接 write）
-    static QByteArray encodeFrame(const QList<QUrl> &urls);
+/// 解码一帧；结构不合法（短读 / 超限 / 尾部余量 / 长度越界）返回 nullopt。
+/// 空串路径跳过（防御，不影响整帧成功，与旧版 decodeFrame 语义一致）
+std::optional<std::vector<std::filesystem::path>>
+DecodeForwardPayload(const void* data, std::size_t bytes);
 
-    /// 解码一帧（容忍末尾 '\n'）：解析失败置 *ok=false 并返回空列表
-    static QList<QUrl> decodeFrame(const QByteArray &frame, bool *ok = nullptr);
+/// WM_COPYDATA 处理入口判定：魔数 + 尺寸上下限校验（下限 4 = count 字段）
+bool IsForwardPayload(const COPYDATASTRUCT* cds);
 
-signals:
-    /// 待打开 URL 已刷出（无论 IPC 到达后立即刷出还是 openPendingUrls 刷出）
-    void urlsOpened(const QList<QUrl> &urls);
+// —— 主窗口选择（枚举注入可测）——
+/// 枚举全部顶层 <className> 窗口（不过滤可见性：headless 主窗口永不显示，
+/// 但仍应被转发命中；EnumWindows 自顶向下 Z 序）
+std::vector<HWND> EnumTopLevelWindowsOfClass(const wchar_t* className);
 
-    /// 请求前置窗口（仅 IPC 到达路径发出；空列表转发仅前置不打开）
-    void activationRequested();
+/// 从候选中选首实例主窗口：第一个域标签匹配者（Z 序最高）；无匹配 → nullptr
+///（调用方降级为独立运行）。propReader 注入：生产 = GetPropW 包装，测试 = fake
+HWND SelectPrimaryWindow(const std::vector<HWND>& candidates, ULONG_PTR domainTag,
+                         const std::function<ULONG_PTR(HWND)>& propReader);
 
-private:
-    void onNewConnection();
-    void onReadyRead();
-    void onSocketDisconnected();
-    /// 处理一个完整帧：解码入队 → 管理器就绪则立即刷出 → 发 activationRequested
-    void handleFrame(const QByteArray &frame);
-    /// urls 非空时追加待打开队列；管理器已存在则立即刷出
-    void appendPendingUrls(const QList<QUrl> &urls);
-    /// 刷出待打开队列：管理器未就绪时保留队列（无丢失）
-    void flushPendingUrls();
+/// 位置参数归一（D2 健壮性）：相对路径 → 按当前工作目录绝对化（保留原样语义，
+/// 不解析符号链接/不校验存在——不存在文件的报错路径要展示用户给的路径）；
+/// 绝对化失败（如当前目录不可得）原样返回
+std::filesystem::path AbsolutizeForOpen(const std::filesystem::path& path);
 
-    static SingleInstance *s_instance;
+// —— 进程级流程（main 接线）——
+/// 二次启动转发：枚举（含 ~1s 首实例窗口就绪重试，覆盖慢启动竞态）→
+/// SendMessageTimeout（5s，SMTO_ABORTIFHUNG）发 WM_COPYDATA。
+/// @return true = 转发成功（调用方应立即以退出码 0 结束）；
+///         false = 窗口枚举不到 / 发送失败（降级独立启动，D1 不阻断）
+bool TryForwardToPrimary(const std::vector<std::filesystem::path>& paths,
+                         ULONG_PTR domainTag, const wchar_t* windowClass);
 
-    QString m_serverName;                        ///< IPC 服务名（构造时解析，空则默认）
-    QLocalServer *m_server = nullptr;            ///< 主实例监听（Forwarded 路径不创建）
-    QHash<QLocalSocket *, QByteArray> m_buffers; ///< 每连接分帧缓冲（半包累积、粘包切分）
-    QList<QUrl> m_pendingUrls;                   ///< 待打开队列（管理器未就绪时暂存）
-    StartupRole m_role = StartupRole::Primary;   ///< initialize 结果缓存（重复调用返回）
-    bool m_initialized = false;                  ///< 是否已初始化
-};
+/// 主实例：在主窗口挂域标签（转发方匹配依据；窗口销毁时系统自动回收属性）
+void AttachDomainTag(HWND mainWindow, ULONG_PTR domainTag);
+
+/// 转发到达后的激活（旧版 requestActivate 语义）：最小化先还原 + 前置。
+/// --headless 等「不可见窗口」场景由调用方跳过（无激活语义，防自动化扰动）
+void ActivateMainWindow(HWND mainWindow);
+
+}  // namespace platform::singleinstance
