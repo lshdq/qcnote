@@ -1,13 +1,67 @@
 // Scintilla 编辑器组件实现。消息常量/通知结构见 vendor/scintilla/include/Scintilla.h。
 #include "editor/scintillaedit.h"
 
+#include <commctrl.h>   // SetWindowSubclass/DefSubclassProc/RemoveWindowSubclass
+#include <windowsx.h>   // GET_X_LPARAM/GET_Y_LPARAM（WM_NCHITTEST 屏幕坐标分解）
+
 #include <algorithm>
 
 #include "Scintilla.h"
 #include "core/textutil.h"
 #include "ui/theme.h"
+#include "ui/titlebar.h"
 
 namespace editor {
+
+namespace {
+
+// 编辑器子窗口边缘命中透传子类过程（F6）。子窗口横跨客户区全宽，窗口左/
+// 右/底边缘的 WM_NCHITTEST 先命中子窗口返回 HTCLIENT，主窗口的命中计算
+//（ui::ComputeCaptionHitTest）收不到，导致无 resize 光标、无法拖宽窗口。
+// 处理：命中换算到父窗口客户区后调 ComputeCaptionHitTest，若落在 8 向缩放
+// 命中区则返回 HTTRANSPARENT（Windows 会把该命中消息落到下层/父窗口，由父
+// 窗口处理 resize 光标与拖拽）；其余一律走默认处理，不影响文本交互。
+LRESULT CALLBACK EdgeHitSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                     UINT_PTR /*id*/, DWORD_PTR /*ref*/) {
+    switch (msg) {
+    case WM_NCDESTROY:
+        // 窗口销毁时撤销本子类化（防悬挂）；继续默认流程走原销毁路径
+        ::RemoveWindowSubclass(hwnd, EdgeHitSubclassProc, kEdgeHitSubclassId);
+        break;
+    case WM_NCHITTEST: {
+        const HWND parent = ::GetParent(hwnd);
+        if (!parent) break;  // 无父窗口（异常态）：走默认处理
+        // lParam 为屏幕坐标（多显示器可能为负，GET_X/Y_LPARAM 做符号扩展）
+        POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        POINT client = pt;
+        if (!::ScreenToClient(parent, &client)) break;
+        RECT rc{};
+        if (!::GetClientRect(parent, &rc)) break;
+        const LRESULT hit = ui::ComputeCaptionHitTest(
+            client, SIZE{rc.right - rc.left, rc.bottom - rc.top},
+            ui::WindowDpi(parent), ::IsZoomed(parent) != FALSE);
+        switch (hit) {
+        case HTLEFT:
+        case HTRIGHT:
+        case HTTOP:
+        case HTBOTTOM:
+        case HTTOPLEFT:
+        case HTTOPRIGHT:
+        case HTBOTTOMLEFT:
+        case HTBOTTOMRIGHT:
+            return HTTRANSPARENT;  // 缩放命中区：透传给父窗口处理
+        default:
+            break;  // HTCLIENT 等：Scintilla 正常自处理
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return ::DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+}  // namespace
 
 EditorHost::~EditorHost() {
     detach();
@@ -55,8 +109,16 @@ HWND EditorHost::createEditor() {
     // 垂直滚动条按内容自动出现（B3 竖向「内容超高高时常驻、短内容隐藏」即
     // 平台默认行为）；横向由 SCROLLWIDTHTRACKING + 换行模式联动（wrap 开时
     // Scintilla 自动隐藏横向滚动条）。
-    return CreateWindowExW(0, L"Scintilla", nullptr, WS_CHILD, 0, 0, 0, 0, parent_,
-                           nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND sci = CreateWindowExW(0, L"Scintilla", nullptr, WS_CHILD, 0, 0, 0, 0,
+                               parent_, nullptr, GetModuleHandleW(nullptr),
+                               nullptr);
+    if (sci) {
+        // F6：子类化拦截 WM_NCHITTEST 做边缘缩放透传（过程见文件头匿名
+        // namespace）；与组装层 onWindowCreated 挂的多光标子类化并存
+        //（后挂者先收消息，两者对彼此关心的消息均不拦截冲突）。
+        ::SetWindowSubclass(sci, EdgeHitSubclassProc, kEdgeHitSubclassId, 0);
+    }
+    return sci;
 }
 
 void EditorHost::configure(HWND sci, UINT dpi) const {
@@ -119,9 +181,8 @@ void EditorHost::configure(HWND sci, UINT dpi) const {
 }
 
 // 主题相关配色（浅/深两套取值均来自 CurrentPalette；构造期与 retheme 共用）：
-// 默认样式字色/底色、选区底色（token 半透明与内容底色预合成）、光标色、
-// 查找高亮 indicator 8/9。STYLECLEARALL 把默认样式传播到全样式槽（本编辑器
-// 无词法着色，仅默认样式在用）。
+// 默认样式字色/底色、选区实底、光标色、查找高亮 indicator 8/9。STYLECLEARALL
+// 把默认样式传播到全样式槽（本编辑器无词法着色，仅默认样式在用）。
 void EditorHost::applyThemeColors(HWND sci) {
     auto send = [sci](UINT msg, WPARAM w = 0, LPARAM l = 0) {
         return SendMessageW(sci, msg, w, l);
@@ -132,11 +193,40 @@ void EditorHost::applyThemeColors(HWND sci) {
     send(SCI_STYLESETBACK, STYLE_DEFAULT,
          static_cast<LPARAM>(ui::ToColorRef(pal.contentBackground)));
     send(SCI_STYLECLEARALL);
-    // 选区（token 半透明与内容底色预合成）与光标（accent）
-    send(SCI_SETSELBACK, TRUE, static_cast<LPARAM>(ui::ToColorRef(ui::BlendOver(
-                                   pal.contentBackground, pal.selection))));
-    send(SCI_SETSELALPHA, SC_ALPHA_OPAQUE);
+    // 选区（F3）：不透明实底（VS Code 同款 ADD6FF/264F78）。有意不设置
+    // SCI_SETSELFORE——选区内文字保持原样式字色（「原字色」语义；未设置
+    // SelectionText 元素时 Scintilla 的 SelectionForeground 返回空、绘制用
+    // 原样式字色，EditView.cxx DrawForeground 的 selectionFore 空值分支）。
+    send(SCI_SETSELBACK, TRUE,
+         static_cast<LPARAM>(ui::ToColorRef(pal.selectionBackground)));
+    // 多光标附加选区（B4）：与主选区同色（SCI_SETADDITIONALSELBACK 色值在
+    // wParam，Editor.cxx Message::SetAdditionalSelBack）
+    send(SCI_SETADDITIONALSELBACK,
+         static_cast<WPARAM>(ui::ToColorRef(pal.selectionBackground)));
+    // 选区绘制层锁定文字层之下（SC_LAYER_BASE，选区作为文字背景）。为什么
+    // 不再用 SCI_SETSELALPHA(SC_ALPHA_OPAQUE)（F3 修复决策，详见决策记录
+    // DEC）：源码链 Editor.cxx Message::SetSelAlpha——alpha≠SC_ALPHA_NOALPHA
+    // 时 selection.layer 被联动为 SC_LAYER_OVER_TEXT（文字层之上），选区在
+    // 文字之后绘制（EditView.cxx DrawPhase::selectionTranslucent），alpha=255
+    // 时 SurfaceGDI 纯色填充（IsOpaque→ExtTextOut ETO_OPAQUE），实底选区整块
+    // 盖住文字——正是「选中后看不见文字」的根因。Base 层下选区背景在文字
+    // 之前绘制，文字保持可见。
+    send(SCI_SETSELECTIONLAYER, SC_LAYER_BASE);
     send(SCI_SETCARETFORE, static_cast<LPARAM>(ui::ToColorRef(pal.accent)));
+    // 失焦非活动选区（F3）：比活动选区淡一档——在内容底色上按 ~1/3 强度
+    //（overlay alpha 0x55）预合成。为什么必须预合成：Base 层绘制路径把选区
+    // 背景色强制 Opaque（EditView.cxx TextBackground），元素 alpha 不参与
+    // 混合，「淡」只能进色值本身。SCI_SETELEMENTCOLOUR 的 lParam 是 Scintilla
+    // 内部 ColourRGBA 位布局 0xAABBGGRR（Geometry.h：R 最低字节、A 最高字
+    // 节），低 24 位与 GDI COLORREF 同序，故传「0xFF<<24 | COLORREF」；alpha
+    // 传非 0xFF 也不报错但该值不生效，且 alpha=0 不表示重置（重置走
+    // SCI_RESETELEMENTCOLOUR）而等于全透明，传 0xFF 保证确定生效。
+    const uint32_t inactiveBack = ui::BlendOver(
+        pal.contentBackground,
+        0x55000000u | (pal.selectionBackground & 0xFFFFFFu));
+    send(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_INACTIVE_BACK,
+         static_cast<LPARAM>((static_cast<uint32_t>(0xFFu) << 24) |
+                             ui::ToColorRef(inactiveBack)));
     // 查找高亮 indicator（B5；序号含义见 scintillaedit.h 常量）：
     // 全部匹配 = 半透明橙黄底（searchMatch：RGB + alpha）；当前匹配 = 描边
     //（BOX + searchMatchBorder 色；形状为非颜色线索）

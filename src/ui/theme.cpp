@@ -45,6 +45,7 @@ const ThemePalette& LightPalette() {
         0xFFB37700u,  // unsavedMark
         0xFF3564D4u,  // multiCursor = accent
         0x293564D4u,  // selection（alpha 0x29 半透明叠加）
+        0xFFADD6FFu,  // selectionBackground 选区实底（VS Code 浅色同款）
         0x293564D4u,  // multiSelection
         0x59FFB454u,  // searchMatch（alpha 0x59 橙黄半透明）
         0xFFB37700u,  // searchMatchBorder（与 unsavedMark 同值、独立 token）
@@ -78,6 +79,7 @@ const ThemePalette& DarkPalette() {
         0xFFFFB454u,  // unsavedMark
         0xFF6F9BFFu,  // multiCursor = accent
         0x336F9BFFu,  // selection（alpha 0x33 半透明叠加）
+        0xFF264F78u,  // selectionBackground 选区实底（VS Code 深色同款）
         0x336F9BFFu,  // multiSelection
         0x4DFFB454u,  // searchMatch（alpha 0x4d 橙黄半透明）
         0xFFFFB454u,  // searchMatchBorder（与 unsavedMark 同值、独立 token）

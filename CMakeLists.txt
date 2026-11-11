@@ -187,8 +187,9 @@ target_compile_definitions(qcnote PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x0A0
 # comctl32：Tab 条/工具栏/状态栏 tooltip 控件；comdlg32：打开/另存为系统对话框；
 # shell32：CommandLineToArgvW（D2 启动参数）；qcnote_core：M2-A 纯逻辑核心层；
 # advapi32：M5 shell 集成注册表读写（scintilla_lib INTERFACE 亦传递，显式声明
-# 使 platform 层依赖意图自包含）
-target_link_libraries(qcnote PRIVATE scintilla_lib wil dwmapi comctl32 comdlg32 shell32 advapi32 qcnote_core)
+# 使 platform 层依赖意图自包含）；
+# gdiplus：F2 工具栏图标 GDI+ 抗锯齿绘制（系统组件，无额外部署负担）
+target_link_libraries(qcnote PRIVATE scintilla_lib wil dwmapi comctl32 comdlg32 shell32 advapi32 qcnote_core gdiplus)
 # manifest 由 qcnote.rc 嵌入（PerMonitorV2 DPI 声明）；显式关闭链接器/mt 的
 # manifest 生成，避免默认 manifest 覆盖 rc 嵌入的资源
 target_link_options(qcnote PRIVATE /MANIFEST:NO)
@@ -258,15 +259,17 @@ set_tests_properties(core PROPERTIES ENVIRONMENT
 # M6 扩展（E5）：深色色板取值照抄断言 + SetTheme/CurrentPalette 分发 + 深色
 # 半透明 token 的 BlendOver 预合成。
 # 直接编译 src/ui 源码（纯函数部分不依赖窗口存在）；statusbar 依赖 tooltip
-#（comctl32）、dialog 依赖 dwmapi（DWMWCP 圆角 + theme.cpp 的 DWM 暗色联动）。
+#（comctl32）、dialog 依赖 dwmapi（DWMWCP 圆角 + theme.cpp 的 DWM 暗色联动）；
+# toolbar 依赖 theme/tooltip/commands.h（头文件即用）与 gdiplus（F2 图标
+# GDI+ 路径；单测经真实弹出窗口宿主驱动 attach/交互）。
 add_executable(test_ui tests/test_ui.cpp src/ui/theme.cpp src/ui/titlebar.cpp
                            src/ui/statusbar.cpp src/ui/tooltip.cpp src/ui/dialog.cpp
-                           src/ui/searchdialog.cpp)
+                           src/ui/searchdialog.cpp src/ui/toolbar.cpp)
 target_compile_options(test_ui PRIVATE /std:c++latest /utf-8)
 # NOMINMAX：statusbar/dialog 用 std::min/max；WINVER=Win10 同应用目标
 target_compile_definitions(test_ui PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x0A00 _WIN32_WINNT=0x0A00)
 target_include_directories(test_ui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(test_ui PRIVATE Catch2::Catch2WithMain gdi32 user32 dwmapi comctl32)
+target_link_libraries(test_ui PRIVATE Catch2::Catch2WithMain gdi32 user32 dwmapi comctl32 gdiplus)
 add_test(NAME ui COMMAND test_ui)
 
 # M1-2 菜单系统单测：MenuModel 数据模型（结构/级联/勾选/enabled/动态条目）、

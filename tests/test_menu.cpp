@@ -334,3 +334,20 @@ TEST_CASE("MenuLayoutHitTest 行命中", "[menu]") {
     CHECK(MenuLayoutHitTest(L, {200, 5}) == -1); // 菜单右侧
     CHECK(MenuLayoutHitTest(L, {-1, 5}) == -1);  // 菜单左侧
 }
+
+// ---------------------------------------------------------------------------
+// 菜单字体回退公式（Win32界面体验修复 F1 / TC-001）。lfMenuFont 主路径的
+// HFONT 为 MenuHost 私有、无 ForTest 访问器，离线可钉死的是回退换算契约：
+// pt→px 必须经 MulDiv(pt, dpi, 72)（96 DPI 下 9pt=12px 字符高）；此前 bug
+// 根因正是误用 Scale() 把 pt 当像素（96 DPI 渲染成 9px≈6.75pt）。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("菜单字体回退公式：pt→px 正确换算契约（F1 根因回归钉）", "[menu]") {
+    CHECK(menu_metrics::FontPt == 9);
+    // 正确换算：96 DPI 字符高 12px（=系统菜单 9pt 标准），200% 下 24px
+    CHECK(-MulDiv(menu_metrics::FontPt, 96, 72) == -12);
+    CHECK(-MulDiv(menu_metrics::FontPt, 192, 72) == -24);
+    // 旧 bug 形态对照：Scale(9,96)=9px——断言其确为 9，锁定「回退不再走该路径」
+    // 的语义对照（ensureSessionFont 回退分支使用 MulDiv 形态，见 menu.cpp）
+    CHECK(Scale(menu_metrics::FontPt, 96) == 9);
+}

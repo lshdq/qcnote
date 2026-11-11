@@ -48,7 +48,8 @@ constexpr int LeftMarginPlain = 10;    // 无标记时的左边距
 constexpr int MarkToLabelSpacing = 5;  // ● 标记与标签文字的间距
 constexpr int RightPadding = 10;       // 标签文字右内边距
 constexpr int MarkPixelSize = 9;       // ● 标记字号
-constexpr int LabelPixelSize = 13;     // Tab 标签字号（测量与渲染共用同一字体）
+constexpr int LabelPixelSize = 12;     // Tab 标签字号：12px = 9pt@96dpi（系统标准；
+                                       // 中文全 em 字形视觉更重，13 偏大）。测量与渲染共用
 constexpr int Radius = 5;              // 活动 Tab 顶部圆角半径
 constexpr int HoverRadius = 4;         // 非活动 Tab 悬停高亮圆角
 constexpr int FocusRadius = 4;         // 键盘焦点环圆角

@@ -46,7 +46,10 @@ constexpr int ArrowColumn = 18;     // 子菜单 ▸ 箭头列
 constexpr int PadRight = 10;        // 右缘留白
 constexpr int MinWidth = 132;       // 最小菜单宽（空/极窄内容场景）
 constexpr int MaxWidth = 320;       // 最大菜单宽（超宽标签省略号截断）
-constexpr int FontPt = 9;           // Segoe UI 9pt（与标题栏一致，系统菜单惯例）
+constexpr int FontPt = 9;           // pt 单位；仅作 lfMenuFont 不可用时的回退。
+                                    // 创建字体必须 MulDiv(pt, dpi, 72) 换算，
+                                    // 禁止 Scale() 直用（Scale 是像素换算，曾致
+                                    // 菜单文字按 9px 渲染过小）
 
 }  // namespace menu_metrics
 
@@ -236,6 +239,7 @@ private:
     UINT dpi_ = 96;
     std::vector<Level> levels_;
     HFONT font_{};
+    UINT fontDpi_ = 0;  // 字体所属 DPI（lfMenuFont 按主屏 DPI 取值经 MulDiv 换算到本窗口 DPI）
     int pendingLevel_ = -1;  // 延迟展开目标（悬停子菜单 ~300ms）
     int pendingItem_ = -1;
     Command pendingCommand_ = Command::None;

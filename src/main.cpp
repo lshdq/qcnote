@@ -27,7 +27,7 @@
 //   ui/tabs     —— Tab 条（数据来自 DocumentManager 快照）
 //   ui/welcome  —— 欢迎页（无文档时显示；内容区随工具栏/状态栏 chrome 内缩）
 //   ui/menu     —— 自绘弹出菜单框架；ui/mainmenu 主菜单内容
-//   ui/toolbar  —— 工具栏（新建/打开/保存，E3）
+//   ui/toolbar  —— 工具栏（新建/打开/保存/自动换行，E3 + F2）
 //   ui/statusbar—— 状态栏（行列/字符数/编码/换行/路径，E3）
 //   ui/dialog   —— 基础模态对话框基座（E4：居中/拖动把手/边界约束）
 //   editor/…    —— Scintilla 编辑器组件（每文档一实例；内容增量同步）
@@ -941,6 +941,7 @@ void RouteCommand(ui::Command cmd) {
     case ui::Command::ToggleWordWrap:
         g_wordWrap = !g_wordWrap;
         g_editors.setWordWrap(g_wordWrap);  // 全局（旧版所有文档共享）
+        g_toolbar.setWrapEnabled(g_wordWrap);  // F2：工具栏 toggle 激活态同步
         RefreshMenuState();
         break;
     case ui::Command::Quit:
@@ -1759,7 +1760,7 @@ void RunDocSelftestStage() {
             const size_t before = g_docManager.documentCount();
             RECT client{};
             GetClientRect(g_mainWindow, &client);
-            RECT btns[3];
+            RECT btns[4];  // F2：buttonRects 输出 4 按钮（写满 out[0..3]，须同容量）
             g_toolbar.buttonRects(client, btns);
             const POINT newBtn{(btns[0].left + btns[0].right) / 2,
                                (btns[0].top + btns[0].bottom) / 2};
@@ -2642,6 +2643,7 @@ void RestoreAtStartup(HWND hwnd) {
     if (session.wordWrap) {
         g_wordWrap = *session.wordWrap;
         g_editors.setWordWrap(g_wordWrap);
+        g_toolbar.setWrapEnabled(g_wordWrap);  // F2：会话恢复后按钮激活态一致
         RefreshMenuState();
     }
 
@@ -2994,6 +2996,7 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_toolbar.attach(hwnd);
         g_toolbar.onCommand = &RouteCommand;
         g_toolbar.setSaveEnabled(false);  // 初始无文档
+        g_toolbar.setWrapEnabled(g_wordWrap);  // F2：启动态一致（会话恢复处会再同步）
         g_statusBar.attach(hwnd);
         // —— Scintilla 编辑器 ——
         g_editors.attach(hwnd);

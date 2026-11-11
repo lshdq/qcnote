@@ -408,6 +408,7 @@ void MenuHost::cleanupSession() {
         DeleteObject(font_);
         font_ = nullptr;
     }
+    fontDpi_ = 0;
     model_ = nullptr;
     pendingLevel_ = pendingItem_ = -1;
     pendingCommand_ = Command::None;
@@ -861,11 +862,36 @@ void MenuHost::drawSubmenuArrow(HDC dc, int cx, int cy, COLORREF color) {
 }
 
 void MenuHost::ensureSessionFont() {
-    if (font_) return;
-    font_ = CreateFontW(-Scale(menu_metrics::FontPt, dpi_), 0, 0, 0, FW_NORMAL, FALSE,
-                        FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    // 字体按 DPI 惰性重建：DPI 变化后旧字体尺寸失配，须删除并按新 DPI 重创
+    // （同 TabStrip::ensureFonts 范式），否则跨缩放显示器弹出菜单文字大小错误。
+    if (font_ && dpi_ == fontDpi_) return;
+    if (font_) {
+        DeleteObject(font_);
+        font_ = nullptr;
+    }
+    // 优先使用系统菜单字体（lfMenuFont）：与系统菜单观感一致（中文环境为
+    // Microsoft YaHei UI 类，Segoe UI 回退对中文渲染明显劣化）。
+    NONCLIENTMETRICS ncm{};
+    ncm.cbSize = sizeof(NONCLIENTMETRICS);
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICS),
+                              &ncm, 0) && ncm.lfMenuFont.lfHeight < 0) {
+        // SPI 返回的 lfHeight 按主监视器 DPI 取值，需换算到本弹出层宿主 DPI
+        // （Per-Monitor DPI 下两者可能不同）；负高度=字符高度语义，保持符号。
+        NONCLIENTMETRICS scaled = ncm;
+        scaled.lfMenuFont.lfHeight =
+            -MulDiv(-ncm.lfMenuFont.lfHeight, static_cast<int>(dpi_),
+                    static_cast<int>(WindowDpi(nullptr)));
+        font_ = CreateFontIndirectW(&scaled.lfMenuFont);
+    }
+    if (!font_) {
+        // 回退：lfMenuFont 不可用时按 pt→px 正确换算创建（FontPt 单位是 pt，
+        // 必须经 MulDiv(pt, dpi, 72)；此前误用 Scale() 当像素换算是本次 bug 根因）
+        font_ = CreateFontW(-MulDiv(menu_metrics::FontPt, static_cast<int>(dpi_), 72),
+                            0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    }
+    if (font_) fontDpi_ = dpi_;  // 记录字体 DPI，供下次比对决定是否重建
 }
 
 void MenuHost::measure(const std::vector<MenuItem>& items, std::vector<int>& labels,

@@ -8,6 +8,7 @@
 #include "ui/statusbar.h"
 #include "ui/theme.h"
 #include "ui/titlebar.h"
+#include "ui/toolbar.h"
 
 using namespace ui;
 
@@ -118,6 +119,34 @@ TEST_CASE("SetTheme 切换 CurrentPalette 分发与深色叠加换算", "[ui][th
     SetTheme(false);  // 恢复浅色（避免影响同进程其他用例）
     CHECK_FALSE(IsDarkTheme());
     CHECK(&CurrentPalette() == &LightPalette());
+}
+
+// ---------------------------------------------------------------------------
+// 选区实底 token（Win32界面体验修复 F3 / TC-003）
+// ---------------------------------------------------------------------------
+
+TEST_CASE("selectionBackground 选区实底：两主题取值与失焦淡一档预合成", "[ui][theme]") {
+    const ThemePalette& l = LightPalette();
+    const ThemePalette& d = DarkPalette();
+    // 用户确认值（VS Code 同款）：浅 #ADD6FF、深 #264F78，实底不透明
+    CHECK(l.selectionBackground == 0xFFADD6FFu);
+    CHECK(d.selectionBackground == 0xFF264F78u);
+    CHECK((l.selectionBackground >> 24) == 0xFFu);
+    CHECK((d.selectionBackground >> 24) == 0xFFu);
+    // 与旧 16% 透明 token（选中后看不见文字的根因）明显区分，防回退
+    CHECK(l.selectionBackground != l.selection);
+    CHECK(d.selectionBackground != d.selection);
+
+    // 失焦非活动选区：内容底上按 overlay alpha=0x55 预合成「淡一档」——
+    // 与 EditorHost::applyThemeColors 喂 SCI_SETELEMENTCOLOUR 的色值同公式。
+    // 浅：#ffffff 底叠 #ADD6FF@1/3 → R=228 G=241 B=255；深：#262b34 底叠
+    // #264F78@1/3 → R=38 G=55 B=75（BlendOver 为 lround 就近取整）
+    const uint32_t lInactive = BlendOver(l.contentBackground,
+        0x55000000u | (l.selectionBackground & 0xFFFFFFu));
+    const uint32_t dInactive = BlendOver(d.contentBackground,
+        0x55000000u | (d.selectionBackground & 0xFFFFFFu));
+    CHECK(lInactive == 0xFFE4F1FFu);
+    CHECK(dInactive == 0xFF26374Bu);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,4 +331,205 @@ TEST_CASE("BuildSearchStatusText 溢出与已替换与错误优先级", "[ui][se
     st.errorMessage = L"无效的正则表达式";
     CHECK(BuildSearchStatusText(st, 7) == L"无效的正则表达式");  // 错误最优先
     CHECK(BuildSearchStatusText(st, -1) == L"无效的正则表达式");
+}
+
+// ---------------------------------------------------------------------------
+// F2/F5：工具栏 4 按钮（新建/打开/保存/自动换行）
+// 几何/命中用未 attach 的 Toolbar（hwnd_ 空 → DPI 兜底 96，断言值确定）；
+// 交互（点击/tooltip/绘制）经真实弹出窗口宿主驱动（test_ui 链接 user32）。
+// 防扰：宿主离屏、不可见（无 WS_VISIBLE）、WS_EX_NOACTIVATE 不抢焦点。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct ToolbarHost {
+    HWND hwnd = nullptr;
+    ToolbarHost() {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"qcnote_test_toolbar_host";
+        RegisterClassW(&wc);  // 重复注册（ERROR_CLASS_ALREADY_EXISTS）可忽略
+        hwnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, wc.lpszClassName,
+                               L"", WS_POPUP, -2000, -2000, 600, 400, nullptr,
+                               nullptr, wc.hInstance, nullptr);
+    }
+    ~ToolbarHost() {
+        if (hwnd) DestroyWindow(hwnd);
+    }
+    ToolbarHost(const ToolbarHost&) = delete;
+    ToolbarHost& operator=(const ToolbarHost&) = delete;
+};
+
+POINT centerOf(const RECT& r) {
+    return {(r.left + r.right) / 2, (r.top + r.bottom) / 2};
+}
+}  // namespace
+
+TEST_CASE("工具栏几何：4 按钮等宽等距互不重叠且落在条带内", "[ui][toolbar]") {
+    Toolbar tb;  // 未 attach：DPI 兜底 96
+    const RECT client{0, 0, 600, 400};
+    RECT btns[4] = {};
+    tb.buttonRects(client, btns);
+    const RECT bar = tb.rect(client);
+    CHECK(RectEq(bar, 0, 40, 600, 80));  // CaptionHeight 40 + Height 40
+    const int bw = toolbar_metrics::ButtonWidth;   // 44
+    const int bh = toolbar_metrics::ButtonHeight;  // 32
+    const int gap = toolbar_metrics::Spacing;      // 2
+    const int y = 40 + (toolbar_metrics::Height - bh) / 2;  // 垂直居中 = 44
+    for (int i = 0; i < 4; ++i) {
+        CHECK(btns[i].left == toolbar_metrics::LeftMargin + i * (bw + gap));
+        CHECK(btns[i].right == btns[i].left + bw);
+        CHECK(btns[i].top == y);
+        CHECK(btns[i].bottom == y + bh);  // 同高
+        // 均落在工具栏条带内
+        CHECK(btns[i].left >= bar.left);
+        CHECK(btns[i].right <= bar.right);
+        CHECK(btns[i].top >= bar.top);
+        CHECK(btns[i].bottom <= bar.bottom);
+    }
+    // 互不重叠且间距一致
+    for (int i = 1; i < 4; ++i) {
+        CHECK(btns[i].left >= btns[i - 1].right);
+        CHECK(btns[i].left - btns[i - 1].right == gap);
+    }
+}
+
+TEST_CASE("工具栏命中：4 按钮中心返回下标 0-3，空白返回 -1", "[ui][toolbar]") {
+    Toolbar tb;
+    const RECT client{0, 0, 600, 400};
+    RECT btns[4] = {};
+    tb.buttonRects(client, btns);
+    for (int i = 0; i < 4; ++i) {
+        CHECK(tb.hitButton(centerOf(btns[i]), client) == i);
+    }
+    CHECK(tb.hitButton(POINT{300, 200}, client) == -1);  // 内容区空白
+    CHECK(tb.hitButton(POINT{400, 60}, client) == -1);   // 条带内按钮右侧空白
+}
+
+TEST_CASE("工具栏换行按钮触发 ToggleWordWrap 命令", "[ui][toolbar]") {
+    ToolbarHost host;
+    REQUIRE(host.hwnd != nullptr);
+    Toolbar tb;
+    tb.attach(host.hwnd);
+    RECT client{};
+    GetClientRect(host.hwnd, &client);
+    RECT btns[4] = {};
+    tb.buttonRects(client, btns);
+    int count = 0;
+    Command got = Command::None;
+    tb.onCommand = [&](Command c) { ++count; got = c; };
+    tb.onLButtonDown(centerOf(btns[3]));  // 第 4 按钮 = 自动换行（toggle）
+    CHECK(count == 1);
+    CHECK(got == Command::ToggleWordWrap);
+    tb.onLButtonDown(centerOf(btns[0]));  // 回归：第 1 按钮 = 新建
+    CHECK(count == 2);
+    CHECK(got == Command::NewDocument);
+}
+
+TEST_CASE("工具栏保存禁用时吞点击，wrap 按钮不受影响", "[ui][toolbar]") {
+    ToolbarHost host;
+    REQUIRE(host.hwnd != nullptr);
+    Toolbar tb;
+    tb.attach(host.hwnd);
+    RECT client{};
+    GetClientRect(host.hwnd, &client);
+    RECT btns[4] = {};
+    tb.buttonRects(client, btns);
+    int count = 0;
+    tb.onCommand = [&](Command) { ++count; };
+    tb.setSaveEnabled(false);
+    tb.onLButtonDown(centerOf(btns[2]));  // 保存禁用：点击被吞、无命令
+    CHECK(count == 0);
+    tb.onLButtonDown(centerOf(btns[3]));  // wrap 不受保存禁用影响
+    CHECK(count == 1);
+    tb.setSaveEnabled(true);
+    tb.onLButtonDown(centerOf(btns[2]));  // 恢复后恢复触发
+    CHECK(count == 2);
+}
+
+TEST_CASE("工具栏 tooltip：悬停 600ms 计时到显示，离开隐藏", "[ui][toolbar]") {
+    ToolbarHost host;
+    REQUIRE(host.hwnd != nullptr);
+    Toolbar tb;
+    tb.attach(host.hwnd);
+    RECT client{};
+    GetClientRect(host.hwnd, &client);
+    RECT btns[4] = {};
+    tb.buttonRects(client, btns);
+    tb.onMouseMove(centerOf(btns[1]));        // 进入「打开」按钮
+    CHECK_FALSE(tb.tooltipVisibleForTest());  // 延迟期内未显示
+    tb.onTimer(3);  // tipTimerId_ = 3（宿主 timer id 分配约定见 toolbar.h）
+    CHECK(tb.tooltipVisibleForTest());
+    tb.onMouseLeave();
+    CHECK_FALSE(tb.tooltipVisibleForTest());
+}
+
+TEST_CASE("工具栏 wrap 激活态切换与绘制不崩溃（内存 DC 全流程释放）", "[ui][toolbar]") {
+    ToolbarHost host;
+    REQUIRE(host.hwnd != nullptr);
+    Toolbar tb;
+    tb.attach(host.hwnd);
+    RECT client{};
+    GetClientRect(host.hwnd, &client);
+    HDC screenDc = GetDC(host.hwnd);
+    REQUIRE(screenDc != nullptr);
+    HDC mem = CreateCompatibleDC(screenDc);
+    REQUIRE(mem != nullptr);
+    HBITMAP bmp = CreateCompatibleBitmap(screenDc, client.right, client.bottom);
+    REQUIRE(bmp != nullptr);
+    HGDIOBJ oldBmp = SelectObject(mem, bmp);
+    // 未激活 → 激活 → 未激活三轮绘制：覆盖 4 图标全部状态组合的实际绘制
+    // 路径（GDI+ 或回退，按运行环境分发），仅断言不崩溃
+    tb.paint(mem, client);
+    tb.setWrapEnabled(true);
+    tb.paint(mem, client);
+    tb.setWrapEnabled(false);
+    tb.paint(mem, client);
+    SelectObject(mem, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    ReleaseDC(host.hwnd, screenDc);
+}
+
+// ---------------------------------------------------------------------------
+// GDI+ 图标渲染稳健性（Win32界面体验修复 F2 / TC-008）：深浅主题 × 悬停/
+// 禁用/wrap 激活态全组合内存 DC 完整绘制，只断言不崩溃（GDI/GDI+ 对象
+// RAII/释放完整由用例自身全流程释放路径验证）。DPI 96/192 维度依赖真实
+// attach 窗口的每监视器 DPI，单测环境无法注入，属受限项（e2e/人工补充）。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("工具栏绘制稳健性：主题/悬停/禁用态内存 DC 全流程", "[ui][toolbar]") {
+    ToolbarHost host;
+    REQUIRE(host.hwnd != nullptr);
+    Toolbar tb;
+    tb.attach(host.hwnd);
+    RECT client{};
+    GetClientRect(host.hwnd, &client);
+    HDC screenDc = GetDC(host.hwnd);
+    REQUIRE(screenDc != nullptr);
+    HDC mem = CreateCompatibleDC(screenDc);
+    REQUIRE(mem != nullptr);
+    HBITMAP bmp = CreateCompatibleBitmap(screenDc, client.right, client.bottom);
+    REQUIRE(bmp != nullptr);
+    HGDIOBJ oldBmp = SelectObject(mem, bmp);
+    RECT btns[4] = {};
+    tb.buttonRects(client, btns);
+    tb.onMouseMove(centerOf(btns[1]));  // 悬停态（「打开」按钮）
+    tb.setSaveEnabled(false);           // 保存禁用态（textDisabled 图标路径）
+    const bool darkBefore = IsDarkTheme();
+    for (int round = 0; round < 2; ++round) {
+        SetTheme(round == 0);           // 深 → 浅两主题全状态组合绘制
+        tb.paint(mem, client);
+        tb.setWrapEnabled(true);
+        tb.paint(mem, client);
+        tb.setWrapEnabled(false);
+        tb.paint(mem, client);
+    }
+    SetTheme(darkBefore);               // 恢复进程初始主题（用例隔离）
+    tb.onMouseLeave();
+    SelectObject(mem, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    ReleaseDC(host.hwnd, screenDc);
 }

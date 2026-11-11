@@ -52,6 +52,11 @@ constexpr int CaretSlopX = 20;  // 光标水平边缘留白（CARET_SLOP 距离�
 constexpr int kIndicatorSearchMatch = 8;    // 全部匹配底色（ROUNDBOX + alpha）
 constexpr int kIndicatorSearchCurrent = 9;  // 当前匹配描边（BOX）
 
+// SetWindowSubclass 子类 id（进程内唯一即可）：编辑器子窗口边缘命中透传
+//（F6）。与 multicursorcontroller.cpp 的 kSubclassId（0x51431101 'QC1\1'）
+// 区分，两套子类化在同一 Scintilla 子窗口上并存。
+constexpr UINT_PTR kEdgeHitSubclassId = 0x51431102;  // 'QC1\2'
+
 // 状态栏采样（活动文档的编辑器几何状态）
 struct EditorStatus {
     int line = 0;               // 1 起（SCN 通知后采样）

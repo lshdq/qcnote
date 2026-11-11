@@ -43,6 +43,7 @@ struct ThemePalette {
     // 选区 / 多光标
     uint32_t multiCursor;
     uint32_t selection;
+    uint32_t selectionBackground;  // 选区底色（不透明实底；文字保持原字色）
     uint32_t multiSelection;
     // 搜索
     uint32_t searchMatch;
