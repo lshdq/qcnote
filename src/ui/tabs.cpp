@@ -260,12 +260,16 @@ void TabStrip::setModified(int index, bool modified) {
     markDirtyAndInvalidate();
 }
 
-void TabStrip::setDisplayName(int index, const std::wstring& name) {
+bool TabStrip::setDisplayName(int index, const std::wstring& name) {
     if (index < 0 || index >= static_cast<int>(items_.size())) {
-        return;
+        return false;
+    }
+    if (items_[static_cast<size_t>(index)].displayName == name) {
+        return false; // 同值短路：不置脏、不触发重绘（拖拽选区每帧调用的消抖）
     }
     items_[static_cast<size_t>(index)].displayName = name;
     markDirtyAndInvalidate();
+    return true;
 }
 
 bool TabStrip::setActiveIndex(int index) {

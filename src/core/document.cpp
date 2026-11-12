@@ -91,15 +91,16 @@ int Document::cursorPosition() const {
     return m_cursorPosition;
 }
 
-void Document::setCursorPosition(int position) {
+bool Document::setCursorPosition(int position) {
     // 值域 [0, +∞) 下界保护：负值（会话记录损坏等异常数据）钳为 0
     if (position < 0)
         position = 0;
     if (m_cursorPosition == position)
-        return;
+        return false; // 同值不通知；返回值供 SCN_UPDATEUI 采样路径消除重复刷新
     m_cursorPosition = position;
     if (onMetadataChanged)
         onMetadataChanged();
+    return true;
 }
 
 const std::string& Document::content() const {
@@ -108,14 +109,26 @@ const std::string& Document::content() const {
 
 void Document::setContent(std::string content) {
     if (m_content == content)
-        return; // 同值不置脏、不通知
+        return; // 同值不置脏、不通知（charCount 缓存随内容不变而保持有效）
     const bool wasModified = modified();
     m_content = std::move(content);
+    m_charCountValid = false; // 内容变更：码点缓存失效（惰性重算）
     if (onContentChanged)
         onContentChanged();
     // 脏标记按基线比较结果翻转：回到基线自动清脏；脏值之间切换不翻转
     if (modified() != wasModified && onModifiedChanged)
         onModifiedChanged();
+}
+
+std::size_t Document::charCount() const {
+    // 惰性缓存：状态栏经 SCN_UPDATEUI 每帧采样，全文档 O(N) 扫描只在内容
+    // 真正变化后的首次采样发生（选区拖拽逐帧路径零扫描）
+    if (!m_charCountValid) {
+        m_charCount = utf8CharCount(m_content);
+        m_charCountValid = true;
+        ++m_charCountComputeCount; // 测试/诊断：观测真实重扫次数
+    }
+    return m_charCount;
 }
 
 bool Document::modified() const {
@@ -141,6 +154,7 @@ void Document::applyLoadedState(std::filesystem::path url, std::string content, 
     setUrl(std::move(url));
     if (m_content != content) {
         m_content = content; // 值语义对齐旧版：内容恰与当前编辑值相同时不发通知
+        m_charCountValid = false; // 内容变更：码点缓存失效（与 setContent 同规）
         if (onContentChanged)
             onContentChanged();
     }

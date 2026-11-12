@@ -47,6 +47,12 @@ const ThemePalette& LightPalette() {
         0x293564D4u,  // selection（alpha 0x29 半透明叠加）
         0xFFADD6FFu,  // selectionBackground 选区实底（VS Code 浅色同款）
         0x293564D4u,  // multiSelection
+        0xFF2E9E4Fu,  // iconNewBadge    浅 #2e9e4f（新建「+」角标绿）
+        0xFFE2A52Eu,  // iconOpenBack    浅 #e2a52e（文件夹后板琥珀深）
+        0xFFF6C460u,  // iconOpenFront   浅 #f6c460（文件夹前盖琥珀浅）
+        0xFF4A8DD8u,  // iconSaveBody    浅 #4a8dd8（软盘机身蓝）
+        0xFFDAE8F8u,  // iconSaveLabel   浅 #dae8f8（软盘标签浅蓝）
+        0xFF2FA08Cu,  // iconWrapArrow   浅 #2fa08c（折行箭头 teal）
         0x59FFB454u,  // searchMatch（alpha 0x59 橙黄半透明）
         0xFFB37700u,  // searchMatchBorder（与 unsavedMark 同值、独立 token）
     };
@@ -81,6 +87,12 @@ const ThemePalette& DarkPalette() {
         0x336F9BFFu,  // selection（alpha 0x33 半透明叠加）
         0xFF264F78u,  // selectionBackground 选区实底（VS Code 深色同款）
         0x336F9BFFu,  // multiSelection
+        0xFF4CBF6Bu,  // iconNewBadge    深 #4cbf6b（新建「+」角标绿）
+        0xFFC9973Bu,  // iconOpenBack    深 #c9973b（文件夹后板琥珀深）
+        0xFFF0BC5Au,  // iconOpenFront   深 #f0bc5a（文件夹前盖琥珀浅）
+        0xFF6AA7E0u,  // iconSaveBody    深 #6aa7e0（软盘机身蓝）
+        0xFFD8E6F6u,  // iconSaveLabel   深 #d8e6f6（软盘标签浅蓝）
+        0xFF46B9A2u,  // iconWrapArrow   深 #46b9a2（折行箭头 teal）
         0x4DFFB454u,  // searchMatch（alpha 0x4d 橙黄半透明）
         0xFFFFB454u,  // searchMatchBorder（与 unsavedMark 同值、独立 token）
     };

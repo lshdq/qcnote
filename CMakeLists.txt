@@ -190,9 +190,13 @@ target_compile_definitions(qcnote PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x0A0
 # 使 platform 层依赖意图自包含）；
 # gdiplus：F2 工具栏图标 GDI+ 抗锯齿绘制（系统组件，无额外部署负担）
 target_link_libraries(qcnote PRIVATE scintilla_lib wil dwmapi comctl32 comdlg32 shell32 advapi32 qcnote_core gdiplus)
-# manifest 由 qcnote.rc 嵌入（PerMonitorV2 DPI 声明）；显式关闭链接器/mt 的
-# manifest 生成，避免默认 manifest 覆盖 rc 嵌入的资源
+# manifest 由 qcnote.rc 嵌入（PerMonitorV2 DPI 声明 + Common-Controls 6.0 依赖，
+# DEC-001）；显式关闭链接器/mt 的 manifest 生成，避免默认 manifest 覆盖 rc 嵌入的资源
 target_link_options(qcnote PRIVATE /MANIFEST:NO)
+# rc.exe 不产出 depfile：显式声明 rc 对 manifest 文件的依赖，manifest 变更即
+# 触发 rc 重编（否则 Ninja 不感知，exe 会带着旧 manifest 被链接）
+set_source_files_properties(src/qcnote.rc PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/qcnote.manifest")
 # .rc 中图标相对路径（icons/qcnote.ico）依赖 rc.exe 的包含搜索路径：传入 src/ 目录
 target_include_directories(qcnote PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
@@ -262,7 +266,8 @@ set_tests_properties(core PROPERTIES ENVIRONMENT
 #（comctl32）、dialog 依赖 dwmapi（DWMWCP 圆角 + theme.cpp 的 DWM 暗色联动）；
 # toolbar 依赖 theme/tooltip/commands.h（头文件即用）与 gdiplus（F2 图标
 # GDI+ 路径；单测经真实弹出窗口宿主驱动 attach/交互）。
-add_executable(test_ui tests/test_ui.cpp src/ui/theme.cpp src/ui/titlebar.cpp
+add_executable(test_ui tests/test_ui.cpp tests/test_manifest.rc
+                           src/ui/theme.cpp src/ui/titlebar.cpp
                            src/ui/statusbar.cpp src/ui/tooltip.cpp src/ui/dialog.cpp
                            src/ui/searchdialog.cpp src/ui/toolbar.cpp)
 target_compile_options(test_ui PRIVATE /std:c++latest /utf-8)
@@ -270,6 +275,13 @@ target_compile_options(test_ui PRIVATE /std:c++latest /utf-8)
 target_compile_definitions(test_ui PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x0A00 _WIN32_WINNT=0x0A00)
 target_include_directories(test_ui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(test_ui PRIVATE Catch2::Catch2WithMain gdi32 user32 dwmapi comctl32 gdiplus)
+# manifest 由 test_manifest.rc 嵌入（Common-Controls 6.0 依赖，DEC-006：回归钉
+# 用例依赖进程绑定 comctl32 v6）；显式关闭链接器/mt 的 manifest 生成，防止默认
+# manifest 与 rc 嵌入的资源重复（与主目标 qcnote 同模式）。同款 rc→manifest
+# 依赖声明（rc.exe 无 depfile，Ninja 需显式依赖才会在 manifest 变更时重编）
+target_link_options(test_ui PRIVATE /MANIFEST:NO)
+set_source_files_properties(tests/test_manifest.rc PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/qcnote.manifest")
 add_test(NAME ui COMMAND test_ui)
 
 # M1-2 菜单系统单测：MenuModel 数据模型（结构/级联/勾选/enabled/动态条目）、

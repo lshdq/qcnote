@@ -18,14 +18,6 @@ namespace {
 // SetWindowSubclass 子类 id（进程内唯一即可）
 constexpr UINT_PTR kSubclassId = 0x51431101;  // 'QC1\1'
 
-// WM_LBUTTONDOWN wParam 的 MK_ALT（0x20；SDK 头按 WIN32_LEAN_AND_MEAN
-// 可能未定义，防御性自定义）
-#ifndef MK_ALT
-constexpr UINT MK_ALT_ = 0x20;
-#else
-constexpr UINT MK_ALT_ = MK_ALT;
-#endif
-
 auto send(HWND sci, UINT msg, WPARAM w = 0, LPARAM l = 0) {
     return ::SendMessageW(sci, msg, w, l);
 }
@@ -241,6 +233,15 @@ std::string SelectionTextForSearch(HWND sci) {
     return out;
 }
 
+UINT NativeMouseDownFlags(UINT wParamFlags, bool alt, bool ctrl) {
+    // 仅 Alt 按下且无 Ctrl 时剥掉 MK_SHIFT（条件限定依据见头文件注释/DEC-002）；
+    // 其余位原样保留。alt/ctrl 由调用方解析后传入（纯函数不读键状态，自测
+    // 可直调断言）：调用方 alt 一律取物理键盘状态（DEC-007——真实鼠标消息
+    // wParam 无 Alt 位，0x20 是 MK_XBUTTON1 侧键，WinUser.h:2735）。
+    if (alt && !ctrl) return wParamFlags & ~MK_SHIFT;
+    return wParamFlags;
+}
+
 // ---------------------------------------------------------------------------
 // Host：子类化与分发
 // ---------------------------------------------------------------------------
@@ -284,10 +285,32 @@ LRESULT CALLBACK McSubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                                     POINT{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)})) {
             return 0;  // Alt+单击加光标：消费（Scintilla 不见此消息）
         }
+        // Alt+Shift 列选拖拽放行路径：转发前剥掉 wParam 的 MK_SHIFT。Scintilla
+        // 的 MouseModifiers 中 Shift/Ctrl 读 wParam、Alt 读物理键盘状态
+        // （ScintillaWin.cxx:1142 KeyboardIsKeyDown(VK_MENU)），本层 Alt 同
+        // 口径传物理键状态 altKey（GetKeyState(VK_MENU)，DEC-007：wParam 的
+        // 0x20 位是 MK_XBUTTON1 侧键不代表 Alt，oleidl.h 的 MK_ALT 属 OLE
+        // 拖放协议常量），Ctrl 从 wParam 合法标志解析；剥 Shift 后矩形模式
+        // 仍生效，按下即新建空矩形（锚=游标=按下点，对齐旧版
+        // columnDragBeginAt），不再执行普通 Shift+click 的 SetSelection(newPos)
+        // 扩展（按下拉出旧选区的根因）；拖动路径 ButtonMoveWithModifiers 不读
+        // Shift，拖拽不受影响。已知权衡（DEC-001）：Alt+Shift+click 落在已有
+        // 非空选区内时原生走选区拖放分支而非新建矩形（罕见路径，接受）。
+        wp = NativeMouseDownFlags(static_cast<UINT>(wp), altKey,
+                                  (static_cast<UINT>(wp) & MK_CONTROL) != 0);
         break;
-    case WM_LBUTTONUP:
+    case WM_LBUTTONUP: {
+        // 先放行原生 ButtonUp，再定格转普通多选区——顺序关键：若先 streamify
+        // （selType 已变 stream），ButtonUp 重写主选区（Selection 布局使 main=
+        // 最后添加行=caret 角行）时 AllowVirtualSpace=false，抬起点位置不带
+        // 虚拟列，caret 角行虚拟列被覆盖 → 松手瞬间终点左弹（违背 DEC-005/
+        // 验收「松手后终点不回弹」）。矩形态下放行则重写位置带虚拟列且
+        // SetRectangularRange 全行保留，随后定格（CANCEL+STREAM 只换 selType
+        // 不动选区集合）全量保住
+        const LRESULT pass = ::DefSubclassProc(hwnd, msg, wp, lp);
         if (g_host) g_host->handleMouseButtonUp(hwnd);
-        break;
+        return pass;
+    }
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
         if (!g_host) break;
@@ -352,7 +375,15 @@ void MultiCursorHost::collapseIfActive(HWND sci) {
 
 bool MultiCursorHost::handleMouseButtonDown(HWND sci, UINT wParamFlags, POINT pt) {
     if (!sci) return false;
-    const bool alt = (wParamFlags & MK_ALT_) != 0;
+    // Alt 一律读物理键盘状态（DEC-007）：真实鼠标消息 wParam 永不携带 Alt——
+    // wParam 的 0x20 位是 MK_XBUTTON1 侧键（WinUser.h:2735），MK_ALT 是 OLE
+    // 拖放协议常量（oleidl.h:3667）；MSDN WM_LBUTTONDOWN Remarks 要求用
+    // GetKeyState(VK_MENU) 检测 Alt（ScintillaWin.cxx:1146 同此实现），与
+    // Scintilla MouseModifiers 完全同口径。Ctrl/Shift 仍从 wParamFlags 解析
+    //（MK_CONTROL/MK_SHIFT 是真实消息合法标志）；自动化自测经
+    // GetKeyboardState/SetKeyboardState 注入物理键状态，输入形态与真实系统
+    // 一致。
+    const bool alt = (::GetKeyState(VK_MENU) & 0x8000) != 0;
     const bool shift = (wParamFlags & MK_SHIFT) != 0;
     if (!alt || shift) {
         // Alt+Shift（矩形列选拖拽）与普通单击（多光标自动收缩）均放行原生
@@ -451,10 +482,25 @@ bool MultiCursorHost::handleKeyDown(HWND sci, UINT vk, bool ctrl, bool shift, bo
     // Ctrl+Alt+Shift+方向：键盘列选
     if (ctrl && alt && shift &&
         (vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT)) {
-        if (vk == VK_UP) {
-            send(sci, SCI_LINEUPRECTEXTEND, 0, 0);  // 原生：lastXChosen 粘性 + 逐行展开
-        } else if (vk == VK_DOWN) {
-            send(sci, SCI_LINEDOWNRECTEXTEND, 0, 0);
+        if (vk == VK_UP || vk == VK_DOWN) {
+            // 瞬态启用 USERACCESSIBLE：SCI_LINE*RECTEXTEND 走原生 PositionUpOrDown，
+            // 其粘性 x 定位经 SPositionFromLocation(..., UserVirtualSpace())，
+            // 而 UserVirtualSpace() 仅认 SCVS_USERACCESSIBLE（Editor.cxx:3395-3396、
+            // Editor.h:353-355）。configure 只开 SCVS_RECTANGULARSELECTION，超行宽 x
+            // 会被钳回真实行末位置，矩形终点虚拟列坍缩（穿越空行时 4→0）。
+            // 调用期间临时加上 USERACCESSIBLE 使虚拟列完整保留（SetRectangularRange
+            // 在矩形选区下恒写虚拟空间），随即恢复为共享常量 kVirtualSpaceOptions
+            //（C-1：与 scintillaedit.cpp configure 同一唯一口径，防恢复值漂移），
+            // 不产生残留；鼠标路径本就走 AllowVirtualSpace(rectangular) 不受影响
+            //（DEC-006）。
+            send(sci, SCI_SETVIRTUALSPACEOPTIONS,
+                 SCVS_RECTANGULARSELECTION | SCVS_USERACCESSIBLE, 0);
+            if (vk == VK_UP) {
+                send(sci, SCI_LINEUPRECTEXTEND, 0, 0);  // 原生：lastXChosen 粘性 + 逐行展开
+            } else {
+                send(sci, SCI_LINEDOWNRECTEXTEND, 0, 0);
+            }
+            send(sci, SCI_SETVIRTUALSPACEOPTIONS, kVirtualSpaceOptions, 0);
         } else {
             keyboardColumnStepHorizontal(sci, vk);
         }

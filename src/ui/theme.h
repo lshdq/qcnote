@@ -45,6 +45,13 @@ struct ThemePalette {
     uint32_t selection;
     uint32_t selectionBackground;  // 选区底色（不透明实底；文字保持原字色）
     uint32_t multiSelection;
+    // 工具栏图标（彩色扁平，DEC-003；两主题各一档深浅适配）
+    uint32_t iconNewBadge;    // 新建「+」角标（绿）
+    uint32_t iconOpenBack;    // 打开文件夹后板（琥珀深）
+    uint32_t iconOpenFront;   // 打开文件夹前盖（琥珀浅）
+    uint32_t iconSaveBody;    // 保存软盘机身（蓝）
+    uint32_t iconSaveLabel;   // 保存软盘标签（浅蓝）
+    uint32_t iconWrapArrow;   // 自动换行折行箭头（teal）
     // 搜索
     uint32_t searchMatch;
     uint32_t searchMatchBorder;

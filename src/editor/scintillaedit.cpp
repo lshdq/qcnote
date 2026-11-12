@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "Scintilla.h"
+#include "editor/multicursorcontroller.h"  // kVirtualSpaceOptions（C-1 共享常量）
 #include "core/textutil.h"
 #include "ui/theme.h"
 #include "ui/titlebar.h"
@@ -173,8 +174,18 @@ void EditorHost::configure(HWND sci, UINT dpi) const {
     // 一份并塌缩，两者都不等价分发语义，故拦截自实现 + EACH 兜底
     // Shift+Insert 等未拦截路径）
     send(SCI_SETMULTIPASTE, SC_MULTIPASTE_EACH);
-    // 虚拟空间关闭（旧版无虚拟空间；矩形选区短行钳制到行末由此保证）
-    send(SCI_SETVIRTUALSPACEOPTIONS, SCVS_NONE);
+    // 虚拟空间仅矩形选区启用（SCVS_RECTANGULARSELECTION）：SCVS_NONE 时
+    // SetRectangularRange 对每行 ClearVirtualSpace（Editor.cxx:598-599），
+    // 空行/短行的列选终点被钳回行首；启用后矩形拖拽终点跟随鼠标 x（虚拟列），
+    // 键盘列选（Ctrl+Alt+Shift+↑/↓ 的 lastXChosen 粘性）同样受益；松手
+    // streamify 定格后虚拟列保留、键入自动补空格（VS Code 同款，方案 A
+    // 用户已确认，见决策记录 DEC-005）。应用层集合重建路径（Esc 收缩、
+    // Ctrl+Alt+↑/↓、Ctrl+D、Shift+Alt+I、粘贴分发）读基础位置、丢虚拟列
+    //（与旧版钳制语义一致，接受，不改）。stream 选区仍无虚拟空间（与
+    // 旧版普通选区语义一致）。
+    // C-1：引用 editor 共享常量（与 handleKeyDown 瞬态恢复点同一唯一口径，
+    // 防恢复值漂移；语义见上方注释与 DEC-003）
+    send(SCI_SETVIRTUALSPACEOPTIONS, kVirtualSpaceOptions);
     // 撤销时还原多选区（B4：多光标编辑单步回滚后光标集合不丢；
     // 默认 Disabled——undo 后塌缩为单光标，偏离旧版控制器保留光标集合语义）
     send(SCI_SETUNDOSELECTIONHISTORY, 1 /* UndoSelectionHistoryOption::Enabled */);
@@ -266,6 +277,10 @@ void EditorHost::loadFromDocument(Entry& e) {
     const int pos = std::min<int>(e.doc->cursorPosition(),
                                   static_cast<int>(text.size()));
     SendMessageW(e.hwnd, SCI_GOTOPOS, static_cast<WPARAM>(pos), 0);
+    // 选区端点缓存重新基线（F3b）：装载后端点已重置，避免下次 UPDATEUI 把
+    // 陈旧端点差值误判为「选区变化」触发多余刷新
+    e.lastSelStart = SendMessageW(e.hwnd, SCI_GETSELECTIONSTART, 0, 0);
+    e.lastSelEnd = SendMessageW(e.hwnd, SCI_GETSELECTIONEND, 0, 0);
     SendMessageW(e.hwnd, SCI_SETSAVEPOINT, 0, 0);  // 装载态 == 基线（干净）
     e.loading = false;
 }
@@ -425,23 +440,40 @@ bool EditorHost::handleNotify(const NMHDR* hdr) {
     }
     if (hdr->code == SCN_CHARADDED) {
         // 键入路径的即时状态刷新：InsertCharacter 末尾发出（选区已推进）——
-        // SCN_UPDATEUI 为空闲排队（QueueIdleWork），交互下延迟一帧，此处即时
+        // SCN_UPDATEUI 为空闲排队（QueueIdleWork），交互下延迟一帧，此处即时。
+        // 刷新统一经 setCursorPosition 触发的 metadata 链（OnDocumentMetadata-
+        // Changed → RefreshStatusBar/RefreshWindowTitle）：键入必推进光标 →
+        // 恰好一次状态栏采样；不再直连 onCursorChanged（每次通知双采样的根因，
+        // F3b）。选区拖拽每帧 SCN_UPDATEUI 经同一条链，未变即零采样
         if (e->doc) {
             const int pos = static_cast<int>(
                 SendMessageW(e->hwnd, SCI_GETCURRENTPOS, 0, 0));
             e->doc->setCursorPosition(pos);
         }
-        if (onCursorChanged) onCursorChanged(e->doc);
         return true;
     }
     if (hdr->code == SCN_UPDATEUI) {
-        // 光标/选区/滚动变化：回写 doc 光标（会话数据源；Document 同值不通知）
+        // 光标/选区/滚动变化：回写 doc 光标（会话数据源；Document 同值不通知）。
+        // 刷新只走 metadata 链——位置未变（如纯滚动）时零采样；位置变化恰好
+        // 一次采样（此前本分支无条件 onCursorChanged + metadata 链 → 每帧双
+        // 采样，F3b 根因）。
+        // 保底：位置不变而主选区端点变化时 metadata 链不触发（selectedChars
+        // 会滞留），仅此场景直连一次 onCursorChanged 补采样，不与链路叠加
         if (e->doc) {
             const int pos = static_cast<int>(
                 SendMessageW(e->hwnd, SCI_GETCURRENTPOS, 0, 0));
-            e->doc->setCursorPosition(pos);
+            const bool changed = e->doc->setCursorPosition(pos);
+            const LRESULT selStart =
+                SendMessageW(e->hwnd, SCI_GETSELECTIONSTART, 0, 0);
+            const LRESULT selEnd = SendMessageW(e->hwnd, SCI_GETSELECTIONEND, 0, 0);
+            const bool selChanged =
+                selStart != e->lastSelStart || selEnd != e->lastSelEnd;
+            e->lastSelStart = selStart;
+            e->lastSelEnd = selEnd;
+            if (!changed && selChanged && onCursorChanged) {
+                onCursorChanged(e->doc);
+            }
         }
-        if (onCursorChanged) onCursorChanged(e->doc);
         return true;
     }
     return true;  // 本组件实例的其他通知：吞掉（不向组装层扩散）
@@ -468,7 +500,9 @@ EditorStatus EditorHost::statusOf(const core::Document* doc) const {
                     core::utf8CharCount(std::string_view(content).substr(
                         static_cast<size_t>(from), static_cast<size_t>(to - from))) +
                     1);
-    st.totalChars = static_cast<long long>(core::utf8CharCount(content));
+    // 总字符数走 Document 惰性缓存（F3a）：全文档 O(N) 扫描只在内容变更后的
+    // 首次采样发生，逐帧状态刷新零扫描
+    st.totalChars = static_cast<long long>(e->doc->charCount());
     // 选区字符数（B4 多选区：各选区合计；矩形选区取逐行展开的各段合计；
     // SCI_COUNTCHARACTERS 按 UTF-8 码点计，中文 1 字符）
     const LRESULT selections = send(SCI_GETSELECTIONS);

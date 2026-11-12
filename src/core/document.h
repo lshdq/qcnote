@@ -12,6 +12,7 @@
 // 转发为多播事件，见 documentmanager.h）。
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -38,13 +39,22 @@ public:
     bool hasBom() const;                            ///< 上次以 UTF-8 读/写是否带 BOM
     /// 光标位置：Scintilla 字节偏移（SC_CP_UTF8 下与本文档 UTF-8 内容字节流一致；
     /// 状态栏字符列显示经 textutil 字节↔字符换算）。负值钳为 0；同值不通知。
+    /// 返回 true = 位置实际变化（已通知），false = 同值短路——SCN_UPDATEUI 每
+    /// 帧回写采样依赖此返回值消除重复刷新
     int cursorPosition() const;
-    void setCursorPosition(int position);
+    bool setCursorPosition(int position);
 
     // —— 内容（UTF-8、LF、无 BOM）——
     const std::string& content() const;
     void setContent(std::string content);
     bool modified() const;                          ///< content != 基线（计算属性）
+    /// 全文 UTF-8 码点数（惰性缓存；仅内容变更时失效）。状态栏总字符数经
+    /// SCN_UPDATEUI 每帧采样，此前每次全文档 O(N) 扫描是选区拖拽逐帧路径的
+    /// 主要成本项——缓存后只有真正的内容编辑才重新计数。计数口径与
+    /// core::utf8CharCount 一致（无效字节按每字节 1 计）
+    std::size_t charCount() const;
+    /// charCount() 实际重算次数（仅测试/诊断用途）：验证内容未变时不重扫全文
+    int charCountComputeCount() const { return m_charCountComputeCount; }
     /// 基线（上次加载/保存内容）的 SHA-256 指纹（hex 小写）：草稿恢复时检测
     /// 磁盘是否被外部修改。内存内容一律 LF、无 BOM，与磁盘加载归一化后的
     /// 内容可直接比较
@@ -80,6 +90,9 @@ private:
     TextEncoding m_encoding = TextEncoding::Utf8;
     bool m_hasBom = false;                   ///< 上次 UTF-8 读/写是否带 BOM（GBK 保存不清除）
     int m_cursorPosition = 0;                ///< 字节偏移
+    mutable std::size_t m_charCount = 0;     ///< charCount() 惰性缓存（码点数）
+    mutable bool m_charCountValid = false;   ///< 缓存有效标志（内容变更即失效）
+    mutable int m_charCountComputeCount = 0; ///< charCount() 实际重算次数（仅测试/诊断用途）
 };
 
 } // namespace core

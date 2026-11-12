@@ -291,8 +291,9 @@ try {
     Send-Command $main $CMD_TOGGLE_DARK  # 切回浅色
 
     # ---- TC-006（编辑器态）：换行按钮点击即时切换 SCI_GETWRAPMODE ----
-    # 换行按钮（下标 3）中心（逻辑 px）：x = 4 + 3*(44+2) + 22 = 164；y = 40 + 4 + 16 = 60
-    $btnX = ScaleLogical ($LeftMargin + 3 * ($BtnW + $Spacing) + [int]($BtnW / 2)) $dpi
+    # 换行按钮（下标 3）中心（逻辑 px）：前 3 按钮末尾 + 分隔间隔 13（SeparatorMargin*2 + SeparatorWidth，见 src/ui/toolbar.h）+ 半宽
+    # x = 4 + 3*(44+2) - 2 + 6*2 + 1 + 22 = 175；y = 40 + 4 + 16 = 60
+    $btnX = ScaleLogical ($LeftMargin + 3 * ($BtnW + $Spacing) - $Spacing + 6 + 1 + 6 + [int]($BtnW / 2)) $dpi
     $btnY = ScaleLogical ($CapH + [int](($TbHeight - $BtnH) / 2) + [int]($BtnH / 2)) $dpi
     function Click-WrapButton([IntPtr]$main, [int]$bx, [int]$by) {
         [QcEdgeE2e]::Send($main, $WM_LBUTTONDOWN, [IntPtr]$MK_LBUTTON, (MakeLParam $bx $by)) | Out-Null

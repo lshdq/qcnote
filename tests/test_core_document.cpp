@@ -64,6 +64,72 @@ TEST_CASE("Document 元数据默认值与 uid", "[core][doc]") {
 }
 
 // ===========================================================================
+// Document：全文码点数惰性缓存（Win32界面性能修复 F3a：状态栏每帧采样消 O(N)）
+// ===========================================================================
+TEST_CASE("Document charCount 码点计数与缓存失效", "[core][doc]") {
+    Document doc;
+    int contentEvents = 0;
+    doc.onContentChanged = [&] { ++contentEvents; };
+
+    SECTION("空文档为 0") {
+        REQUIRE(doc.charCount() == 0);
+    }
+    SECTION("多字节/中文/emoji 按码点计（口径同 utf8CharCount）") {
+        // 你好 + 空格 + a + 😀 = 5 码点（你好 6 字节、😀 4 字节）
+        doc.setContent(cat({kUtf8NiHao, " a", kEmojiGrin}));
+        REQUIRE(doc.charCount() == 5);
+        REQUIRE(doc.charCount() == core::utf8CharCount(doc.content()));
+    }
+    SECTION("setContent 变更后缓存失效：新值即时反映；同值不失效") {
+        doc.setContent("abc");
+        REQUIRE(doc.charCount() == 3);
+        doc.setContent(std::string(kUtf8NiHao)); // 2 码点
+        REQUIRE(doc.charCount() == 2);
+        doc.setContent(std::string(kUtf8NiHao)); // 同值：不通知，计数保持
+        REQUIRE(contentEvents == 2);
+        REQUIRE(doc.charCount() == 2);
+    }
+    SECTION("applyLoadedState 后缓存失效") {
+        doc.setContent("abcdef");
+        REQUIRE(doc.charCount() == 6);
+        doc.applyLoadedState(std::filesystem::path(L"D:/t/c.txt"), std::string(kUtf8NiHao),
+                             LineEnding::Lf, TextEncoding::Utf8, false);
+        REQUIRE(doc.charCount() == 2);
+        REQUIRE(doc.charCount() == 2); // 二次读取命中缓存（值稳定即验证口径不变）
+    }
+    SECTION("computeCount：内容未变不重扫全文（缓存退化即红）") {
+        // 断言 charCountComputeCount（真实重算次数），而非仅值稳定——
+        // 若有人移除惰性缓存退化为每次全扫，本节必然失败
+        REQUIRE(doc.charCountComputeCount() == 0);
+        doc.setContent("abc");
+        REQUIRE(doc.charCount() == 3);           // 首次：真实重算
+        REQUIRE(doc.charCountComputeCount() == 1);
+        REQUIRE(doc.charCount() == 3);           // 内容未变：命中缓存
+        REQUIRE(doc.charCount() == 3);
+        REQUIRE(doc.charCountComputeCount() == 1); // ← 未变不重扫的可失败断言
+        doc.setContent(std::string(kUtf8NiHao)); // 不同内容：失效后恰 +1
+        REQUIRE(doc.charCount() == 2);
+        REQUIRE(doc.charCountComputeCount() == 2);
+        doc.setContent(std::string(kUtf8NiHao)); // 同值早退：不失效、不重算
+        REQUIRE(doc.charCount() == 2);
+        REQUIRE(doc.charCountComputeCount() == 2);
+        doc.applyLoadedState(std::filesystem::path(L"D:/t/c.txt"), "abcdef",
+                             LineEnding::Lf, TextEncoding::Utf8, false);
+        REQUIRE(doc.charCount() == 6);           // 加载路径失效后重算
+        REQUIRE(doc.charCountComputeCount() == 3);
+        REQUIRE(doc.charCount() == 6);
+        REQUIRE(doc.charCountComputeCount() == 3);
+    }
+    SECTION("markSaved 只动基线不改内容：计数不变") {
+        doc.setContent(std::string(kUtf8NiHao));
+        REQUIRE(doc.charCount() == 2);
+        doc.markSaved();
+        REQUIRE_FALSE(doc.modified());
+        REQUIRE(doc.charCount() == 2);
+    }
+}
+
+// ===========================================================================
 // Document：修改标记（基线比较）、markSaved、applyLoadedState、光标
 // ===========================================================================
 TEST_CASE("Document 修改标记与基线语义", "[core][doc]") {

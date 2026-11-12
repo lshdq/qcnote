@@ -129,6 +129,11 @@ private:
         core::Document* doc = nullptr;
         HWND hwnd = nullptr;
         bool loading = false;  // 程序化装载期间抑制 SCN_MODIFIED 回写
+        // 上次 SCN_UPDATEUI 采样的主选区端点（-1 = 未采样）。光标位置不变而
+        // 选区端点变化（如查找匹配末端恰落在当前光标处）时，metadata 链不会
+        // 触发，需凭此差值直连一次状态栏刷新（F3b 保底，见 handleNotify）
+        LRESULT lastSelStart = -1;
+        LRESULT lastSelEnd = -1;
     };
 
     Entry* find(core::Document* doc);

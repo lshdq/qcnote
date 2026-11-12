@@ -132,7 +132,10 @@ public:
     void removeTab(int index);                      // 移除并钳制 active/focus/scroll
     void removeRange(int from, int to);             // 移除 [from, to)
     void setModified(int index, bool modified);
-    void setDisplayName(int index, const std::wstring& name);
+    /// 显示名写入；同值短路返回 false（不置脏不重绘）——选区拖拽路径每帧经
+    /// OnDocumentMetadataChanged 到达此处，同值必须消除无效置脏
+    /// @return true = 实际变化（已置脏失效），false = 同值或越界（无操作）
+    bool setDisplayName(int index, const std::wstring& name);
     int count() const { return static_cast<int>(items_.size()); }
     int activeIndex() const { return activeIndex_; }
     bool setActiveIndex(int index);                 // 程序化激活（不触发回调；越界 false）

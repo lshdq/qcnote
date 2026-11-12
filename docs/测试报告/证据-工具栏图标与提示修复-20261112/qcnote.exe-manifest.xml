@@ -1,0 +1,35 @@
+﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- qcnote 应用 manifest：Per-Monitor V2 DPI 声明（需求 E1）。
+       与 main.cpp 的 SetProcessDpiAwarenessContext 双保险；
+       不支持 PMv2 的旧系统忽略 dpiAwareness，回退读取 dpiAware（系统级感知）。
+       Common-Controls 6.0 依赖（DEC-001）：使进程绑定 comctl32 v6，tooltip 控件
+       才接受现代 sizeof(TOOLINFOW)（72 字节）——否则回退 v5 拒绝注册，
+       TTM_ADDTOOL 静默失败导致 tooltip 永不显示。 -->
+  <assemblyIdentity type="win32" name="qcnote" version="1.0.0.0"></assemblyIdentity>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"></requestedExecutionLevel>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"></supportedOS>
+    </application>
+  </compatibility>
+  <asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+    <asmv3:windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
+    </asmv3:windowsSettings>
+  </asmv3:application>
+  <!-- Common-Controls 6.0：进程级绑定 comctl32 v6（DEC-001，tooltip 根因修复） -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"></assemblyIdentity>
+    </dependentAssembly>
+  </dependency>
+</assembly>

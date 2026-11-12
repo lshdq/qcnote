@@ -1,0 +1,4 @@
+// test_ui 进程 manifest：与 src/qcnote.manifest 同源（Common-Controls 6.0 依赖 + PMv2）。
+// 回归钉用例（TTM_GETTOOLCOUNT）依赖进程绑定 comctl32 v6，否则 v5 拒绝 72 字节
+// TOOLINFO、注册必然失败，断言无意义。
+1 24 "qcnote.manifest"

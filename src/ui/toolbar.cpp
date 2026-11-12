@@ -1,4 +1,5 @@
-// 工具栏实现（F2/F5：4 按钮 + GDI+ 双色扁平描边图标 + wrap toggle）：
+// 工具栏实现（F2/F5：两组按钮（新建/打开/保存 | 自动换行）+ GDI+ 彩色扁平
+// 图标 + wrap toggle）：
 // - 绘制分层：GDI 先画条带底色与 hover/pressed 叠层，GDI+ 只画图标路径
 //   （同一 WM_PAINT 内混用，DEC-001）。
 // - GDI+ 进程级惰性初始化（DEC-005）：std::call_once + GdiplusStartup，
@@ -90,10 +91,16 @@ void Toolbar::buttonRects(const RECT& clientRect, RECT out[4]) const {
     const int spacing = Scale(toolbar_metrics::Spacing, dpi);
     const int y = bar.top + (Scale(toolbar_metrics::Height, dpi) - bh) / 2;
     int x = bar.left + Scale(toolbar_metrics::LeftMargin, dpi);
-    for (int i = 0; i < 4; ++i) {
+    // 按钮 0-2（新建/打开/保存）：组内等距递进
+    for (int i = 0; i < 3; ++i) {
         out[i] = {x, y, x + bw, y + bh};
         x += bw + spacing;
     }
+    // 按钮 3（自动换行）：自按钮 2 右缘跨过组间分隔间隔区（DEC-005：间隔区
+    // 不入任何按钮矩形——命中 -1、tooltip 自动隐藏天然成立）
+    const int wx = out[2].right + Scale(toolbar_metrics::SeparatorMargin, dpi) * 2 +
+                   Scale(toolbar_metrics::SeparatorWidth, dpi);
+    out[3] = {wx, y, wx + bw, y + bh};
 }
 
 void Toolbar::setSaveEnabled(bool enabled) {
@@ -269,7 +276,21 @@ void Toolbar::paint(HDC dc, const RECT& clientRect) {
         DeleteObject(hb);
     }
 
-    // 图标（居中于按钮；禁用 textDisabled；wrap 激活 accent 描边——DEC-006）
+    // 组间分隔竖线（DEC-005）：保存（idx2）与自动换行（idx3）之间，pal.border
+    // 竖线垂直居中于按钮行；间隔区不入按钮矩形，仅作视觉分组
+    {
+        const int x0 = btns[2].right + Scale(toolbar_metrics::SeparatorMargin, dpi);
+        const int w = Scale(toolbar_metrics::SeparatorWidth, dpi);
+        const int h = Scale(toolbar_metrics::ButtonHeight - 8, dpi);
+        const int y0 = btns[2].top + (btns[2].bottom - btns[2].top - h) / 2;
+        RECT sep{x0, y0, x0 + w, y0 + h};
+        HBRUSH sepBrush = CreateSolidBrush(ToColorRef(pal.border));
+        FillRect(dc, &sep, sepBrush);
+        DeleteObject(sepBrush);
+    }
+
+    // 图标（居中于按钮；禁用 textDisabled；wrap 激活 accent 描边——DEC-006）。
+    // 彩色填充仅在可用态启用（禁用态灰色剪影，Windows 惯例）
     const int icon = Scale(toolbar_metrics::IconSize, dpi);
     for (int i = 0; i < 4; ++i) {
         const RECT& b = btns[i];
@@ -280,31 +301,36 @@ void Toolbar::paint(HDC dc, const RECT& clientRect) {
         const COLORREF stroke = ToColorRef(disabled[i] ? pal.textDisabled
                                            : ((i == 3 && wrapActive_) ? pal.accent
                                                                       : pal.textPrimary));
-        drawIcon(dc, static_cast<Button>(i), ir, stroke);
+        drawIcon(dc, static_cast<Button>(i), ir, stroke, !disabled[i]);
     }
 }
 
-void Toolbar::drawIcon(HDC dc, Button button, const RECT& iconRect, COLORREF color) const {
+void Toolbar::drawIcon(HDC dc, Button button, const RECT& iconRect, COLORREF color,
+                       bool colorful) const {
     // GDI+ 可用性惰性判定（DEC-005）：启动失败时永久走 GDI 线稿回退，
-    // 对调用方（paint）透明
+    // 对调用方（paint）透明；回退路径恒单色线稿，不消费 colorful
     ensureGdiplusStarted();
     if (g_gdiplusOk) {
-        drawIconGdiplus(dc, button, iconRect, color);
+        drawIconGdiplus(dc, button, iconRect, color, colorful);
     } else {
         drawIconGdiFallback(dc, button, iconRect, color);
     }
 }
 
-// GDI+ 抗锯齿双色扁平描边图标（DEC-001/002）：16×16 逻辑画布按 iconRect
-// 物理尺寸映射（REAL 浮点坐标，不做整数取整，抗锯齿边缘更平滑）。
-// 配色：主描边 = 调用方语义色（textPrimary / 禁用 textDisabled / wrap 激活
-// accent）；点缀 = pal.accent（wrap 激活时主次反转换 textPrimary——DEC-006）；
-// 淡填充面 = toolbarBackground 与亮色（closeGlyphForeground，两主题均为白）
-// 低 alpha 预合成的不透明色——「颜色一律经 CurrentPalette token」约束下的
-// 主题自适应亮面。所有 GDI+ 对象栈上构造，析构即释放（RAII，异常安全）；
-// Graphics 不超出本次调用存活期。
+// GDI+ 抗锯齿彩色扁平图标（DEC-001/002/003/004）：16×16 逻辑网格按 iconRect
+// 物理尺寸线性映射（REAL 浮点坐标，不做整数取整，抗锯齿边缘更平滑；画布
+// 20×20 仅放大映射目标，网格坐标不变）。配色分两层：
+// - 结构描边 = 调用方语义色（textPrimary / 禁用 textDisabled / wrap 激活
+//   accent——DEC-006 主次反转保留）；
+// - 语义填充 = 独立 palette token（iconNewBadge/iconOpenBack/iconOpenFront/
+//   iconSaveBody/iconSaveLabel/iconWrapArrow，DEC-003，两主题各一档）；
+//   狗耳三角仍 accent 低 alpha 原生合成填充（结构点缀，非语义填充面）。
+// 禁用态（colorful=false）：跳过全部彩色填充与点缀色，仅画主描边线稿——
+// 灰色剪影（Windows 惯例），形状轮廓完整可辨。
+// 所有 GDI+ 对象栈上构造，析构即释放（RAII，异常安全）；Graphics 不超出
+// 本次调用存活期。
 void Toolbar::drawIconGdiplus(HDC dc, Button button, const RECT& iconRect,
-                              COLORREF stroke) const {
+                              COLORREF stroke, bool colorful) const {
     const ThemePalette& pal = CurrentPalette();
     const UINT dpi = hwnd_ ? WindowDpi(hwnd_) : 96;
 
@@ -320,8 +346,6 @@ void Toolbar::drawIconGdiplus(HDC dc, Button button, const RECT& iconRect,
     const auto pf = [&](Gdiplus::REAL x, Gdiplus::REAL y) { return Gdiplus::PointF{gx(x), gy(y)}; };
 
     const bool wrapActive = (button == Button::Wrap && wrapActive_);
-    const uint32_t spotToken = wrapActive ? pal.textPrimary : pal.accent;  // 点缀色
-    const auto spotColor = argbToGdiplus(spotToken);
 
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -332,15 +356,13 @@ void Toolbar::drawIconGdiplus(HDC dc, Button button, const RECT& iconRect,
     mainPen.SetStartCap(Gdiplus::LineCapRound);
     mainPen.SetEndCap(Gdiplus::LineCapRound);
     mainPen.SetLineJoin(Gdiplus::LineJoinRound);
-    Gdiplus::Pen spotPen(spotColor, penW);  // 点缀笔（accent 短线）：同宽圆帽
-    spotPen.SetStartCap(Gdiplus::LineCapRound);
-    spotPen.SetEndCap(Gdiplus::LineCapRound);
 
     switch (button) {
     case Button::New: {
         // 形状意图：文档页轮廓（右上狗耳折角；pen 圆角连接近似「略圆角」）
         // + 折角三角 accent 半透明填充（alpha 0x66，GDI+ 原生 alpha）
-        // + 页面内右下 accent「+」角标（F2「新增」语义，避开折角区）
+        // + 页面内右下「+」角标（F2「新增」语义，iconNewBadge 绿实色笔画，
+        // 位置尺寸不变，避开折角区）。禁用态：两处彩色均跳过，全量主描边线稿
         Gdiplus::GraphicsPath page;
         page.AddLine(pf(3.5f, 1.5f), pf(9.5f, 1.5f));      // 顶边（至折角起点）
         page.AddLine(pf(9.5f, 1.5f), pf(12.5f, 4.5f));     // 折角斜边
@@ -350,18 +372,30 @@ void Toolbar::drawIconGdiplus(HDC dc, Button button, const RECT& iconRect,
         Gdiplus::GraphicsPath fold;                        // 狗耳三角填充面
         const Gdiplus::PointF foldPts[3] = {pf(9.5f, 1.5f), pf(12.5f, 4.5f), pf(9.5f, 4.5f)};
         fold.AddPolygon(foldPts, 3);
-        Gdiplus::SolidBrush foldBrush(
-            argbToGdiplus((pal.accent & 0x00FFFFFFu) | 0x66000000u));
-        graphics.FillPath(&foldBrush, &fold);   // 先填面后描边（描边盖住公共边）
-        graphics.DrawPath(&mainPen, &page);
-        graphics.DrawLine(&spotPen, gx(8.5f), gy(11.0f), gx(11.5f), gy(11.0f));  // 「+」横
-        graphics.DrawLine(&spotPen, gx(10.0f), gy(9.5f), gx(10.0f), gy(12.5f));  // 「+」竖
+        if (colorful) {
+            Gdiplus::SolidBrush foldBrush(
+                argbToGdiplus((pal.accent & 0x00FFFFFFu) | 0x66000000u));
+            graphics.FillPath(&foldBrush, &fold);   // 先填面后描边（描边盖住公共边）
+            graphics.DrawPath(&mainPen, &page);
+            // 「+」角标：iconNewBadge 实色（语义色线性笔画形态）
+            Gdiplus::Pen badgePen(argbToGdiplus(pal.iconNewBadge), penW);
+            badgePen.SetStartCap(Gdiplus::LineCapRound);
+            badgePen.SetEndCap(Gdiplus::LineCapRound);
+            graphics.DrawLine(&badgePen, gx(8.5f), gy(11.0f), gx(11.5f), gy(11.0f));  // 「+」横
+            graphics.DrawLine(&badgePen, gx(10.0f), gy(9.5f), gx(10.0f), gy(12.5f));  // 「+」竖
+        } else {
+            graphics.DrawPath(&mainPen, &fold);  // 狗耳轮廓补全（剪影完整）
+            graphics.DrawPath(&mainPen, &page);
+            graphics.DrawLine(&mainPen, gx(8.5f), gy(11.0f), gx(11.5f), gy(11.0f));   // 「+」横
+            graphics.DrawLine(&mainPen, gx(10.0f), gy(9.5f), gx(10.0f), gy(12.5f));   // 「+」竖
+        }
         break;
     }
     case Button::Open: {
-        // 形状意图：双色文件夹。后板（含左侧折耳斜肩）仅描边，底边开口由
-        // 前盖覆盖；前盖平行四边形淡填充 + 主描边（掀开的挡板）；前后盖
-        // 之间缝隙的中部画一条 accent 开口短线（「打开」状态点缀）
+        // 形状意图：彩色文件夹（DEC-003）。后板（含左侧折耳斜肩）iconOpenBack
+        // 琥珀深填充 + 主描边；前盖平行四边形 iconOpenFront 琥珀浅实色填充 +
+        // 主描边（掀开的挡板）；前后盖缝隙中部一条 iconOpenBack 开口短线（深
+        // 黄压在前盖上可辨）。禁用态：跳过填充与装饰性开口线，仅主描边线稿
         Gdiplus::GraphicsPath back;
         back.AddLine(pf(2.5f, 13.5f), pf(2.5f, 4.5f));    // 左边
         back.AddLine(pf(2.5f, 4.5f), pf(6.0f, 4.5f));     // 顶边左段（折耳）
@@ -372,19 +406,29 @@ void Toolbar::drawIconGdiplus(HDC dc, Button button, const RECT& iconRect,
                                             pf(14.0f, 8.5f), pf(11.5f, 13.5f)};
         Gdiplus::GraphicsPath flap;
         flap.AddPolygon(flapPts, 4);
-        // 淡填充面：toolbarBackground 叠白预合成（两主题自适应的亮面）
-        const uint32_t face = BlendOver(pal.toolbarBackground,
-                                        (pal.closeGlyphForeground & 0x00FFFFFFu) | 0x3D000000u);
-        Gdiplus::SolidBrush faceBrush(argbToGdiplus(face));
-        graphics.FillPath(&faceBrush, &flap);
-        graphics.DrawPath(&mainPen, &flap);
-        graphics.DrawPath(&mainPen, &back);
-        graphics.DrawLine(&spotPen, gx(6.0f), gy(7.5f), gx(12.5f), gy(7.5f));  // 开口线
+        if (colorful) {
+            Gdiplus::SolidBrush backBrush(argbToGdiplus(pal.iconOpenBack));
+            graphics.FillPath(&backBrush, &back);  // 后板填充先落（FillPath 沿
+                                                   // 底边自动闭合，前盖随后叠上）
+            Gdiplus::SolidBrush flapBrush(argbToGdiplus(pal.iconOpenFront));
+            graphics.FillPath(&flapBrush, &flap);
+            graphics.DrawPath(&mainPen, &flap);
+            graphics.DrawPath(&mainPen, &back);
+            Gdiplus::Pen gapPen(argbToGdiplus(pal.iconOpenBack), penW);  // 深黄开口线
+            gapPen.SetStartCap(Gdiplus::LineCapRound);
+            gapPen.SetEndCap(Gdiplus::LineCapRound);
+            graphics.DrawLine(&gapPen, gx(6.0f), gy(7.5f), gx(12.5f), gy(7.5f));
+        } else {
+            graphics.DrawPath(&mainPen, &flap);
+            graphics.DrawPath(&mainPen, &back);
+        }
         break;
     }
     case Button::Save: {
-        // 形状意图：软盘。外框右上直角、右下切角（老式软盘轮廓）；顶部
-        // 遮板矩形描边（金属滑板）；底部标签框 accent 淡填充 + 描边
+        // 形状意图：彩色软盘（DEC-003）。机身 iconSaveBody 蓝填充 + 主描边
+        // （外框右上直角、右下切角）；顶部遮板矩形保持仅描边（金属滑板）；
+        // 底部标签框 iconSaveLabel 浅蓝实色填充 + 主描边。禁用态：跳过填充，
+        // 仅主描边线稿
         Gdiplus::GraphicsPath body;
         body.AddLine(pf(3.5f, 2.5f), pf(12.5f, 2.5f));     // 顶边
         body.AddLine(pf(12.5f, 2.5f), pf(12.5f, 11.0f));   // 右边（右上直角）
@@ -397,21 +441,28 @@ void Toolbar::drawIconGdiplus(HDC dc, Button button, const RECT& iconRect,
         Gdiplus::GraphicsPath label;                       // 底部标签框
         label.AddRectangle(
             Gdiplus::RectF{gx(5.0f), gy(8.5f), gx(11.0f) - gx(5.0f), gy(13.5f) - gy(8.5f)});
-        // 标签 accent 淡填充：预合成不透明（叠在公共边上不透底，描边随后覆盖）
-        const uint32_t labelFace = BlendOver(pal.toolbarBackground,
-                                             (pal.accent & 0x00FFFFFFu) | 0x2E000000u);
-        Gdiplus::SolidBrush labelBrush(argbToGdiplus(labelFace));
-        graphics.FillPath(&labelBrush, &label);
-        graphics.DrawPath(&mainPen, &body);
-        graphics.DrawPath(&mainPen, &shutter);
-        graphics.DrawPath(&mainPen, &label);
+        if (colorful) {
+            Gdiplus::SolidBrush bodyBrush(argbToGdiplus(pal.iconSaveBody));
+            graphics.FillPath(&bodyBrush, &body);  // 机身填充先落（标签随后叠上）
+            Gdiplus::SolidBrush labelBrush(argbToGdiplus(pal.iconSaveLabel));
+            graphics.FillPath(&labelBrush, &label);
+            graphics.DrawPath(&mainPen, &body);
+            graphics.DrawPath(&mainPen, &shutter);
+            graphics.DrawPath(&mainPen, &label);
+        } else {
+            graphics.DrawPath(&mainPen, &body);
+            graphics.DrawPath(&mainPen, &shutter);
+            graphics.DrawPath(&mainPen, &label);
+        }
         break;
     }
     case Button::Wrap: {
         // 形状意图：折行符号「↵」——上横线右行，右上圆角下弯，右侧短竖线
-        // （下降一段），右下圆角折返左行，末端 accent 实心小三角箭头（指向
-        // 左，即「折回到下一行」）。激活/非激活仅主描边与点缀色互换
-        // （DEC-006 主次反转），形状不变
+        // （下降一段），右下圆角折返左行，末端实心小三角箭头（指向左，即
+        // 「折回到下一行」）。主折线恒主描边（wrap 激活 accent——DEC-006
+        // 主次反转保留）；箭头填充色：激活 accent（与主描边同色强化强调态）、
+        // 非激活 iconWrapArrow teal（DEC-003）。禁用态：箭头改主描边轮廓
+        // （线稿保留「指向」语义），形状不变
         const Gdiplus::REAL r = 2.0f;  // 圆角半径（16 格逻辑坐标）
         Gdiplus::GraphicsPath hook;
         hook.AddLine(pf(2.5f, 5.0f), pf(10.5f, 5.0f));  // 上横线
@@ -428,10 +479,15 @@ void Toolbar::drawIconGdiplus(HDC dc, Button button, const RECT& iconRect,
                     0.0f, 90.0f);
         hook.AddLine(pf(10.5f, 10.0f), pf(4.5f, 10.0f));  // 折返线（回到左侧）
         graphics.DrawPath(&mainPen, &hook);
-        // accent 实心小三角箭头（指向左）
+        // 实心小三角箭头（指向左）
         const Gdiplus::PointF arrowPts[3] = {pf(2.5f, 10.0f), pf(5.2f, 8.4f), pf(5.2f, 11.6f)};
-        Gdiplus::SolidBrush arrowBrush(spotColor);
-        graphics.FillPolygon(&arrowBrush, arrowPts, 3);
+        if (colorful) {
+            const uint32_t arrowToken = wrapActive ? pal.accent : pal.iconWrapArrow;
+            Gdiplus::SolidBrush arrowBrush(argbToGdiplus(arrowToken));
+            graphics.FillPolygon(&arrowBrush, arrowPts, 3);
+        } else {
+            graphics.DrawPolygon(&mainPen, arrowPts, 3);  // 灰色线稿轮廓
+        }
         break;
     }
     }

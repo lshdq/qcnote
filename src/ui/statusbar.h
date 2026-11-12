@@ -42,6 +42,10 @@ struct StatusData {
     std::wstring encoding;       // "UTF-8" / "UTF-8 BOM" / "GBK"（空 = 隐藏）
     std::wstring lineEnding;     // "LF" / "CRLF"（空 = 隐藏）
     std::wstring path;           // 完整路径（空 = 隐藏/无 tooltip）
+
+    // 全值类型 defaulted 等值比较（C++20+）：update() 数据未变化时跳过
+    // 置脏与失效（拖拽中 SCN_UPDATEUI 高频刷新，等值跳过减少无谓重绘）
+    bool operator==(const StatusData&) const = default;
 };
 
 // 各字段显示文本（纯函数，单测覆盖；返回空串 = 该字段隐藏）
@@ -51,6 +55,23 @@ std::wstring StatusCursorCountText(const StatusData& d);  // 光标 ×N（>1）
 std::wstring StatusTotalText(const StatusData& d);        // 共 N 字符（有文档）
 std::wstring StatusEncodingText(const StatusData& d);     // 编码（有文档）
 std::wstring StatusLineEndingText(const StatusData& d);   // LF/CRLF（有文档）
+
+// 布局段（measureAndLayout 产物，下标与 SegId 一一对应；R2-A 段级差分失效
+// 的比对单元）。isPath 只影响绘制省略样式，不参与差分判定
+struct StatusSegment {
+    std::wstring text;  // 显示文本（省略前的完整文本）
+    RECT bounds{};      // 客户区坐标
+    bool visible = false;
+    bool isPath = false;
+};
+
+// 段级差分失效矩形（纯函数，无 HWND 依赖，Catch2 直接构造向量单测）：
+// 逐下标比较旧/新段，visible / text / bounds 任一变化 → 该段需要重绘；
+// 失效矩形 = 旧 bounds（若旧 visible）∪ 新 bounds（若新 visible）的并集
+//（位移联动覆盖：段宽或位置变化时新旧两块区域都要重画，不留残影）。
+// 段完全相同 → 不产生矩形；全部段无变化返回空（update 调用方完全不失效）
+std::vector<RECT> StatusDiffInvalidRects(const std::vector<StatusSegment>& oldSegments,
+                                         const std::vector<StatusSegment>& newSegments);
 
 class StatusBar {
 public:
@@ -77,23 +98,27 @@ public:
     RECT pathRect(const RECT& clientRect) const;  // 路径段矩形（空 = 无路径）
 
 private:
-    struct Segment {
-        std::wstring text;  // 显示文本（含省略）
-        RECT bounds{};      // 客户区坐标
-        bool visible = false;
-        bool isPath = false;
-    };
     enum class SegId { LineCol = 0, Selection, CursorCount, Total, Encoding, LineEnd, Path, Count };
 
     void ensureFont() const;
     void measureAndLayout(const RECT& clientRect) const;  // 惰性段布局
     void invalidateBar() const;
 
+    // —— R3-A 渲染辅助（paint() 与 update() 直绘共用，防两份绘制代码漂移）——
+    // 整条内容绘制（底色 + 顶部分隔线 + 各段文字），坐标为绝对客户区坐标，
+    // segments_ 布局结果直接可用。WM_PAINT 整条双缓冲与 update() 差分矩形
+    // 同步直绘共用同一实现，保证两条路径像素级一致（theme selftest 的
+    // 状态栏像素采样依赖该一致性）
+    void drawBarContent(HDC target, const RECT& bar) const;
+    // 渲染整条到内存位图：视口原点平移到条带左上角后 drawBarContent，
+    // 完成后复位原点（位图 (0,0) = 条带左上角，供 BitBlt 源坐标换算）
+    void drawBarToMemory(HDC memDc, const RECT& bar) const;
+
     HWND hwnd_ = nullptr;
     StatusData data_;
     mutable HFONT font_ = nullptr;
     mutable UINT fontDpi_ = 0;
-    mutable std::vector<Segment> segments_;  // 与 SegId 一一对应
+    mutable std::vector<StatusSegment> segments_;  // 与 SegId 一一对应（R2-A 差分基准/产物）
     mutable RECT clientCache_{};
     mutable UINT layoutDpi_ = 0;
     mutable bool layoutDirty_ = true;

@@ -145,6 +145,11 @@ editor::MultiCursorHost g_multiCursor;      // 多光标交互映射（B4，M3-B
 editor::SearchController g_searchCtl;       // 查找控制器（B5，M3-B）
 core::DocumentManager g_docManager; // 全局唯一文档管理器（M2-A）
 HWND g_mainWindow = nullptr;
+// 窗口标题同值短路缓存（F1）：RefreshWindowTitle 位于选区拖拽的逐帧采样路径
+// （SCN_UPDATEUI → metadata 链），标题未变化时跳过 SetWindowTextW。初始为空，
+// 首次调用（无文档标题 L"qcnote"）会多设置一次，无害
+std::wstring g_lastWindowTitle;
+int g_stTitleSets = 0;  // 自测采样：SetWindowTextW 实际执行次数（F1 短路验证）
 bool g_windowActive = true;    // E2 边界线活动/非活动换色（标题栏配色不随焦点变化，E1）
 bool g_trackingClientMouse = false;  // 客户区 TrackMouseEvent（TME_LEAVE）挂载标志
 bool g_fileDialogOpen = false;       // 文件对话框打开中（uiLocked 语义 + WM_CLOSE 拒绝）
@@ -297,6 +302,11 @@ void RefreshWindowTitle() {
         if (doc->modified()) title += L" *";
         title += L" - qcnote";
     }
+    // 同值短路（F1）：拖拽选区等高频路径逐帧经过此函数，标题未变化时不再
+    // 打扰系统（SetWindowTextW 触发系统侧文本重设）；只有标题真变才设置
+    if (title == g_lastWindowTitle) return;
+    g_lastWindowTitle = title;
+    ++g_stTitleSets;  // 自测采样：实际调用次数（单测断言「未变 0 次 / 变化 1 次」）
     SetWindowTextW(g_mainWindow, title.c_str());
 }
 
@@ -1441,6 +1451,7 @@ bool g_stDocArgOpen = false, g_stDocNew = false, g_stDocType = false, g_stDocSwi
 bool g_stDocSaveAs = false, g_stDocGbk = false, g_stDocReopen = false, g_stDocStatus = false;
 bool g_stDocDialog = false, g_stDocIme = false, g_stDocWrap = false, g_stDocCloseAll = false;
 bool g_stDocToolbar = false, g_stDocErrorDlg = false;
+bool g_stDocTitleShort = false;  // F1：标题同值短路（未变 0 次 / 变化恰 1 次）
 std::wstring g_docDetail;  // 各阶段采样明细（失败定位；写 <结果文件>.detail.txt）
 
 // 辅助：读编辑器全文（UTF-8）
@@ -1491,6 +1502,7 @@ void WriteDocSelftestResult() {
         {"toolbar new button routes command via geometry hit", &g_stDocToolbar},
         {"open failure shows error dialog, no document created", &g_stDocErrorDlg},
         {"close all documents shows welcome page and returns focus", &g_stDocCloseAll},
+        {"title short-circuit: unchanged skips SetWindowTextW, change sets once", &g_stDocTitleShort},
     };
     bool all = true;
     std::ofstream f(out, std::ios::trunc);
@@ -1705,6 +1717,28 @@ void RunDocSelftestStage() {
         }
         ok = ok && g_statusBar.data().cursorLine == 2 && g_statusBar.data().cursorColumn == 1;
         g_stDocStatus = ok;
+        // —— F1 标题同值短路（计数采样）——
+        {
+            // 先撤销本阶段键入的 "\nx"（2 个撤销单元）回到磁盘加载态「中文a」：
+            // 清脏翻转本身会设置一次标题（脏→干净的 "* " 摘除），随后从干净态
+            // 开始计数，键入才能稳定产生「标题变化恰一次」的断言前提
+            SendMessageW(sci, SCI_UNDO, 0, 0);
+            SendMessageW(sci, SCI_UNDO, 0, 0);
+            const int sets0 = g_stTitleSets;
+            RefreshWindowTitle();  // 标题未变 → 短路（0 次设置）
+            bool okTitle = g_stTitleSets == sets0;
+            TypeIntoEditor(doc, L"t");  // 键入 → 干净→脏翻转 → 标题加 " *"（恰 1 次；
+                                        // CHARADDED 光标回写的 metadata 链同值短路）
+            okTitle = okTitle && g_stTitleSets == sets0 + 1;
+            SendMessageW(sci, SCI_UNDO, 0, 0);  // 撤销 → 清脏 → 标题恢复（第 2 次）
+            okTitle = okTitle && g_stTitleSets == sets0 + 2;
+            RefreshWindowTitle();  // 恢复后未变 → 短路
+            okTitle = okTitle && g_stTitleSets == sets0 + 2;
+            g_docDetail += L"[stage7] titleSets0=" + std::to_wstring(sets0) +
+                           L" titleSets1=" + std::to_wstring(g_stTitleSets) +
+                           L" content=" + core::utf8ToWide(doc->content()) + L"\n";
+            g_stDocTitleShort = okTitle;
+        }
         PostMessageW(g_mainWindow, kMsgDocSelftestStage, 0, 0);
     } else if (g_docStage == 8) {
         g_docStage = 9;
@@ -1819,6 +1853,12 @@ bool g_stSchCtrlD = false, g_stSchAllOcc = false, g_stSchAddLine = false;
 bool g_stSchImeDist = false, g_stSchUndoOnceMc = false, g_stSchPasteDist = false;
 bool g_stSchPasteFull = false, g_stSchCopyJoin = false, g_stSchLineEnds = false;
 bool g_stSchKbColumn = false;
+// 列选鼠标按下/拖拽（修复 1+3：剥 MK_SHIFT 转发 + 矩形虚拟列；DEC-007 后
+// Alt 一律物理键状态，注入形态与真实系统输入重合）
+bool g_stSchNativeFlags = false, g_stSchMouseRect = false, g_stSchRectVirtual = false;
+bool g_stSchKbColEmpty = false;
+bool g_stSchMouseTap = false;   // C-3：按下即松开（无拖动）→ 非矩形、无残留
+bool g_stSchX1NotAlt = false;   // A-2 锁定：X1 侧键（wParam 0x20）不误触发 Alt+click
 
 // 测试内容（字节偏移在注释中给出）
 const std::string kSearchContent = "foo abc foo\nbar foo\nabc\nfoofoo";
@@ -1886,6 +1926,12 @@ void WriteSearchSelftestResult() {
         {"copy joins selections by line with empty for cursors", &g_stSchCopyJoin},
         {"shift+alt+I puts cursors at line ends", &g_stSchLineEnds},
         {"keyboard column select: rect extend + no-cross-line step", &g_stSchKbColumn},
+        {"mouse-down forward flags strip MK_SHIFT (alt-only, pure fn)", &g_stSchNativeFlags},
+        {"alt+shift mouse down starts empty rect at press point", &g_stSchMouseRect},
+        {"rect drag keeps virtual col on empty line + typing pads", &g_stSchRectVirtual},
+        {"keyboard column select keeps virtual col on empty line", &g_stSchKbColEmpty},
+        {"mouse down+up without drag leaves single caret at press point (C-3)", &g_stSchMouseTap},
+        {"X1 button (MK_XBUTTON1) click not misread as alt+click (DEC-007/A-2)", &g_stSchX1NotAlt},
     };
     bool all = true;
     std::ofstream f(out, std::ios::trunc);
@@ -2255,6 +2301,228 @@ void RunSearchSelftestStage() {
                           doc->content() == "a\na\nb\nbb\nc\n\ndddd";
         g_searchDetail += L"[kbcol-enter] sels=" + std::to_wstring(selCount()) +
                           L" content=" + core::utf8ToWide(doc->content()) + L"\n";
+        PostMessageW(g_mainWindow, kMsgSearchSelftestStage, 0, 0);
+    } else if (g_searchStage == 11) {
+        g_searchStage = 12;
+        // —— 列选鼠标按下/拖拽集成（修复 1+3：按下转发剥 MK_SHIFT + 矩形虚拟列）——
+        // 纯函数断言（转发 flags 调整；纯函数不读键状态，alt/ctrl 由调用方
+        // 传入）。0x20 在真实鼠标消息 wParam 中是 MK_XBUTTON1 侧键（WinUser.h）
+        // 而非 Alt——MK_ALT 属 OLE 拖放协议常量（oleidl.h），DEC-007
+        constexpr UINT kMkXButton1 = 0x20;
+        bool ok =
+            editor::NativeMouseDownFlags(kMkXButton1 | MK_SHIFT, true, false) == kMkXButton1 &&
+            editor::NativeMouseDownFlags(kMkXButton1 | MK_SHIFT | MK_CONTROL, true, true) ==
+                (kMkXButton1 | MK_SHIFT | MK_CONTROL) &&
+            editor::NativeMouseDownFlags(MK_SHIFT, false, false) == MK_SHIFT &&
+            editor::NativeMouseDownFlags(kMkXButton1, true, false) == kMkXButton1;
+        g_stSchNativeFlags = ok;
+
+        core::Document* doc = g_docManager.activeDocument();
+        doc->setContent("abcdef\n\nxy");  // L0 "abcdef" [0,6) L1 空行 [7,8) L2 "xy" [8,10)
+        HWND s = g_editors.activeWindow();
+        auto selCount = [&] {
+            return static_cast<int>(SendMessageW(s, SCI_GETSELECTIONS, 0, 0));
+        };
+        // 虚拟空间配置（修复 3 的基础）
+        ok = ok && static_cast<int>(SendMessageW(s, SCI_GETVIRTUALSPACEOPTIONS, 0, 0)) ==
+                        SCVS_RECTANGULARSELECTION;
+
+        // 旧非空选区 [0,3)（caret=3 ≠ 按下点）；按下点取 L0 列 4（旧选区外——
+        // 点在已有非空选区内会走原生选区拖放分支，DEC-001 已知权衡路径，不测）
+        SendMessageW(s, SCI_SETSEL, 0, 3);
+        const int px = static_cast<int>(SendMessageW(s, SCI_POINTXFROMPOSITION, 0, 4));
+        const int py = static_cast<int>(SendMessageW(s, SCI_POINTYFROMPOSITION, 0, 4));
+        // 本层与 Scintilla 的 Alt 修饰键均从物理键盘状态读取（GetKeyState
+        // (VK_MENU)，ScintillaWin.cxx:1142；DEC-007——合成消息 wParam 不携带
+        // Alt，0x20 是 MK_XBUTTON1）——置本线程键状态表 Alt down（仅影响本
+        // 线程 GetKeyState，不注入系统输入流；防扰约定），测后恢复
+        BYTE keyState[256] = {}, savedState[256] = {};
+        GetKeyboardState(savedState);
+        for (int i = 0; i < 256; ++i) keyState[i] = savedState[i];
+        keyState[VK_MENU] |= 0x80;
+        SetKeyboardState(keyState);
+
+        // C-3（DEC-007 伴随项）：按下即松开（无拖动）——真实形态 DOWN→UP
+        // 立即成对：断言非矩形、无残留（单光标空选区定格于按下点 pos5，不是
+        // 旧选区扩展、不是矩形）。按下点取 pos5：与拖拽按下点 pos4 相邻列但
+        // 相距一个字宽（> Editor.cxx:4834 multiClick 判定的 3px 容差），合成
+        // 注入的微秒级间隔不会被判成双击（真实用户两次按压亦远超该窗口）
+        const int qx = static_cast<int>(SendMessageW(s, SCI_POINTXFROMPOSITION, 0, 5));
+        const int qy = static_cast<int>(SendMessageW(s, SCI_POINTYFROMPOSITION, 0, 5));
+        SendMessageW(s, WM_LBUTTONDOWN, MK_LBUTTON | MK_SHIFT, MAKELPARAM(qx, qy));
+        SendMessageW(s, WM_LBUTTONUP, 0, MAKELPARAM(qx, qy));
+        const bool tapOk =
+            SendMessageW(s, SCI_SELECTIONISRECTANGLE, 0, 0) == 0 && selCount() == 1 &&
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONNCARET, 0, 0)) == 5 &&
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONNANCHOR, 0, 0)) == 5;
+        g_stSchMouseTap = tapOk;
+        g_searchDetail += L"[mousetap] rect=" +
+                          std::to_wstring(static_cast<int>(SendMessageW(
+                              s, SCI_SELECTIONISRECTANGLE, 0, 0))) +
+                          L" sels=" + std::to_wstring(selCount()) +
+                          L" caret=" +
+                          std::to_wstring(static_cast<int>(
+                              SendMessageW(s, SCI_GETSELECTIONNCARET, 0, 0))) + L"\n";
+
+        // Alt+Shift 按下（子类化放行路径剥 MK_SHIFT 后转发）：空矩形于按下点，
+        // 不拉出旧选区（修复前普通 Shift+click 扩展语义 → 矩形锚落在旧
+        // anchor=0）。真实形态 wParam=MK_LBUTTON|MK_SHIFT（无 0x20——真实
+        // 消息该位是 MK_XBUTTON1，DEC-007），Alt 经上方物理键状态注入；
+        // 按下点 pos4 与 C-3 的 pos5 错开（规避 multiClick 判定，见上）
+        SendMessageW(s, SCI_SETSEL, 0, 3);  // C-3 定格单光标后恢复旧选区前提
+        SendMessageW(s, WM_LBUTTONDOWN, MK_LBUTTON | MK_SHIFT, MAKELPARAM(px, py));
+        const bool downOk =
+            SendMessageW(s, SCI_SELECTIONISRECTANGLE, 0, 0) != 0 &&
+            selCount() == 1 &&
+            static_cast<int>(SendMessageW(s, SCI_GETRECTANGULARSELECTIONANCHOR, 0, 0)) == 4 &&
+            static_cast<int>(SendMessageW(s, SCI_GETRECTANGULARSELECTIONCARET, 0, 0)) == 4;
+        g_stSchMouseRect = downOk;
+        g_searchDetail += L"[mousedn] rect=" +
+                          std::to_wstring(static_cast<int>(SendMessageW(s, SCI_SELECTIONISRECTANGLE, 0, 0))) +
+                          L" sels=" + std::to_wstring(selCount()) +
+                          L" anchor=" +
+                          std::to_wstring(static_cast<int>(SendMessageW(s, SCI_GETRECTANGULARSELECTIONANCHOR, 0, 0))) +
+                          L" caret=" +
+                          std::to_wstring(static_cast<int>(SendMessageW(s, SCI_GETRECTANGULARSELECTIONCARET, 0, 0))) +
+                          L"\n";
+
+        // 拖到 L2：矩形逐行展开 L0..L2（一次 move 直达——后续 move 会被原生
+        // autoScroll 节流吞掉，ButtonMoveWithModifiers 的 ticksToWait=200/tickSize=10）；
+        // x 同为列 4：L1 空行 / L2 "xy"（2 字符）均超行宽 → 端点得虚拟列（修复 3）
+        const int dx = px;
+        const int fy = static_cast<int>(SendMessageW(s, SCI_POINTYFROMPOSITION, 0, 9));
+        SendMessageW(s, WM_MOUSEMOVE, MK_LBUTTON | MK_SHIFT, MAKELPARAM(dx, fy));
+        const int rectVs = static_cast<int>(
+            SendMessageW(s, SCI_GETRECTANGULARSELECTIONCARETVIRTUALSPACE, 0, 0));
+        const bool dragOk = selCount() == 3 && rectVs > 0;
+        g_searchDetail += L"[rectdrag] sels=" + std::to_wstring(selCount()) +
+                          L" rectVs=" + std::to_wstring(rectVs) + L"\n";
+
+        // 抬起 → 先原生 ButtonUp（caret 角行虚拟列保留）→ 定格普通多选区
+        SendMessageW(s, WM_LBUTTONUP, 0, MAKELPARAM(dx, fy));
+        const bool upOk = selCount() == 3 &&
+                          SendMessageW(s, SCI_SELECTIONISRECTANGLE, 0, 0) == 0;
+        int emptyVs = 0, cornerVs = 0;  // 空行（pos7）与 caret 角行（pos10）
+        for (int i = 0; i < selCount(); ++i) {
+            const int caretPos = static_cast<int>(SendMessageW(
+                s, SCI_GETSELECTIONNCARET, static_cast<WPARAM>(i), 0));
+            const int vs = static_cast<int>(SendMessageW(
+                s, SCI_GETSELECTIONNCARETVIRTUALSPACE, static_cast<WPARAM>(i), 0));
+            if (caretPos == 7) emptyVs = vs;
+            if (caretPos == 10) cornerVs = vs;
+        }
+        // 空行与 caret 角行（主选区）虚拟列均保留（DEC-005「松手后终点不回弹」；
+        // cornerVs==rectVs：定格只换 selType 不动选区集合）
+        g_stSchRectVirtual = ok && dragOk && upOk &&
+                             emptyVs > 0 && cornerVs == rectVs;
+        g_searchDetail += L"[rectup] sels=" + std::to_wstring(selCount()) +
+                          L" emptyVs=" + std::to_wstring(emptyVs) +
+                          L" cornerVs=" + std::to_wstring(cornerVs) +
+                          L" rectVs=" + std::to_wstring(rectVs) + L"\n";
+
+        // P1（TC-004）：定格后键入自动补列 + 字符（InsertCharacter 的
+        // RealizeVirtualSpace；ADDITIONALSELECTIONTYPING 分发所有光标）——
+        // L0 光标 pos4 → "abcdZef"；L1 空行光标在缩进位（vs=4）→ Scintilla 经
+        // SetLineIndentation 按 useTabs（tabWidth=4，产品默认）补 "\t" 再插 'Z'；
+        // L2 光标 pos10 非缩进位（vs=2）→ 补 2 空格再插 'Z'
+        SetKeyboardState(savedState);  // 恢复线程键状态（Alt up）
+        TypeIntoEditor(doc, L"Z");
+        const bool typeOk = doc->content() == "abcdZef\n\tZ\nxy  Z";
+        g_stSchRectVirtual = g_stSchRectVirtual && typeOk;
+        g_searchDetail += L"[recttype] content=" + core::utf8ToWide(doc->content()) +
+                          L" typeOk=" + std::to_wstring(typeOk ? 1 : 0) + L"\n";
+
+        // TC-005：键盘列选（Ctrl+Alt+Shift+↓）在空行/短行上列终点不钳回第 1 列。
+        // SCI_LINEDOWNRECTEXTEND 原生路径按 lastXChosen 粘性列定位
+        // （Editor.cxx CursorUpOrDown 矩形分支 → PositionUpOrDown），
+        // UserVirtualSpace 允许矩形端点落虚拟列。SCI_SETSEL 不刷新
+        // lastXChosen，先用常规右移（SCI_CHARRIGHT 每步 SetLastXChosen）把
+        // 粘性列同步到 col4——与真实用户移动光标/点选路径等价
+        doc->setContent("abcdef\n\nxy");  // L0 [0,6) L1 空 [7,7) L2 "xy" [8,10)
+        SendMessageW(s, SCI_SETSEL, 0, 0);
+        for (int i = 0; i < 4; ++i) SendMessageW(s, SCI_CHARRIGHT, 0, 0);  // col4
+        g_multiCursor.testKeyDown(s, VK_DOWN, true, true, true);  // 矩形扩到空行 L1
+        int kbEmptyVs = 0;
+        for (int i = 0; i < selCount(); ++i) {
+            if (static_cast<int>(SendMessageW(s, SCI_GETSELECTIONNCARET,
+                                              static_cast<WPARAM>(i), 0)) == 7) {
+                kbEmptyVs = static_cast<int>(SendMessageW(
+                    s, SCI_GETSELECTIONNCARETVIRTUALSPACE, static_cast<WPARAM>(i), 0));
+            }
+        }
+        const bool kbDown1 = selCount() == 2 &&
+                             SendMessageW(s, SCI_SELECTIONISRECTANGLE, 0, 0) != 0 &&
+                             kbEmptyVs == 4;  // col4 粘性：空行 0 实字符 → vs=4
+        auto dumpRectSels = [&]() {
+            for (int i = 0; i < selCount(); ++i) {
+                g_searchDetail += L"[kbsel" + std::to_wstring(i) + L"] caret=" +
+                                  std::to_wstring(static_cast<int>(SendMessageW(
+                                      s, SCI_GETSELECTIONNCARET, static_cast<WPARAM>(i), 0))) +
+                                  L"vs" + std::to_wstring(static_cast<int>(SendMessageW(
+                                      s, SCI_GETSELECTIONNCARETVIRTUALSPACE,
+                                      static_cast<WPARAM>(i), 0))) +
+                                  L" anchor=" +
+                                  std::to_wstring(static_cast<int>(SendMessageW(
+                                      s, SCI_GETSELECTIONNANCHOR, static_cast<WPARAM>(i), 0))) +
+                                  L"vs" + std::to_wstring(static_cast<int>(SendMessageW(
+                                      s, SCI_GETSELECTIONNANCHORVIRTUALSPACE,
+                                      static_cast<WPARAM>(i), 0))) + L"\n";
+            }
+        };
+        dumpRectSels();  // 第 1 次 DOWN 后现场（证据）
+        g_multiCursor.testKeyDown(s, VK_DOWN, true, true, true);  // 扩到 L2 "xy"
+        int kbShortVs = 0;
+        for (int i = 0; i < selCount(); ++i) {
+            if (static_cast<int>(SendMessageW(s, SCI_GETSELECTIONNCARET,
+                                              static_cast<WPARAM>(i), 0)) == 10) {
+                kbShortVs = static_cast<int>(SendMessageW(
+                    s, SCI_GETSELECTIONNCARETVIRTUALSPACE, static_cast<WPARAM>(i), 0));
+            }
+        }
+        // 短行 "xy"（2 实字符）：col4 = 2 实 + 2 虚 → vs=2；钳制（修复前
+        // SCVS_NONE）时两处 vs 均为 0
+        g_stSchKbColEmpty = kbDown1 && selCount() == 3 && kbShortVs == 2;
+        dumpRectSels();  // 第 2 次 DOWN 后现场（证据）
+        g_searchDetail += L"[kbempty] sels=" + std::to_wstring(selCount()) +
+                          L" rect=" +
+                          std::to_wstring(static_cast<int>(SendMessageW(
+                              s, SCI_SELECTIONISRECTANGLE, 0, 0))) +
+                          L" emptyVs=" + std::to_wstring(kbEmptyVs) +
+                          L" shortVs=" + std::to_wstring(kbShortVs) + L"\n";
+
+        // —— A-2 锁定（DEC-007）：X1 侧键不误触发 Alt+单击 ——真实 X1+左键
+        // 单击 wParam 恒含 MK_XBUTTON1(0x20)（WinUser.h:2735），修复前被当
+        // MK_ALT：纯 X1 点击误加光标、X1+Shift 误剥 MK_SHIFT。本线程物理 Alt
+        // 已恢复 up（上方 savedState），不消费 → 原生普通/Shift+click 语义
+        doc->setContent("abcdef\n\nxy");  // L0 [0,6) L1 空 [7,8) L2 "xy" [8,10)
+        SendMessageW(s, SCI_SETSEL, 1, 1);  // 单光标 pos1（≠点击点）
+        const int x1x = static_cast<int>(SendMessageW(s, SCI_POINTXFROMPOSITION, 0, 9));
+        const int x1y = static_cast<int>(SendMessageW(s, SCI_POINTYFROMPOSITION, 0, 9));
+        // 纯 X1+左键点击：不加光标（选区数不变），原生单击移光标到点击点 pos9
+        SendMessageW(s, WM_LBUTTONDOWN, MK_LBUTTON | kMkXButton1, MAKELPARAM(x1x, x1y));
+        SendMessageW(s, WM_LBUTTONUP, 0, MAKELPARAM(x1x, x1y));
+        const bool x1PlainOk = selCount() == 1 &&
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONNCARET, 0, 0)) == 9;
+        // X1+左键+Shift：Shift 不被误剥 → 原生 Shift+click 从 pos1 扩展到
+        // 点击点 pos5。点击点与上次 X1 点击（pos9，L2 行）错开行（规避
+        // Editor.cxx:4834 multiClick 同点判定——同点重按会触发双击词选分支）
+        const int x5x = static_cast<int>(SendMessageW(s, SCI_POINTXFROMPOSITION, 0, 5));
+        const int x5y = static_cast<int>(SendMessageW(s, SCI_POINTYFROMPOSITION, 0, 5));
+        SendMessageW(s, SCI_SETSEL, 1, 1);
+        SendMessageW(s, WM_LBUTTONDOWN, MK_LBUTTON | kMkXButton1 | MK_SHIFT,
+                     MAKELPARAM(x5x, x5y));
+        SendMessageW(s, WM_LBUTTONUP, 0, MAKELPARAM(x5x, x5y));
+        g_stSchX1NotAlt = x1PlainOk && selCount() == 1 &&
+            SendMessageW(s, SCI_SELECTIONISRECTANGLE, 0, 0) == 0 &&
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONSTART, 0, 0)) == 1 &&
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONEND, 0, 0)) == 5;
+        g_searchDetail += L"[x1click] plain=" + std::to_wstring(x1PlainOk ? 1 : 0) +
+                          L" sels=" + std::to_wstring(selCount()) +
+                          L" start=" + std::to_wstring(static_cast<int>(
+                              SendMessageW(s, SCI_GETSELECTIONSTART, 0, 0))) +
+                          L" end=" + std::to_wstring(static_cast<int>(
+                              SendMessageW(s, SCI_GETSELECTIONEND, 0, 0))) + L"\n";
+
         WriteSearchSelftestResult();
         PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
     }
@@ -3047,6 +3315,11 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return HandleNcCalcSize(hwnd, wParam, lParam);
     case WM_NCHITTEST:
         return HandleNcHitTest(hwnd, lParam);
+    case WM_NCPAINT:
+        // 客户区 = 整窗（WM_NCCALCSIZE 返回 0），帧完全自绘/DWM 负责（E2）。
+        // 跳过 DefWindowProc 的标准帧绘制：防止其按「系统想象的 NC 区域」重绘
+        // 侵入客户区像素（状态栏条带贴窗口底缘，历史缺陷的兜底）
+        return 0;
     case WM_NCACTIVATE:
         return DefWindowProcW(hwnd, msg, wParam, static_cast<LPARAM>(-1));
     case WM_ACTIVATE:

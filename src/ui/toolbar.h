@@ -1,9 +1,10 @@
 // qcnote 工具栏（M2-B，E3；F2 扩展）：标题栏下方一条（toolbarBackground），
-// 左侧四按钮：新建/打开/保存/自动换行。图标 GDI+ 抗锯齿双色扁平描边
-// （DEC-001/002：主描边语义色 + accent 点缀 + 淡填充面；每次绘制直绘不缓存；
-// GDI+ 启动失败永久回退旧 GDI 线稿路径 drawIconGdiFallback，可辨识不崩溃）。
-// 自动换行为 toggle（DEC-006）：激活态「淡 accent 底 + accent 描边图标」
-// 颜色与饱和度双线索，与菜单勾选语义呼应。
+// 左侧四按钮分两组：新建/打开/保存 + 竖线分隔 + 自动换行。图标 GDI+ 抗锯齿
+// 彩色扁平（DEC-001/002/003：结构主描边语义色 + 语义色填充面，每个填充面
+// 独立 palette token、两主题各一档；禁用态跳过全部彩色填充仅画主描边灰色
+// 线稿剪影；每次绘制直绘不缓存；GDI+ 启动失败永久回退旧 GDI 单色线稿路径
+// drawIconGdiFallback，可辨识不崩溃）。自动换行为 toggle（DEC-006）：激活态
+// 「淡 accent 底 + accent 描边图标」颜色与饱和度双线索，与菜单勾选语义呼应。
 //
 // 交互语义（旧 QML Toolbar 对等）：悬停 hover 半透明高亮、按下 pressed、
 // 保存按钮无活动文档时禁用（textDisabled 图标可辨识）；tooltip 延迟 600ms
@@ -32,8 +33,11 @@ constexpr int Height = 40;        // 工具栏高（旧 QML implicitHeight 44 �
 constexpr int ButtonWidth = 44;   // 按钮尺寸（Win11 惯例 44 宽）
 constexpr int ButtonHeight = 32;
 constexpr int LeftMargin = 4;     // 左缘起排（旧 QML Row leftMargin 4）
-constexpr int Spacing = 2;        // 按钮间距（旧 QML Row spacing 2）
-constexpr int IconSize = 16;      // 图标画布 16×16 逻辑像素
+constexpr int Spacing = 2;        // 组内按钮间距（旧 QML Row spacing 2）
+constexpr int SeparatorMargin = 6;  // 组间分隔竖线与两侧按钮的间距（DEC-005）
+constexpr int SeparatorWidth = 1;   // 组间分隔竖线宽（pal.border，GDI FillRect）
+constexpr int IconSize = 20;      // 图标画布 20×20 逻辑像素（DEC-002/004：
+                                  // 形状坐标仍用 16 网格线性映射，仅画布放大）
 constexpr int TooltipDelayMs = 600;
 
 }  // namespace toolbar_metrics
@@ -65,15 +69,20 @@ public:
     void paint(HDC dc, const RECT& clientRect);
 
     // —— 测试钩子 ——
-    int hitButton(POINT clientPt, const RECT& clientRect) const;  // -1 = 空白
+    int hitButton(POINT clientPt, const RECT& clientRect) const;  // -1 = 空白（含组间间隔区）
     bool tooltipVisibleForTest() const { return tipVisible_; }    // F5 tooltip 链路断言用
+    // tooltip 控件窗口句柄（转发 ManualTooltip）：回归钉用——外部发
+    // TTM_GETTOOLCOUNT 断言注册成功、IsWindowVisible 断言系统级真实可见
+    HWND tooltipHwndForTest() const { return tooltip_.tooltipWindowForTest(); }
 
     // —— 挂接点 ——
     std::function<void(Command)> onCommand;  // 按钮 → 命令（New/Open/Save/Wrap）
 
 private:
-    void drawIcon(HDC dc, Button button, const RECT& iconRect, COLORREF color) const;  // GDI+/回退分发
-    void drawIconGdiplus(HDC dc, Button button, const RECT& iconRect, COLORREF stroke) const;
+    void drawIcon(HDC dc, Button button, const RECT& iconRect, COLORREF color,
+                  bool colorful) const;  // GDI+/回退分发（colorful 仅供 GDI+ 彩色填充）
+    void drawIconGdiplus(HDC dc, Button button, const RECT& iconRect, COLORREF stroke,
+                         bool colorful) const;
     void drawIconGdiFallback(HDC dc, Button button, const RECT& iconRect, COLORREF color) const;
     void showTooltipFor(Button button);
     void hideTooltip();

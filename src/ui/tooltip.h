@@ -28,6 +28,11 @@ public:
     void show(const std::wstring& text, POINT screenPt);
     void hide();
 
+    // 测试钩子：tooltip 控件窗口句柄（未创建时 nullptr）。回归钉用：外部据此发
+    // TTM_GETTOOLCOUNT 断言工具注册成功、IsWindowVisible 断言真实系统级可见性
+    // （内部 tipVisible 类标志无法发现 v5 拒绝注册一类静默失败）
+    HWND tooltipWindowForTest() const { return tooltip_; }
+
     // 按当前主题设置 tip 底色/文字色（E5：系统 tooltip 控件本身无 token 概念，
     // 显式经 TTM_SETTIPBKCOLOR/TTM_SETTIPTEXTCOLOR 接入；边框仍系统绘制）。
     // create() 时与主题切换时（组装层转发）调用；未创建时为空操作

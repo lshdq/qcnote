@@ -15,7 +15,13 @@ void ManualTooltip::applyThemeColors() {
     const ThemePalette& pal = CurrentPalette();
     // tip 面板取工具栏表面色（与宿主条带同族的「浮层」语义；浅 #f2f4f8 /
     // 深 #232833），文字 textPrimary；边框为系统 1px 亮边（不可定制，两主题
-    // 下均可辨）
+    // 下均可辨）。
+    // 已知限制（DEC-001 伴随）：进程绑定 comctl32 v6（Common-Controls 6.0
+    // manifest，tooltip 根因修复的前提）后，视觉样式开启时系统忽略
+    // TTM_SETTIPBKCOLOR/TTM_SETTIPTEXTCOLOR（MSDN 确定行为），E5 tooltip
+    // 换肤为死路径——深/浅主题下 tooltip 均呈系统标准样式（视觉样式服务保证
+    // 对比度，可读性无损）。消息保留：未来回退 v5 或系统放开限制时无需改代码。
+    // TabStrip 自建 tooltip（tabs.cpp）同源同限制
     SendMessageW(tooltip_, TTM_SETTIPBKCOLOR,
                  static_cast<WPARAM>(ToColorRef(pal.toolbarBackground)), 0);
     SendMessageW(tooltip_, TTM_SETTIPTEXTCOLOR,

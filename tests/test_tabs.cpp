@@ -246,6 +246,31 @@ TEST_CASE("无障碍名称含未保存状态", "[tabs]") {
 }
 
 // ---------------------------------------------------------------------------
+// TabStrip::setDisplayName 同值短路（Win32界面性能修复 F2）：选区拖拽路径每帧
+// 经 OnDocumentMetadataChanged → setDisplayName 调用，同值必须短路返回 false
+// 不置脏重绘；实际变化返回 true。未 attach 组件即可测（数据接口不依赖宿主窗口，
+// invalidateArea 对空 hwnd 安全返回）。
+// ---------------------------------------------------------------------------
+
+TEST_CASE("TabStrip setDisplayName：同值短路 false，变化 true，越界防御", "[tabs]") {
+    TabStrip tabs;
+    REQUIRE(tabs.addTab({L"a.txt", false}) == 0);
+    SECTION("同名：不写入、返回 false") {
+        CHECK_FALSE(tabs.setDisplayName(0, L"a.txt"));
+        CHECK(tabs.item(0).displayName == L"a.txt");
+    }
+    SECTION("不同名：写入并返回 true") {
+        CHECK(tabs.setDisplayName(0, L"b.txt"));
+        CHECK(tabs.item(0).displayName == L"b.txt");
+    }
+    SECTION("越界：返回 false（防御，不崩溃）") {
+        CHECK_FALSE(tabs.setDisplayName(-1, L"x"));
+        CHECK_FALSE(tabs.setDisplayName(1, L"x"));
+        CHECK(tabs.item(0).displayName == L"a.txt");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GDI 文本测量（自然宽的数据来源；无窗口依赖，屏幕 DC）
 // ---------------------------------------------------------------------------
 
