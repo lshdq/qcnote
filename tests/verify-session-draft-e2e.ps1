@@ -86,9 +86,10 @@ public class QcE2e {
         public RECT rcCaret;
     }
     // 活动编辑器 = 持有键盘焦点者（exe setActiveDocument 对活动编辑器 SetFocus）。
-    // 不能用 WS_VISIBLE 样式位判定：--headless 持久化路径主窗口完全不可见，
-    // setActiveDocument 的 IsWindowVisible 判定失效（不隐藏旧实例），样式位
-    // 会命中多个编辑器；焦点才是权威信号
+    // 历史注：曾不能以 WS_VISIBLE 样式位判定——setActiveDocument 曾用
+    // IsWindowVisible 守卫隐藏旧实例，--headless 主窗口不可见期间判定失效，
+    // 样式位命中多个编辑器；该根因已修复（无条件 SW_HIDE，仅活动编辑器
+    // 保留样式位，见 I06 回归断言），焦点定位仍作为权威信号保留
     public static IntPtr FocusedChildOf(IntPtr main) {
         uint tid; GetWindowThreadProcessId(main, out tid);
         var gi = new GUITHREADINFO(); gi.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO));
@@ -186,8 +187,9 @@ function Send-Command([IntPtr]$main, [int]$code) {
 }
 
 # 活动编辑器：优先取 --selftest-dump 的 documents[activeIndex].editor（exe
-# 输出的该文档专属 Scintilla HWND——权威映射，--headless 下枚举顺序/样式位/
-# 焦点均不可靠）；dump 不可得时兜底首个枚举命中者
+# 输出的该文档专属 Scintilla HWND——权威映射，--headless 下子窗口枚举顺序
+# 不可靠；样式位曾因 IsWindowVisible 守卫缺陷命中多个编辑器，修复后虽已
+# 可靠，dump 仍是最直接映射）；dump 不可得时兜底首个枚举命中者
 function Get-ActiveEditor([IntPtr]$main) {
     $d = Get-DumpJson $main
     if ($d -and $d.activeIndex -ge 0 -and $d.documents.Count -gt $d.activeIndex) {
@@ -214,6 +216,34 @@ function Set-EditorCursor([IntPtr]$main, [int]$pos) {
     if ($sci -eq [IntPtr]::Zero) { throw "未找到活动编辑器子窗口" }
     [QcE2e]::SendMessage($sci, $SCI_GOTOPOS, [IntPtr]$pos, [IntPtr]::Zero) | Out-Null
     Start-Sleep -Milliseconds 150
+}
+
+# dump 条目 editor 字段（"0x..."）→ IntPtr；格式异常返回 Zero
+function Get-EditorHwnd([object]$doc) {
+    $hex = [string]$doc.editor
+    if ($hex -and $hex -like '0x*') {
+        return [IntPtr][Int64]::Parse($hex.Substring(2),
+            [System.Globalization.NumberStyles]::HexNumber)
+    }
+    return [IntPtr]::Zero
+}
+
+# 各文档编辑器的 WS_VISIBLE 样式位数组。headless 下主窗口不可见，
+# IsWindowVisible（含祖先链）全 FALSE 不可用，直接查样式位是唯一可测口径；
+# setActiveDocument 修复（无条件 SW_HIDE）后应恰好只有活动文档为 True
+function Get-VisBits($dump) {
+    $bits = @()
+    if ($dump -and $dump.documents) {
+        foreach ($doc in @($dump.documents)) {
+            $sci = Get-EditorHwnd $doc
+            if ($sci -ne [IntPtr]::Zero) {
+                $bits += (([QcE2e]::GetWindowLong($sci, $GWL_STYLE) -band $WS_VISIBLE) -ne 0)
+            } else {
+                $bits += $null   # 句柄缺失/格式异常 → 上层断言判失败
+            }
+        }
+    }
+    return ,$bits
 }
 
 function Stop-AppForce([System.Diagnostics.Process]$proc) {
@@ -396,6 +426,21 @@ try {
          (Url-Norm $d.documents[2].url) -eq (Url-Norm $files[2])) `
         ("docs={0}" -f $d.documents.Count)
     Assert-Cond 'I06/重启：活动标签还原（activeUrl 命中 doc0）' ($d.activeIndex -eq 0)
+    # 回归：仅活动编辑器带 WS_VISIBLE 样式位。曾因 setActiveDocument 用
+    # IsWindowVisible 守卫 SW_HIDE——其含祖先链有效可见性，主窗口隐藏恢复期
+    # 恒为 FALSE，非活动编辑器残留样式位，主窗口显示时全部重叠、非活动者盖
+    # 住活动者（切换一次标签才恢复）；修复为无条件隐藏后样式位应恰好命中
+    # 活动文档一个。headless 下 IsWindowVisible 全 FALSE 不可用，直接查样式位
+    $docsArr = @()
+    if ($d -and $d.documents) { $docsArr = @($d.documents) }
+    $visBits = Get-VisBits $d
+    $visOk = ($docsArr.Count -gt 0 -and $visBits.Count -eq $docsArr.Count)
+    for ($i = 0; $i -lt $visBits.Count; $i++) {
+        if ($visBits[$i] -ne ($i -eq $d.activeIndex)) { $visOk = $false }
+    }
+    Assert-Cond 'I06/重启：仅活动编辑器可见（WS_VISIBLE 样式位回归）' $visOk `
+        ("active={0} vis=[{1}] editors=[{2}]" -f $d.activeIndex, ($visBits -join ','),
+         (@($docsArr | ForEach-Object { [string]$_.editor }) -join ','))
     Assert-Cond 'I06/重启：逐文档光标还原' `
         ($d.documents[0].cursor -eq 3 -and $d.documents[1].cursor -eq 5 -and $d.documents[2].cursor -eq 7) `
         ("cursors=[{0},{1},{2}]" -f $d.documents[0].cursor, $d.documents[1].cursor, $d.documents[2].cursor)
@@ -403,6 +448,27 @@ try {
         ($d.window.x -eq $movedX -and $d.window.y -eq $movedY -and
          $d.window.width -eq ([int]$w['width']) -and $d.window.height -eq ([int]$w['height'])) `
         ("window=({0},{1},{2},{3}) ini=({4},{5})" -f $d.window.x, $d.window.y, $d.window.width, $d.window.height, $w['width'], $w['height'])
+
+    # TC-002 闭环：重启恢复（活动=doc0）后依次切换标签（Ctrl+Tab 等价命令），
+    # 每次切换后断言仅新活动编辑器带 WS_VISIBLE 样式位——对应用户症状的第二
+    # 半"切换一次后才正常"：修复后每次切换（含首屏）均正确，不依赖切换自救。
+    # 焦点断言不在此做：本测试执行上下文与被测进程 desktop 隔离，
+    # GetGUIThreadInfo/AttachThreadInput 跨进程读取实测均失败（返回无效 0x0，
+    # 见测试报告）；焦点语义由 exe 进程内 selftest 覆盖（headless 下进程内
+    # GetFocus 有效，verify-doc-selftest.ps1 的 editor focus 场景）
+    foreach ($target in 1, 2, 0) {
+        Send-Command $main2 $CMD_NEXTTAB   # Ctrl+Tab 等价：0→1→2→0
+        $d = Get-DumpJson $main2
+        $visBits = Get-VisBits $d
+        $visOk = ($d -and $d.documents.Count -gt $target -and
+                  $visBits.Count -eq $d.documents.Count)
+        for ($j = 0; $j -lt $visBits.Count; $j++) {
+            if ($visBits[$j] -ne ($j -eq $target)) { $visOk = $false }
+        }
+        Assert-Cond ("I06/重启后切换 tab{0}：仅新活动编辑器带样式位" -f $target) `
+            ($d.activeIndex -eq $target -and $visOk) `
+            ("active={0} vis=[{1}]" -f $d.activeIndex, ($visBits -join ','))
+    }
     Stop-AppForce $p2
 
     # ================================================================

@@ -33,6 +33,7 @@ pwsh -NoProfile -File tests\verify-search-selftest.ps1         # 查找替换
 pwsh -NoProfile -File tests\verify-theme-selftest.ps1          # 双主题
 pwsh -NoProfile -File tests\verify-instance-shell-e2e.ps1      # 单实例/shell e2e
 pwsh -NoProfile -File tests\verify-session-draft-e2e.ps1       # 会话/草稿 e2e
+pwsh -NoProfile -File tests\verify-portable-deploy-selftest.ps1 # 便携构建部署脚本
 pwsh -NoProfile -File tools\verify-smoke.ps1                   # 冒烟
 pwsh -NoProfile -File tools\verify-metrics.ps1 -ExePath build-win\qcnote.exe  # 指标
 ```

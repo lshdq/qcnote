@@ -337,8 +337,13 @@ void EditorHost::setActiveDocument(core::Document* doc) {
         return;  // 幂等（含双双为空）
     }
     active_ = doc;
+    // 无条件隐藏非活动编辑器，不能用 IsWindowVisible 做守卫：它返回含祖先
+    // 链的有效可见性，启动流程主窗口隐藏期间（先恢复会话再显示）恒为
+    // FALSE，SW_HIDE 被跳过后多个编辑器残留 WS_VISIBLE 样式位，主窗口
+    // 显示时全部重叠、非活动者盖住活动者（切换一次标签才恢复）。
+    // SW_HIDE 对已隐藏窗口是 no-op，无条件调用无副作用
     for (Entry& e : entries_) {
-        if (e.hwnd && e.doc != doc && IsWindowVisible(e.hwnd)) {
+        if (e.hwnd && e.doc != doc) {
             ShowWindow(e.hwnd, SW_HIDE);
         }
     }
