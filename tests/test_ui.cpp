@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "ui/dialog.h"
+#include "ui/numberingdialog.h"
 #include "ui/searchdialog.h"
 #include "ui/statusbar.h"
 #include "ui/theme.h"
@@ -1090,4 +1091,322 @@ TEST_CASE("工具栏分隔间隔区：命中 -1、点击无命令、悬停不显
     CHECK(tb.tooltipVisibleForTest());
     tb.onMouseMove(gapPt);
     CHECK_FALSE(tb.tooltipVisibleForTest());
+}
+
+// ---------------------------------------------------------------------------
+// 插入编号对话框（列模式填充编号，任务B）：ParseNumberingParams 纯函数 +
+// 真实窗口模态集成（onOpened 注入驱动，对齐 searchdialog 测试先例）。
+//
+// 防扰：宿主离屏停泊（-32000，对齐 main.cpp --headless 的对话框锚定策略）
+// + WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW（不抢前台、无任务栏项）；对话框以
+// 宿主几何居中 → 一并离屏，对 Windows 可见（焦点语义成立）、对用户不可见；
+// 全部驱动经 SendMessage 同步完成，onOpened 末尾必关闭对话框（模态循环
+// 直接过站返回，不派发真实输入）。
+//
+// 注意：进程内参数记忆（DEC-005）为文件级静态，以下模态用例依赖 Catch2
+// 默认的声明顺序执行（默认值用例在前、记忆用例在后）。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct NumberingHost {
+    HWND hwnd = nullptr;
+    NumberingHost() {
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"qcnote_test_numbering_host";
+        RegisterClassW(&wc);  // 重复注册（ERROR_CLASS_ALREADY_EXISTS）可忽略
+        hwnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, wc.lpszClassName,
+                               L"", WS_POPUP, -32000, -32000, 600, 400, nullptr,
+                               nullptr, wc.hInstance, nullptr);
+    }
+    ~NumberingHost() {
+        if (hwnd) DestroyWindow(hwnd);
+    }
+    NumberingHost(const NumberingHost&) = delete;
+    NumberingHost& operator=(const NumberingHost&) = delete;
+};
+
+std::wstring EditText(HWND edit) {
+    wchar_t buf[128] = {};
+    SendMessageW(edit, WM_GETTEXT, 128, reinterpret_cast<LPARAM>(buf));
+    return buf;
+}
+
+}  // namespace
+
+TEST_CASE("ParseNumberingParams 合法输入：正/负/0 与 10^15、10^6 边界含", "[ui][numbering]") {
+    NumberingParams p;
+    std::wstring err;
+    CHECK(ParseNumberingParams(L"1", L"1", p, err));
+    CHECK(p.start == 1);
+    CHECK(p.step == 1);
+    CHECK(err.empty());
+
+    CHECK(ParseNumberingParams(L"-5", L"-2", p, err));  // 负起始 + 负增量（倒序）
+    CHECK(p.start == -5);
+    CHECK(p.step == -2);
+    CHECK(ParseNumberingParams(L"0", L"1", p, err));  // 起始 0 合法
+    CHECK(p.start == 0);
+    CHECK(ParseNumberingParams(L"-0", L"1", p, err));  // -0 == 0（起始值合法）
+    CHECK(p.start == 0);
+    CHECK(ParseNumberingParams(L"3", L"-1", p, err));
+    CHECK(p.start == 3);
+    CHECK(p.step == -1);
+
+    // 范围边界含端点（DEC-007）
+    CHECK(ParseNumberingParams(L"1000000000000000", L"1000000", p, err));
+    CHECK(p.start == kStartAbsMax);
+    CHECK(p.step == kStepAbsMax);
+    CHECK(ParseNumberingParams(L"-1000000000000000", L"-1000000", p, err));
+    CHECK(p.start == -kStartAbsMax);
+    CHECK(p.step == -kStepAbsMax);
+
+    // padZero 不在解析范围：保持调用方原值
+    NumberingParams q;
+    q.padZero = true;
+    CHECK(ParseNumberingParams(L"1", L"1", q, err));
+    CHECK(q.padZero);
+}
+
+TEST_CASE("ParseNumberingParams 非法输入与错误消息区分", "[ui][numbering]") {
+    NumberingParams p;
+    std::wstring err;
+    const auto fail = [&](const wchar_t* s, const wchar_t* t, const wchar_t* want) {
+        CHECK_FALSE(ParseNumberingParams(s, t, p, err));
+        CHECK(err == want);
+    };
+    // 非法十进制整数：空串 / 仅负号 / 小数 / 字母 / 尾随空格 / 前导加号
+    fail(L"", L"1", L"起始值必须是整数（仅数字与可选负号）");
+    fail(L"-", L"1", L"起始值必须是整数（仅数字与可选负号）");
+    fail(L"1.5", L"1", L"起始值必须是整数（仅数字与可选负号）");
+    fail(L"abc", L"1", L"起始值必须是整数（仅数字与可选负号）");
+    fail(L"1x", L"1", L"起始值必须是整数（仅数字与可选负号）");
+    fail(L"1 ", L"1", L"起始值必须是整数（仅数字与可选负号）");  // 尾随空格
+    fail(L" 1", L"1", L"起始值必须是整数（仅数字与可选负号）");  // 前导空格
+    fail(L"+5", L"1", L"起始值必须是整数（仅数字与可选负号）");  // 前导＋不合法
+    fail(L"1", L"", L"增量必须是整数（仅数字与可选负号）");
+    fail(L"1", L"-", L"增量必须是整数（仅数字与可选负号）");
+    fail(L"1", L"3.0", L"增量必须是整数（仅数字与可选负号）");
+    fail(L"1", L"x", L"增量必须是整数（仅数字与可选负号）");
+    fail(L"1", L"2 ", L"增量必须是整数（仅数字与可选负号）");
+    // 增量 0（含 -0 与 00 形态）
+    fail(L"1", L"0", L"增量不能为 0");
+    fail(L"1", L"-0", L"增量不能为 0");
+    fail(L"1", L"00", L"增量不能为 0");
+    // 超范围：10^15 / 10^6 边界不含（+1 即非法）；超长数字走溢出路径同错误
+    fail(L"1000000000000001", L"1", L"起始值超出范围（绝对值不能大于 10^15）");
+    fail(L"-1000000000000001", L"1", L"起始值超出范围（绝对值不能大于 10^15）");
+    fail(L"99999999999999999999999999", L"1",
+         L"起始值超出范围（绝对值不能大于 10^15）");
+    fail(L"1", L"1000001", L"增量超出范围（绝对值不能大于 10^6）");
+    fail(L"1", L"-1000001", L"增量超出范围（绝对值不能大于 10^6）");
+    fail(L"1", L"999999999999999999999", L"增量超出范围（绝对值不能大于 10^6）");
+    // 失败不写 out
+    NumberingParams keep{7, 3, true};
+    CHECK_FALSE(ParseNumberingParams(L"x", L"1", keep, err));
+    CHECK(keep.start == 7);
+    CHECK(keep.step == 3);
+    CHECK(keep.padZero);
+}
+
+TEST_CASE("NumberingDialog 默认值 1/1/关，Enter 确定写回参数", "[ui][numbering]") {
+    NumberingHost host;
+    REQUIRE(host.hwnd != nullptr);
+    NumberingDialog dlg;
+    dlg.onOpened = [&]() {
+        // 本用例是进程内首个编号对话框模态：记忆态为初始默认（DEC-005）
+        CHECK(dlg.dialogWindowForTest() != nullptr);
+        CHECK(dlg.startEditForTest() != nullptr);
+        CHECK(dlg.stepEditForTest() != nullptr);
+        CHECK(dlg.active());
+        CHECK(EditText(dlg.startEditForTest()) == L"1");
+        CHECK(EditText(dlg.stepEditForTest()) == L"1");
+        CHECK(dlg.statusTextForTest().empty());
+        // 输入框内 Enter（子类化拦截）= 默认按钮「确定」
+        SendMessageW(dlg.startEditForTest(), WM_KEYDOWN, VK_RETURN, 0);
+    };
+    NumberingParams params;
+    CHECK(dlg.showModal(host.hwnd, params));
+    CHECK(params.start == 1);
+    CHECK(params.step == 1);
+    CHECK_FALSE(params.padZero);
+    CHECK_FALSE(dlg.active());
+    CHECK(dlg.dialogWindowForTest() == nullptr);  // 关闭后句柄清理
+}
+
+TEST_CASE("NumberingDialog 设输入、Tab 流转、Space 复选与按钮触发", "[ui][numbering]") {
+    NumberingHost host;
+    REQUIRE(host.hwnd != nullptr);
+    NumberingDialog dlg;
+    dlg.onOpened = [&]() {
+        const HWND hwnd = dlg.dialogWindowForTest();
+        SetWindowTextW(dlg.startEditForTest(), L"10");
+        SetWindowTextW(dlg.stepEditForTest(), L"-3");
+        // Tab：起始值 → 增量（实焦点）→ 补零（虚拟焦点：对话框窗口持键）
+        SendMessageW(hwnd, WM_KEYDOWN, VK_TAB, 0);
+        CHECK(GetFocus() == dlg.stepEditForTest());
+        SendMessageW(hwnd, WM_KEYDOWN, VK_TAB, 0);
+        CHECK(GetFocus() == hwnd);
+        // Space 切换聚焦的复选框
+        SendMessageW(hwnd, WM_KEYDOWN, VK_SPACE, 0);
+        // 鼠标路径触发「确定」（buttonRectForTest(0) 中心）
+        const RECT b = dlg.buttonRectForTest(0);
+        const POINT c{(b.left + b.right) / 2, (b.top + b.bottom) / 2};
+        const RECT cbRect = dlg.checkBoxRectForTest();
+        CHECK(!IsRectEmpty(&cbRect));
+        SendMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(c.x, c.y));
+        SendMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(c.x, c.y));
+    };
+    NumberingParams params;
+    CHECK(dlg.showModal(host.hwnd, params));
+    CHECK(params.start == 10);
+    CHECK(params.step == -3);
+    CHECK(params.padZero);
+}
+
+TEST_CASE("NumberingDialog Esc 取消不写回参数", "[ui][numbering]") {
+    NumberingHost host;
+    REQUIRE(host.hwnd != nullptr);
+    NumberingDialog dlg;
+    dlg.onOpened = [&]() {
+        SendMessageW(dlg.dialogWindowForTest(), WM_KEYDOWN, VK_ESCAPE, 0);
+    };
+    NumberingParams params{42, -7, true};
+    CHECK_FALSE(dlg.showModal(host.hwnd, params));
+    CHECK(params.start == 42);   // 取消：调用方 params 原样
+    CHECK(params.step == -7);
+    CHECK(params.padZero);
+    CHECK_FALSE(dlg.active());
+}
+
+TEST_CASE("NumberingDialog 非法输入：不关闭 + 状态行错误 + 焦点回首个非法框",
+          "[ui][numbering]") {
+    NumberingHost host;
+    REQUIRE(host.hwnd != nullptr);
+    NumberingDialog dlg;
+    dlg.onOpened = [&]() {
+        const HWND hwnd = dlg.dialogWindowForTest();
+        SetWindowTextW(dlg.startEditForTest(), L"12a");
+        SetWindowTextW(dlg.stepEditForTest(), L"0");
+        // 确定（对话框默认按钮路径）：起始值语法错 → 不关闭，焦点回起始框
+        SendMessageW(hwnd, WM_KEYDOWN, VK_RETURN, 0);
+        CHECK(dlg.active());
+        CHECK(IsWindow(hwnd));
+        CHECK(dlg.statusTextForTest() == L"起始值必须是整数（仅数字与可选负号）");
+        CHECK(GetFocus() == dlg.startEditForTest());
+        // 修正起始值后再确定：增量 0 → 增量错误，焦点回增量框
+        SetWindowTextW(dlg.startEditForTest(), L"5");
+        SendMessageW(hwnd, WM_KEYDOWN, VK_RETURN, 0);
+        CHECK(dlg.active());
+        CHECK(dlg.statusTextForTest() == L"增量不能为 0");
+        CHECK(GetFocus() == dlg.stepEditForTest());
+        // 全部合法 → 确定关闭
+        SetWindowTextW(dlg.stepEditForTest(), L"2");
+        SendMessageW(hwnd, WM_KEYDOWN, VK_RETURN, 0);
+    };
+    NumberingParams params;
+    CHECK(dlg.showModal(host.hwnd, params));
+    CHECK(params.start == 5);
+    CHECK(params.step == 2);
+    // padZero 本用例不动复选框：承接进程内记忆态（由记忆用例专测），不在此断言
+}
+
+TEST_CASE("NumberingDialog 参数记忆：确定记忆、取消不记忆（DEC-005）", "[ui][numbering]") {
+    NumberingHost host;
+    REQUIRE(host.hwnd != nullptr);
+    NumberingDialog dlg;
+    const auto clickCheckBox = [&]() {
+        const RECT cb = dlg.checkBoxRectForTest();
+        const POINT c{(cb.left + cb.right) / 2, (cb.top + cb.bottom) / 2};
+        SendMessageW(dlg.dialogWindowForTest(), WM_LBUTTONDOWN, MK_LBUTTON,
+                     MAKELPARAM(c.x, c.y));
+    };
+    // 第 1 轮：设 7/2 + 翻转复选框一次（基态不论）→ 确定 → 记忆
+    dlg.onOpened = [&]() {
+        SetWindowTextW(dlg.startEditForTest(), L"7");
+        SetWindowTextW(dlg.stepEditForTest(), L"2");
+        clickCheckBox();
+        SendMessageW(dlg.dialogWindowForTest(), WM_KEYDOWN, VK_RETURN, 0);
+    };
+    NumberingParams p1;
+    CHECK(dlg.showModal(host.hwnd, p1));
+    CHECK(p1.start == 7);
+    CHECK(p1.step == 2);
+
+    // 第 2 轮：改中间态后 Esc 取消 → 不记忆、不写回
+    dlg.onOpened = [&]() {
+        SetWindowTextW(dlg.startEditForTest(), L"999");
+        SendMessageW(dlg.dialogWindowForTest(), WM_KEYDOWN, VK_ESCAPE, 0);
+    };
+    NumberingParams cancelled{1, 1, false};
+    CHECK_FALSE(dlg.showModal(host.hwnd, cancelled));
+    CHECK(cancelled.start == 1);
+    CHECK(cancelled.step == 1);
+
+    // 第 3 轮：预填上次确定值 7/2；再翻转一次复选框 → 确定值应为上次态的
+    // 反相（证明复选框初值 = 上次确定值，而非每次重置）
+    dlg.onOpened = [&]() {
+        CHECK(EditText(dlg.startEditForTest()) == L"7");  // 记忆预填
+        CHECK(EditText(dlg.stepEditForTest()) == L"2");
+        clickCheckBox();
+        SendMessageW(dlg.dialogWindowForTest(), WM_KEYDOWN, VK_RETURN, 0);
+    };
+    NumberingParams p2;
+    CHECK(dlg.showModal(host.hwnd, p2));
+    CHECK(p2.start == 7);
+    CHECK(p2.step == 2);
+    CHECK(p2.padZero == !p1.padZero);  // 复选框记忆 + 翻转生效
+}
+
+TEST_CASE("NumberingDialog 双主题：EDIT 换肤色取自 CurrentPalette、双主题绘制稳健",
+          "[ui][numbering]") {
+    // TC-018：颜色全部经 CurrentPalette()（WM_CTLCOLOREDIT 的文字/背景画刷 +
+    // WM_PAINT 完整路径），深浅两主题分别打开均正常。真实路径中模态期间宿主
+    // 被禁用、无法切主题，故按「每轮独立打开」对齐生产语义（打开时按当前
+    // 主题建画刷/暗色类）。Esc 取消收场：不记忆中间态，不污染会话记忆静态
+    // （本用例为文件内最后一个编号对话框用例，声明顺序上无后续依赖）。
+    NumberingHost host;
+    REQUIRE(host.hwnd != nullptr);
+    const bool darkBefore = IsDarkTheme();
+    COLORREF editBk[2] = {}, editText[2] = {};
+    for (int round = 0; round < 2; ++round) {
+        SetTheme(round == 0);  // 深 → 浅两轮独立打开
+        NumberingDialog dlg;
+        COLORREF bk = 0, tx = 0;
+        dlg.onOpened = [&]() {
+            // 1) EDIT 换肤（WM_CTLCOLOREDIT）：文字色/背景画刷 == 当前 palette
+            //    语义 token（先置哨兵色证明 proc 确实改写了 DC 色）
+            HWND edit = dlg.startEditForTest();
+            HDC dc = GetDC(edit);
+            REQUIRE(dc != nullptr);
+            SetTextColor(dc, RGB(255, 0, 255));  // 哨兵洋红
+            SetBkColor(dc, RGB(255, 0, 255));
+            const LRESULT brush = SendMessageW(
+                dlg.dialogWindowForTest(), WM_CTLCOLOREDIT,
+                reinterpret_cast<WPARAM>(dc), reinterpret_cast<LPARAM>(edit));
+            tx = GetTextColor(dc);
+            LOGBRUSH lb{};
+            if (brush) GetObject(reinterpret_cast<HBRUSH>(brush), sizeof(lb), &lb);
+            bk = lb.lbColor;
+            ReleaseDC(edit, dc);
+            // 2) WM_PAINT 完整绘制路径（BeginPaint；离屏可见窗口可落地）双主题不崩溃
+            SendMessageW(dlg.dialogWindowForTest(), WM_PAINT, 0, 0);
+            // Esc 取消（保持会话记忆不变）
+            SendMessageW(dlg.dialogWindowForTest(), WM_KEYDOWN, VK_ESCAPE, 0);
+        };
+        NumberingParams params;
+        CHECK_FALSE(dlg.showModal(host.hwnd, params));
+        // 两轮各自与当时 CurrentPalette 一致（SetTheme 分发正确）
+        CHECK(bk == ToColorRef(CurrentPalette().contentBackground));
+        CHECK(tx == ToColorRef(CurrentPalette().textPrimary));
+        CHECK(IsDarkTheme() == (round == 0));
+        editBk[round] = bk;
+        editText[round] = tx;
+    }
+    SetTheme(darkBefore);  // 恢复进程初始主题（用例隔离）
+    // 深浅两轮取值确实不同（换肤发生，而非两轮同色假通过）
+    CHECK(editBk[0] != editBk[1]);
+    CHECK(editText[0] != editText[1]);
 }

@@ -1,4 +1,4 @@
-// 主菜单内容（E1）：文件▸（含编码三级级联）→ 搜索▸ → 视图▸ → 退出。
+// 主菜单内容（E1）：文件▸（含编码三级级联）→ 编辑▸ → 搜索▸ → 视图▸ → 退出。
 // 结构与旧 QML 版 TitleBar.qml 主菜单一一对应（git 历史可查），勾选/置灰
 // 语义不变，仅数据载体从 QML Menu 换为 MenuModel：
 //   - 保存/另存为…/关闭标签页：有活动文档才可用
@@ -6,6 +6,8 @@
 //   - 通过编码保存（整组）：有活动文档即可用；当前编码项打勾
 //   - 搜索四项：有活动文档才可用（欢迎页置灰）
 //   - 深色主题/自动换行：勾选态（stub，状态源 M2/M6 接）
+//   - 编辑▸插入编号…：有活动文档且多光标态（选区数 ≥ 2）才可用（列模式
+//     填充编号；无快捷键，DEC-006）
 // 子菜单叶子（UTF-8/GBK）不单独承载 enabled——父级置灰即整组不可达
 // （与 QML 版 Menu.enabled 级联语义一致）。
 #include "mainmenu.h"
@@ -43,6 +45,12 @@ MenuModel BuildMainMenu(const MainMenuState& state) {
         state.hasActiveDocument;
     m.addSubmenuEntry(file, L"编码", encoding);
 
+    // —— 编辑（列模式填充编号）——
+    // 插入编号…：有活动文档且多光标态（选区数 ≥ 2）才可用；无快捷键（DEC-006）
+    const int edit = m.addMenu(L"编辑");
+    m.addItem(edit, L"插入编号…", {}, Command::InsertNumbering).enabled =
+        state.hasActiveDocument && state.multiCursorActive;
+
     // —— 搜索（四项均要求活动文档，B5：欢迎页置灰）——
     const int search = m.addMenu(L"搜索");
     m.addItem(search, L"查找…", L"Ctrl+F", Command::FindDialog).enabled =
@@ -60,8 +68,9 @@ MenuModel BuildMainMenu(const MainMenuState& state) {
     m.addItem(view, L"深色主题", {}, Command::ToggleDarkTheme).checked = state.darkTheme;
     m.addItem(view, L"自动换行", {}, Command::ToggleWordWrap).checked = state.wordWrap;
 
-    // —— 主菜单（顶层：文件▸ / 搜索▸ / ── / 视图▸ / ── / 退出）——
+    // —— 主菜单（顶层：文件▸ / 编辑▸ / 搜索▸ / ── / 视图▸ / ── / 退出）——
     m.addSubmenuEntry(root, L"文件", file);
+    m.addSubmenuEntry(root, L"编辑", edit);
     m.addSubmenuEntry(root, L"搜索", search);
     m.addSeparator(root);
     m.addSubmenuEntry(root, L"视图", view);

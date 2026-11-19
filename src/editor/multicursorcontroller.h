@@ -57,6 +57,11 @@
 //   Ctrl+V（多选区）    → core::multicursorPasteDistributes 判定：行数==光标
 //                          数逐行分发（剪贴板行拆分 + 每选区替换，单批撤销）；
 //                          否则每光标整份替换（BEGINUNDOACTION 合并）
+//   编辑▸插入编号       → CollectSelections 升序集合（矩形先 streamify 定格）→
+//                          core::numberingTexts 生成第 i 个编号文本 →
+//                          ReplaceRangesDescending 单批替换（非空选区替换、
+//                          空光标插入）→ ApplySelections 光标=各编号末尾
+//                          （DEC-008：升序=从上到下，首行=起始值）
 //   键入/Backspace/Delete/Enter/方向/Home/End → 原生（依赖
 //                          SCI_SETADDITIONALSELECTIONTYPING(true)，逐光标
 //                          执行且单批撤销；矩形选区例外：先转普通多选区）
@@ -116,6 +121,11 @@ public:
 
     // 多光标激活（选区数 > 1）
     static bool active(HWND sci);
+
+    // 编辑▸插入编号：全部选区按位置升序（从上到下）第 i 个填 start + i*step 文本
+    //（core::numberingTexts；DEC-008）；非空选区替换、空光标插入；单批撤销
+    //（ReplaceRangesDescending）；填后光标=各编号末尾（ApplySelections）
+    void insertNumbering(HWND sci, long long start, long long step, bool padZero);
 
     // —— 自动化测试直调入口（显式修饰键；与真实路径同一内部函数）——
     void testKeyDown(HWND sci, UINT vk, bool ctrl, bool shift, bool alt) {

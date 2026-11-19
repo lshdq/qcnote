@@ -82,6 +82,7 @@
 #include "ui/dialog.h"
 #include "ui/mainmenu.h"
 #include "ui/menu.h"
+#include "ui/numberingdialog.h"
 #include "ui/searchdialog.h"
 #include "ui/statusbar.h"
 #include "ui/tabs.h"
@@ -120,6 +121,9 @@ constexpr UINT kMsgSelftestCommand = WM_APP + 7;
 constexpr UINT kMsgDrainForwardedPaths = WM_APP + 8;
 // M6 主题自测推进（--selftest-theme；与既有 +2..+8 模式互斥不并发）
 constexpr UINT kMsgThemeSelftestStage = WM_APP + 9;
+// 列模式填充编号自测推进（--selftest-numbering；+10 在 MenuHost/对话框
+// WM_APP..+9 测试透传段之外，与既有自测模式互斥不并发）
+constexpr UINT kMsgNumberingSelftestStage = WM_APP + 10;
 
 // 主窗口宿主 timer id 分配（tabs.cpp / toolbar.h / statusbar.h 同源约定，
 // 单窗口内必须互斥，否则 WM_TIMER 互相误路由）：
@@ -140,6 +144,9 @@ ui::Toolbar g_toolbar;              // 工具栏（E3）
 ui::StatusBar g_statusBar;          // 状态栏（E3）
 ui::DialogHost g_dialogHost;        // 基础对话框（E4 基座）
 ui::SearchDialog g_searchDialog;    // 查找替换对话框（B5，M3-B）
+ui::NumberingDialog g_numberingDialog;  // 插入编号对话框（DEC-009：全局实例，
+                                        // 与 g_searchDialog 同语义接入 UiLocked，模态
+                                        // 期间单实例转发推迟、活动编辑器不被切换/销毁）
 editor::EditorHost g_editors;       // Scintilla 编辑器（每文档一实例）
 editor::MultiCursorHost g_multiCursor;      // 多光标交互映射（B4，M3-B）
 editor::SearchController g_searchCtl;       // 查找控制器（B5，M3-B）
@@ -222,6 +229,11 @@ std::wstring g_selftestThemeOut;
 int g_themeStage = 0;
 std::wstring g_themeDetail;  // 采样明细（像素/DWM/Scintilla 色；失败定位）
 
+// —— 列模式填充编号自动化验证（--selftest-numbering=<结果文件>）状态 ——
+bool g_selftestNumbering = false;
+std::wstring g_selftestNumberingOut;
+int g_numberingStage = 0;
+
 // ---------------------------------------------------------------------------
 // 状态查询/刷新（事件驱动）
 // ---------------------------------------------------------------------------
@@ -230,7 +242,7 @@ std::wstring g_themeDetail;  // 采样明细（像素/DWM/Scintilla 色；失败
 // 保持既有自测语义不被真实用户目录数据破坏，也不向真实用户目录写入
 bool SelftestModeActive() {
     return g_selftestMenu || g_selftestTabs || g_selftestDoc || g_selftestSearch ||
-           g_selftestTheme;
+           g_selftestTheme || g_selftestNumbering;
 }
 bool PersistenceActive() {
     return !SelftestModeActive();
@@ -290,7 +302,7 @@ bool UiLocked() {
     // 菜单 tracking（模态弹出中）同锁：WM_CLOSE 拒绝 + 转发消化走 200ms
     // 重试路径推迟（kMsgDrainForwardedPaths 的 UiLocked 分支为重试非丢弃）
     return g_dialogHost.active() || g_fileDialogOpen || g_searchDialog.active() ||
-           g_menuHost.tracking();
+           g_numberingDialog.active() || g_menuHost.tracking();
 }
 
 // 窗口标题：「文档名 *" - qcnote」（旧 QML title 绑定同构；无文档 "qcnote"）
@@ -321,6 +333,11 @@ void RefreshMenuState() {
             : ui::MainMenuState::Encoding::Utf8;
     g_menuState.darkTheme = ui::IsDarkTheme();
     g_menuState.wordWrap = g_wordWrap;
+    // 编辑▸插入编号使能条件之一：活动编辑器选区数 ≥ 2（多光标态）；无文档
+    //（欢迎页）为 false。弹出前 RefreshMenuState 全量刷新（OpenMainMenu 唯一
+    // 生产调用点，勾选/置灰实时），多光标增删后无需额外事件驱动
+    g_menuState.multiCursorActive =
+        editor::MultiCursorHost::active(g_editors.activeWindow());
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +574,27 @@ void SearchJumpGlobal(bool forward) {
     if (!g_searchCtl.hasPattern() || g_searchCtl.matchCount() == 0) return;
     if (forward) g_searchDialog.doFindNext();
     else g_searchDialog.doFindPrev();
+}
+
+// ---------------------------------------------------------------------------
+// 编辑▸插入编号（列模式填充编号，任务C：editor 接线）
+// ---------------------------------------------------------------------------
+
+// 编辑▸插入编号…：模态对话框三参数 → 多光标批量填充。
+// DEC-004：打开前**不**收缩多光标（与查找对话框 DEC-008 互斥语义相反——
+// 编号必须保住选区集合；模态期间宿主 EnableWindow 禁用，选区安全）。
+// 对话框参数的进程内记忆/预填在 ui 层完成（DEC-005），此处只消费确定结果。
+void DoInsertNumbering() {
+    HWND sci = g_editors.activeWindow();
+    if (!sci) return;  // 无活动文档（欢迎页；菜单已置灰，防御）
+    if (!editor::MultiCursorHost::active(sci)) return;  // 非多光标（理论不可达，防御）
+    ui::NumberingParams params;
+    // DEC-009：全局实例（原栈上局部）——模态期间 UiLocked() 生效，转发路径
+    // 推迟消化，防止活动编辑器在模态中被切换/销毁导致确定路径使用过期 sci
+    if (g_numberingDialog.showModal(g_mainWindow, params)) {
+        g_multiCursor.insertNumbering(sci, params.start, params.step, params.padZero);
+    }
+    FocusActiveEditor();  // 模态归还后焦点回编辑器（与查找对话框一致）
 }
 
 // ---------------------------------------------------------------------------
@@ -944,6 +982,9 @@ void RouteCommand(ui::Command cmd) {
     case ui::Command::FindPrevious:
         SearchJumpGlobal(false);
         break;
+    case ui::Command::InsertNumbering:
+        DoInsertNumbering();
+        break;
     case ui::Command::ToggleDarkTheme:
         // E5 双主题：token/控件/DWM/Scintilla 一次切换（SetDarkTheme 编排）
         SetDarkTheme(!ui::IsDarkTheme());
@@ -1145,11 +1186,13 @@ void RunMenuSelftestStage() {
     } else if (g_selftestStage == 2) {
         g_selftestStage = 3;
         // 场景 C：鼠标点击路径（布局数学计算行 Y）
+        // 根菜单行序（列模式填充编号加入「编辑」组后）：文件/编辑/搜索/──/
+        // 视图/──/退出——搜索=第 3 行，其上 4 行条目 + 2 分隔线后为退出
         const UINT dpi = ui::WindowDpi(g_mainWindow);
         const int ih = ui::Scale(ui::menu_metrics::ItemHeight, dpi);
         const int sh = ui::Scale(ui::menu_metrics::SeparatorHeight, dpi);
-        const int ySearch = 1 + ih + ih / 2;
-        const int yQuit = 1 + 3 * ih + 2 * sh + ih / 2;
+        const int ySearch = 1 + 2 * ih + ih / 2;
+        const int yQuit = 1 + 4 * ih + 2 * sh + ih / 2;
         const int xMid = ui::Scale(60, dpi);
         g_menuHost.onAppMessage = [](int code, WPARAM, LPARAM) -> LRESULT {
             if (code == 0) g_stProbe[0] = g_menuHost.openLevelCountForTest();
@@ -1248,6 +1291,7 @@ void ParseSelftestArg(PWSTR cmdLine) {
         {L"--selftest-doc", &g_selftestDoc, &g_selftestDocOut},
         {L"--selftest-search", &g_selftestSearch, &g_selftestSearchOut},
         {L"--selftest-theme", &g_selftestTheme, &g_selftestThemeOut},
+        {L"--selftest-numbering", &g_selftestNumbering, &g_selftestNumberingOut},
     };
     for (const Mode& m : modes) {
         const wchar_t* p = wcsstr(cmdLine, m.name);
@@ -2529,6 +2573,253 @@ void RunSearchSelftestStage() {
 }
 
 // ---------------------------------------------------------------------------
+// 列模式填充编号自动化验证（--selftest-numbering[=<结果文件>]）
+//
+// 驱动方式（对齐查找 selftest 先例）：打开对话框前投递 kMsgNumberingSelftestStage，
+// 模态循环 GetMessage 派发之（宿主 EnableWindow 禁用不影响消息投递）。对话框为
+// DEC-009 全局实例 g_numberingDialog，经 dialogWindowForTest 定位。EDIT 用
+// EM_SETSEL+WM_CHAR 录入、Enter/Tab/Space 用 WM_KEYDOWN
+// （EDIT 子类化与对话框键盘流转的真实路径）。另直调 g_multiCursor.insertNumbering
+// 覆盖非空选区替换与路由防御两层。
+// ---------------------------------------------------------------------------
+
+bool g_stNumMenuState = false, g_stNumFill = false, g_stNumUndoRedo = false;
+bool g_stNumPadNeg = false, g_stNumReplace = false, g_stNumGuard = false;
+bool g_stNumPrefill = false;  // 对话框预填（默认 1/1；DEC-005 会话内记忆一致性）
+std::wstring g_numberingDetail;  // 采样明细（失败定位；写 <结果文件>.detail.txt）
+
+// 测试内容：L0 alpha[0,5) \n5 L1 beta[6,10) \n10 L2 gamma[11,16)
+const std::string kNumberingContent = "alpha\nbeta\ngamma";
+
+void WriteNumberingSelftestResult() {
+    std::error_code ec;
+    std::filesystem::path out(g_selftestNumberingOut);
+    if (g_selftestNumberingOut.empty()) {
+        out = std::filesystem::current_path(ec) / "qcnote-numbering-selftest.txt";
+    }
+    const std::pair<const char*, bool*> named[] = {
+        {"menu gating: welcome/single-caret greyed, multi-cursor enables item",
+         &g_stNumMenuState},
+        {"dialog prefills 1/1 defaults, focus on start edit", &g_stNumPrefill},
+        {"dialog ok fills numbers top-down, carets at number ends (3 carets)",
+         &g_stNumFill},
+        {"single undo reverts whole batch, redo restores all numbers",
+         &g_stNumUndoRedo},
+        {"pad-zero auto width with negatives: -15/-05/05 (sign outside width)",
+         &g_stNumPadNeg},
+        {"non-empty selections replaced in place, outside text untouched",
+         &g_stNumReplace},
+        {"route guards: single-caret/no-document command is a no-op", &g_stNumGuard},
+    };
+    bool all = true;
+    std::ofstream f(out, std::ios::trunc);
+    for (const auto& [name, flag] : named) {
+        f << "scenario=" << name << ": " << (*flag ? "PASS" : "FAIL") << "\n";
+        all = all && *flag;
+    }
+    f << "overall: " << (all ? "PASS" : "FAIL") << "\n";
+    f.close();
+    std::ofstream detail(std::filesystem::path(out).wstring() + L".detail.txt",
+                         std::ios::trunc);
+    detail << core::wideToUtf8(g_numberingDetail);
+    detail.close();
+}
+
+// 3 行行首空光标（L0 行首 + Ctrl+Alt+↓×2 —— 真实多光标手势直调入口）
+void NumberingSelftestLineStartCarets(HWND s) {
+    SendMessageW(s, SCI_SETSEL, 0, 0);
+    g_multiCursor.testKeyDown(s, VK_DOWN, true, false, true);
+    g_multiCursor.testKeyDown(s, VK_DOWN, true, false, true);
+}
+
+// 各选区光标位置（CollectSelections 同序，升序）
+std::vector<int> NumberingSelftestCarets(HWND s) {
+    const int n = static_cast<int>(SendMessageW(s, SCI_GETSELECTIONS, 0, 0));
+    std::vector<int> out;
+    out.reserve(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        out.push_back(static_cast<int>(
+            SendMessageW(s, SCI_GETSELECTIONNCARET, static_cast<WPARAM>(i), 0)));
+    }
+    return out;
+}
+
+// 定位打开中的编号对话框（DEC-009 起为全局实例，直接取测试句柄；
+// 保留 owner/WS_POPUP 校验以确认确为打开中的编号对话框）
+HWND NumberingSelftestDialog() {
+    HWND dlg = g_numberingDialog.dialogWindowForTest();
+    if (!dlg || !IsWindow(dlg)) return nullptr;
+    if (::GetParent(dlg) != g_mainWindow) return nullptr;
+    if (!(::GetWindowLongPtrW(dlg, GWL_STYLE) & WS_POPUP)) return nullptr;
+    return dlg;
+}
+
+// 对话框的两个 EDIT 子控件（上=起始值、下=增量；按几何取，不依赖控件 id/Z 序；
+// 类名用不区分大小写比较——注册名 "EDIT" 的规范名是 "Edit"）
+void NumberingSelftestEdits(HWND dlg, HWND& startEdit, HWND& stepEdit) {
+    startEdit = stepEdit = nullptr;
+    RECT rStart{}, rStep{};
+    for (HWND c = ::GetWindow(dlg, GW_CHILD); c; c = ::GetWindow(c, GW_HWNDNEXT)) {
+        wchar_t cls[16] = {};
+        if (!GetClassNameW(c, cls, 16) || _wcsicmp(cls, L"EDIT") != 0) continue;
+        RECT rc{};
+        GetWindowRect(c, &rc);
+        if (!startEdit || rc.top < rStart.top) {
+            stepEdit = startEdit;  // 更靠上的成为起始框，原候选让位增量框
+            rStep = rStart;
+            startEdit = c;
+            rStart = rc;
+        } else if (!stepEdit || rc.top < rStep.top) {
+            stepEdit = c;
+            rStep = rc;
+        }
+    }
+}
+
+void RunNumberingSelftestStage() {
+    if (!g_mainWindow) return;
+
+    if (g_numberingStage == 0) {
+        g_numberingStage = 1;
+        // —— 场景1 菜单状态（TC-011）：无文档/单光标置灰、多光标可用 ——
+        // 无文档（自测模式不恢复会话，初始即欢迎页）
+        RefreshMenuState();
+        bool ok = !g_menuState.hasActiveDocument && !g_menuState.multiCursorActive &&
+                  !ui::BuildMainMenu(g_menuState)
+                       .isEnabled(ui::Command::InsertNumbering);
+        // 单光标文档：仍置灰
+        g_docManager.newDocument();
+        core::Document* doc = g_docManager.activeDocument();
+        doc->setContent(kNumberingContent);
+        HWND s = g_editors.windowForTest(doc);
+        RefreshMenuState();
+        ok = ok && g_menuState.hasActiveDocument && !g_menuState.multiCursorActive &&
+             !ui::BuildMainMenu(g_menuState).isEnabled(ui::Command::InsertNumbering);
+        // 多光标（3 空光标，Ctrl+Alt+↓ 真实手势直调）：可用
+        NumberingSelftestLineStartCarets(s);
+        RefreshMenuState();
+        ok = ok && editor::MultiCursorHost::active(s) && g_menuState.multiCursorActive &&
+             ui::BuildMainMenu(g_menuState).isEnabled(ui::Command::InsertNumbering);
+        g_stNumMenuState = ok;
+
+        // —— 场景2 对话框填充（TC-001）——
+        // 先投递阶段消息再进模态：模态循环 GetMessage 派发（宿主禁用不影响
+        // 消息投递——查找 selftest 同款先例；对话框为栈上局部实例，无 onOpened
+        // 可注入，阶段消息即注入通道）
+        PostMessageW(g_mainWindow, kMsgNumberingSelftestStage, 0, 0);
+        RouteCommand(ui::Command::InsertNumbering);  // 模态（阻塞至阶段 1 确定）
+        const std::string kFilled = "1alpha\n2beta\n3gamma";
+        g_stNumFill = doc->content() == kFilled && EditorTextOf(doc) == kFilled &&
+                      NumberingSelftestCarets(s) == std::vector<int>{1, 8, 14};
+        g_numberingDetail +=
+            L"[fill] content=" + core::utf8ToWide(doc->content()) + L" carets=";
+        for (int c : NumberingSelftestCarets(s)) {
+            g_numberingDetail += std::to_wstring(c) + L",";
+        }
+        g_numberingDetail += L"\n";
+        // —— TC-010 单批撤销/重做：一步整体回滚、一步恢复 ——
+        SendMessageW(s, SCI_UNDO, 0, 0);
+        bool undoOk = doc->content() == kNumberingContent;
+        SendMessageW(s, SCI_REDO, 0, 0);
+        undoOk = undoOk && doc->content() == kFilled;
+        SendMessageW(s, SCI_UNDO, 0, 0);  // 回滚收场，供场景 2b 复用干净文本
+        undoOk = undoOk && doc->content() == kNumberingContent;
+        g_stNumUndoRedo = undoOk;
+        PostMessageW(g_mainWindow, kMsgNumberingSelftestStage, 0, 0);
+    } else if (g_numberingStage == 1) {
+        g_numberingStage = 2;
+        // （模态循环内）默认预填 1/1 → Enter 确定（对话框键盘流转真实路径：
+        // 焦点在输入框上，Enter = 默认按钮「确定」→ accept 校验通过关闭）
+        HWND dlg = NumberingSelftestDialog();
+        if (!dlg) {
+            PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);  // 防御逃生（结果缺文件→FAIL）
+            return;
+        }
+        HWND startEdit = nullptr, stepEdit = nullptr;
+        NumberingSelftestEdits(dlg, startEdit, stepEdit);
+        wchar_t sbuf[32] = {}, tbuf[32] = {};
+        if (startEdit) GetWindowTextW(startEdit, sbuf, 32);
+        if (stepEdit) GetWindowTextW(stepEdit, tbuf, 32);
+        g_stNumPrefill = startEdit && stepEdit && wcscmp(sbuf, L"1") == 0 &&
+                         wcscmp(tbuf, L"1") == 0 && GetFocus() == startEdit;
+        g_numberingDetail += L"[dlg1] start=" + std::wstring(sbuf) + L" step=" +
+                             std::wstring(tbuf) + L"\n";
+        SendMessageW(dlg, WM_KEYDOWN, VK_RETURN, 0);  // Enter = 确定
+    } else if (g_numberingStage == 2) {
+        g_numberingStage = 3;
+        // —— 场景2b 补零+负数（TC-005；含 TC-003 补零自动位数语义，等价小规模）——
+        core::Document* doc = g_docManager.activeDocument();
+        HWND s = g_editors.activeWindow();
+        NumberingSelftestLineStartCarets(s);
+        PostMessageW(g_mainWindow, kMsgNumberingSelftestStage, 0, 0);
+        RouteCommand(ui::Command::InsertNumbering);  // 模态（阶段 3 驱动）
+        const std::string kPadded = "-15alpha\n-05beta\n05gamma";
+        g_stNumPadNeg = doc->content() == kPadded && EditorTextOf(doc) == kPadded &&
+                        NumberingSelftestCarets(s) == std::vector<int>{3, 12, 19};
+        g_numberingDetail +=
+            L"[padneg] content=" + core::utf8ToWide(doc->content()) + L" carets=";
+        for (int c : NumberingSelftestCarets(s)) {
+            g_numberingDetail += std::to_wstring(c) + L",";
+        }
+        g_numberingDetail += L"\n";
+        SendMessageW(s, SCI_UNDO, 0, 0);  // 回滚收场（单批撤销断言已在场景 2 覆盖）
+        PostMessageW(g_mainWindow, kMsgNumberingSelftestStage, 0, 0);
+    } else if (g_numberingStage == 3) {
+        g_numberingStage = 4;
+        // （模态循环内）预填=上次确定值（1/1；DEC-005 会话内记忆，与默认一致）
+        // → 录入 -15/10 → Tab 流转到复选（EDIT 子类化转发）→ Space 勾补零
+        // → Enter 确定
+        HWND dlg = NumberingSelftestDialog();
+        if (!dlg) {
+            PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
+            return;
+        }
+        HWND startEdit = nullptr, stepEdit = nullptr;
+        NumberingSelftestEdits(dlg, startEdit, stepEdit);
+        wchar_t sbuf[32] = {}, tbuf[32] = {};
+        if (startEdit) GetWindowTextW(startEdit, sbuf, 32);
+        if (stepEdit) GetWindowTextW(stepEdit, tbuf, 32);
+        g_numberingDetail += L"[dlg2] start=" + std::wstring(sbuf) + L" step=" +
+                             std::wstring(tbuf) + L"\n";
+        if (!startEdit || !stepEdit) {
+            PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
+            return;
+        }
+        SearchSelftestTypePattern(startEdit, L"-15");  // EM_SETSEL 全选+逐字符 WM_CHAR
+        SearchSelftestTypePattern(stepEdit, L"10");
+        SendMessageW(startEdit, WM_KEYDOWN, VK_TAB, 0);  // → 增量框（子类化流转）
+        SendMessageW(stepEdit, WM_KEYDOWN, VK_TAB, 0);   // → 复选（虚拟焦点）
+        SendMessageW(dlg, WM_KEYDOWN, VK_SPACE, 0);      // Space 勾选补零
+        SendMessageW(dlg, WM_KEYDOWN, VK_RETURN, 0);     // Enter = 确定
+    } else if (g_numberingStage == 4) {
+        g_numberingStage = 5;
+        // —— 场景3 非空选区替换（TC-008；编辑器层直调）——
+        core::Document* doc = g_docManager.activeDocument();
+        doc->setContent("xx\nyy\nzz");  // L0 [0,2) L1 [3,5) L2 [6,8)
+        HWND s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 0, 2);           // 选中 "xx"
+        SendMessageW(s, SCI_ADDSELECTION, 3, 5);     // "yy"
+        SendMessageW(s, SCI_ADDSELECTION, 6, 8);     // "zz"
+        g_multiCursor.insertNumbering(s, 1, 1, false);
+        g_stNumReplace = doc->content() == "1\n2\n3" && EditorTextOf(doc) == "1\n2\n3" &&
+                         NumberingSelftestCarets(s) == std::vector<int>{1, 3, 5};
+        g_numberingDetail +=
+            L"[replace] content=" + core::utf8ToWide(doc->content()) + L"\n";
+        // —— 路由防御：单光标 / 无文档 no-op（不弹对话框、同步返回）——
+        g_multiCursor.testKeyDown(s, VK_ESCAPE, false, false, false);  // 收缩单光标
+        RouteCommand(ui::Command::InsertNumbering);  // 非多光标：DoInsertNumbering 直接返回
+        bool guard = doc->content() == "1\n2\n3";    // 文本不变（若误弹模态则超时暴露）
+        g_docManager.closeDocument(doc);  // 直调 manager 关闭（doc 自测同款先例）
+        RouteCommand(ui::Command::InsertNumbering);  // 无活动编辑器：直接返回
+        guard = guard && g_docManager.documentCount() == 0 &&
+                g_editors.activeWindow() == nullptr;
+        g_stNumGuard = guard;
+        WriteNumberingSelftestResult();
+        PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // M6 主题自动化验证（--selftest-theme[=<结果文件>]）
 //
 // 断言层次（浅 → 深 → 浅一轮回合）：
@@ -3390,6 +3681,9 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case kMsgThemeSelftestStage:
         RunThemeSelftestStage();
         return 0;
+    case kMsgNumberingSelftestStage:
+        RunNumberingSelftestStage();
+        return 0;
     case kMsgSelftestDump:
         // --selftest-dump 采样钩子（e2e 跨进程断言辅助；同步处理后文件即就绪）
         WriteSelftestDump();
@@ -3858,7 +4152,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
     // 启动位置参数打开（D2；恢复完成后叠加打开——旧版 openPendingUrls 时序；
     // 事件接线已在 WM_CREATE 完成）
     if (!g_initialPaths.empty() && !g_selftestMenu && !g_selftestTabs &&
-        !g_selftestSearch && !g_selftestTheme) {
+        !g_selftestSearch && !g_selftestTheme && !g_selftestNumbering) {
         DoOpenPaths(g_initialPaths);
     }
 
@@ -3893,6 +4187,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
         PostMessageW(hwnd, kMsgSearchSelftestStage, 0, 0);
     } else if (g_selftestTheme) {
         PostMessageW(hwnd, kMsgThemeSelftestStage, 0, 0);
+    } else if (g_selftestNumbering) {
+        PostMessageW(hwnd, kMsgNumberingSelftestStage, 0, 0);
     }
 
     MSG msg{};

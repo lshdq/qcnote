@@ -17,6 +17,9 @@ struct MainMenuState {
     Encoding currentEncoding = Encoding::Utf8;  // 「通过编码保存」当前编码项打勾
     bool darkTheme = false;  // 视图▸深色主题 勾选态（实现 M6 接，E5）
     bool wordWrap = false;   // 视图▸自动换行 勾选态（实现 M2 接，B2）
+    bool multiCursorActive = false;  // 编辑▸插入编号 使能条件之一（活动编辑器
+                                     // 选区数 ≥ 2 的多光标态；组装层在弹出前
+                                     // 刷新，列模式填充编号）
 };
 
 // 构建主菜单（结构见需求 E1；菜单 id 布局见实现注释）

@@ -27,6 +27,9 @@ enum class Command : int {
     FindNext,       // 下一个 F3
     FindPrevious,   // 上一个 Shift+F3
 
+    // —— 编辑（列模式填充编号）——
+    InsertNumbering,  // 编辑▸插入编号…（无快捷键，DEC-006）
+
     // —— 视图（E5/B2）——
     ToggleDarkTheme,  // 深色主题（勾选态）
     ToggleWordWrap,   // 自动换行（勾选态）
@@ -59,6 +62,7 @@ inline const wchar_t* CommandName(Command c) {
     case Command::ReplaceDialog: return L"ReplaceDialog";
     case Command::FindNext: return L"FindNext";
     case Command::FindPrevious: return L"FindPrevious";
+    case Command::InsertNumbering: return L"InsertNumbering";
     case Command::ToggleDarkTheme: return L"ToggleDarkTheme";
     case Command::ToggleWordWrap: return L"ToggleWordWrap";
     case Command::CloseCurrentTab: return L"CloseCurrentTab";

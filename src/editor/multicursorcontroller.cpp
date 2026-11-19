@@ -10,6 +10,7 @@
 
 #include "Scintilla.h"
 #include "core/encoding.h"
+#include "core/numbering.h"
 
 namespace editor {
 
@@ -156,7 +157,13 @@ std::vector<std::string> splitLinesKeepEmpty(const std::string& text) {
 }
 
 // 区间集合按 start 降序逐个替换（单批撤销由调用方包裹）；返回替换后的光标集
-// （每选区落在 start + 文本长）
+// （每选区落在各自文本**末尾的最终坐标**）
+//
+// 光标坐标修正：降序执行时，先替换的大位置会被后替换的小位置编辑推移
+//（小位置插入/删除使更大坐标整体平移），逐个记录 start+文本长 会得到过期
+// 坐标（列模式填充编号「填后光标=各编号末尾」不成立）。故按升序预先累计
+// 位移：caret_i = start_i + Σ_{j<i}(len_j - span_j) + len_i——与替换执行序
+// 无关的终态坐标（span_j = 替换前区间长度）。粘贴分发/剪切删除路径同此修正
 std::vector<core::SelRange> ReplaceRangesDescending(HWND sci,
                                                     const std::vector<std::pair<core::SelRange, std::string>>& edits) {
     auto ordered = edits;
@@ -165,17 +172,33 @@ std::vector<core::SelRange> ReplaceRangesDescending(HWND sci,
                   return std::min(a.first.anchor, a.first.caret) >
                          std::min(b.first.anchor, b.first.caret);
               });
-    send(sci, SCI_BEGINUNDOACTION, 0, 0);
     std::vector<core::SelRange> carets;
-    carets.reserve(ordered.size());
+    carets.reserve(edits.size());
+    {
+        auto asc = edits;
+        std::sort(asc.begin(), asc.end(),
+                  [](const auto& a, const auto& b) {
+                      return std::min(a.first.anchor, a.first.caret) <
+                             std::min(b.first.anchor, b.first.caret);
+                  });
+        long long shift = 0;
+        for (const auto& [range, text] : asc) {
+            const int start = std::min(range.anchor, range.caret);
+            const int end = std::max(range.anchor, range.caret);
+            const long long caret = static_cast<long long>(start) + shift +
+                                    static_cast<long long>(text.size());
+            carets.push_back(
+                core::SelRange{static_cast<int>(caret), static_cast<int>(caret)});
+            shift += static_cast<long long>(text.size()) - (end - start);
+        }
+    }
+    send(sci, SCI_BEGINUNDOACTION, 0, 0);
     for (const auto& [range, text] : ordered) {
         const int start = std::min(range.anchor, range.caret);
         const int end = std::max(range.anchor, range.caret);
         send(sci, SCI_SETTARGETRANGE, static_cast<WPARAM>(start), static_cast<LPARAM>(end));
         send(sci, SCI_REPLACETARGET, text.size(),
              reinterpret_cast<LPARAM>(text.c_str()));
-        carets.push_back(core::SelRange{start + static_cast<int>(text.size()),
-                                        start + static_cast<int>(text.size())});
     }
     send(sci, SCI_ENDUNDOACTION, 0, 0);
     sortAndDedup(carets);
@@ -673,6 +696,28 @@ void MultiCursorHost::testPaste(HWND sci) {
             edits.emplace_back(s, clip);  // 每光标整份
         }
     }
+    ApplySelections(sci, ReplaceRangesDescending(sci, edits));
+    if (onSelectionsRebuilt) onSelectionsRebuilt(sci);
+}
+
+void MultiCursorHost::insertNumbering(HWND sci, long long start, long long step,
+                                      bool padZero) {
+    if (!sci) return;
+    std::vector<core::SelRange> selections = CollectSelections(sci);
+    if (selections.empty()) return;  // 空选区集合：无操作
+    // 防御：矩形选区定格为普通多选区（CollectSelections 已按逐行展开取集合，
+    // 定格防后续原生矩形分支塌缩，与粘贴/键入路径同口径）
+    streamifySelection(sci);
+    // DEC-008：集合恒按 (caret, anchor) 升序 = 从上到下，第 i 个填起始值+i×增量
+    const std::vector<std::string> texts = core::numberingTexts(
+        static_cast<int>(selections.size()), start, step, padZero);
+    std::vector<std::pair<core::SelRange, std::string>> edits;
+    edits.reserve(selections.size());
+    for (size_t i = 0; i < selections.size() && i < texts.size(); ++i) {
+        edits.emplace_back(selections[i], texts[i]);  // 非空选区替换 / 空光标插入
+    }
+    // ReplaceRangesDescending 内含 BEGIN/ENDUNDOACTION（单批撤销）；返回值 =
+    // 各编号末尾的最终光标集，ApplySelections 落位
     ApplySelections(sci, ReplaceRangesDescending(sci, edits));
     if (onSelectionsRebuilt) onSelectionsRebuilt(sci);
 }

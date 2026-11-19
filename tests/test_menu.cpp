@@ -118,22 +118,24 @@ TEST_CASE("MenuModel 动态构建条目（Tab 右键菜单预留，M1-3）", "[m
 
 TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
     const MenuModel m = BuildMainMenu(MainMenuState{});
-    // 菜单森林：主菜单 + 文件/搜索/视图 + 编码/重载/转存 = 7
-    REQUIRE(m.menuCount() == 7);
-    REQUIRE(m.itemCount(0) == 6);  // 文件▸/搜索▸/──/视图▸/──/退出
+    // 菜单森林：主菜单 + 文件/编辑/搜索/视图 + 编码/重载/转存 = 8
+    REQUIRE(m.menuCount() == 8);
+    REQUIRE(m.itemCount(0) == 7);  // 文件▸/编辑▸/搜索▸/──/视图▸/──/退出
 
     CHECK(m.item(0, 0).kind == MenuItem::Kind::Submenu);
     CHECK(m.item(0, 0).text == L"文件");
     CHECK(m.item(0, 1).kind == MenuItem::Kind::Submenu);
-    CHECK(m.item(0, 1).text == L"搜索");
-    CHECK(m.item(0, 2).kind == MenuItem::Kind::Separator);
-    CHECK(m.item(0, 3).kind == MenuItem::Kind::Submenu);
-    CHECK(m.item(0, 3).text == L"视图");
-    CHECK(m.item(0, 4).kind == MenuItem::Kind::Separator);
-    CHECK(m.item(0, 5).kind == MenuItem::Kind::Action);
-    CHECK(m.item(0, 5).text == L"退出");
-    CHECK(m.item(0, 5).command == Command::Quit);
-    CHECK(m.item(0, 5).enabled);
+    CHECK(m.item(0, 1).text == L"编辑");
+    CHECK(m.item(0, 2).kind == MenuItem::Kind::Submenu);
+    CHECK(m.item(0, 2).text == L"搜索");
+    CHECK(m.item(0, 3).kind == MenuItem::Kind::Separator);
+    CHECK(m.item(0, 4).kind == MenuItem::Kind::Submenu);
+    CHECK(m.item(0, 4).text == L"视图");
+    CHECK(m.item(0, 5).kind == MenuItem::Kind::Separator);
+    CHECK(m.item(0, 6).kind == MenuItem::Kind::Action);
+    CHECK(m.item(0, 6).text == L"退出");
+    CHECK(m.item(0, 6).command == Command::Quit);
+    CHECK(m.item(0, 6).enabled);
 
     // 文件菜单：五项 + 分隔线 + 编码▸
     const int file = m.item(0, 0).submenu;
@@ -176,8 +178,16 @@ TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
     CHECK(m.item(encSave, 0).checked);
     CHECK_FALSE(m.item(encSave, 1).checked);
 
+    // 编辑组（列模式填充编号）：默认（无文档）置灰；位于文件与搜索之间
+    const int edit = m.item(0, 1).submenu;
+    REQUIRE(m.itemCount(edit) == 1);
+    CHECK(m.item(edit, 0).text == L"插入编号…");
+    CHECK(m.item(edit, 0).command == Command::InsertNumbering);
+    CHECK(m.item(edit, 0).shortcut.empty());  // DEC-006：无快捷键列
+    CHECK_FALSE(m.item(edit, 0).enabled);     // 无文档 + 非多光标
+
     // 搜索：四项全置灰（无活动文档，B5 欢迎页语义）
-    const int search = m.item(0, 1).submenu;
+    const int search = m.item(0, 2).submenu;
     REQUIRE(m.itemCount(search) == 5);  // 查找/替换/──/下一个/上一个
     CHECK(m.item(search, 0).text == L"查找…");
     CHECK(m.item(search, 0).shortcut == L"Ctrl+F");
@@ -195,7 +205,7 @@ TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
     }
 
     // 视图：勾选态 stub（默认全不勾）
-    const int view = m.item(0, 3).submenu;
+    const int view = m.item(0, 4).submenu;
     REQUIRE(m.itemCount(view) == 2);
     CHECK(m.item(view, 0).text == L"深色主题");
     CHECK(m.item(view, 0).command == Command::ToggleDarkTheme);
@@ -220,6 +230,8 @@ TEST_CASE("主菜单状态接线（有文档/GBK/主题开关）", "[menu][mainm
     CHECK(m.isEnabled(Command::FindDialog));
     CHECK(m.isEnabled(Command::FindNext));
     CHECK(m.isEnabled(Command::FindPrevious));
+    // 有文档但非多光标（multiCursorActive 默认 false）：插入编号仍置灰
+    CHECK_FALSE(m.isEnabled(Command::InsertNumbering));
 
     // 编码组解禁 + 当前编码 GBK 打勾（互斥）
     const int enc = m.item(m.item(0, 0).submenu, 6).submenu;
@@ -243,6 +255,55 @@ TEST_CASE("主菜单按命令更新的集成路径（弹出前重建 + 命令定
     const auto ref = m.findCommand(Command::SaveWithEncodingGbk);
     REQUIRE(ref.has_value());
     CHECK(ref->menuId != 0);  // 深层菜单条目
+}
+
+// ---------------------------------------------------------------------------
+// 编辑组（列模式填充编号）：InsertNumbering 使能条件全交叉 + 顶层顺序 +
+// CommandName（DEC-006 无快捷键）
+// ---------------------------------------------------------------------------
+
+TEST_CASE("编辑组插入编号使能四组合交叉与命令名", "[menu][mainmenu]") {
+    // hasActiveDocument × multiCursorActive 全交叉：仅两者同时为真才可用
+    for (int hasDoc = 0; hasDoc <= 1; ++hasDoc) {
+        for (int multi = 0; multi <= 1; ++multi) {
+            MainMenuState s;
+            s.hasActiveDocument = (hasDoc == 1);
+            s.multiCursorActive = (multi == 1);
+            const MenuModel m = BuildMainMenu(s);
+            const auto ref = m.findCommand(Command::InsertNumbering);
+            REQUIRE(ref.has_value());
+            const MenuItem& it = m.item(ref->menuId, ref->index);
+            CHECK(it.text == L"插入编号…");
+            CHECK(it.kind == MenuItem::Kind::Action);
+            CHECK(it.shortcut.empty());  // DEC-006：不绑定快捷键
+            CHECK(m.isEnabled(Command::InsertNumbering) ==
+                  (hasDoc == 1 && multi == 1));
+        }
+    }
+
+    // 顶层顺序：文件 / 编辑 / 搜索 / ── / 视图 / ── / 退出（编辑位于文件与
+    // 搜索之间；任何状态下结构不变，此处取全真状态再验一次）
+    MainMenuState s;
+    s.hasActiveDocument = true;
+    s.multiCursorActive = true;
+    const MenuModel m = BuildMainMenu(s);
+    REQUIRE(m.itemCount(0) == 7);
+    const wchar_t* texts[7] = {L"文件", L"编辑", L"搜索", nullptr, L"视图", nullptr, L"退出"};
+    for (int i = 0; i < 7; ++i) {
+        if (i == 3 || i == 5) {
+            CHECK(m.item(0, i).kind == MenuItem::Kind::Separator);
+        } else if (i == 6) {
+            CHECK(m.item(0, i).kind == MenuItem::Kind::Action);  // 退出
+            CHECK(m.item(0, i).text == L"退出");
+        } else {
+            CHECK(m.item(0, i).kind == MenuItem::Kind::Submenu);
+            CHECK(m.item(0, i).text == texts[i]);
+        }
+    }
+    CHECK(m.isEnabled(Command::InsertNumbering));  // 文档 + 多光标 → 可用
+
+    // 命令名（调试日志/自动化输出）
+    CHECK(CommandName(Command::InsertNumbering) == L"InsertNumbering");
 }
 
 // ---------------------------------------------------------------------------

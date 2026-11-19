@@ -174,6 +174,7 @@ add_executable(qcnote WIN32
     src/ui/tooltip.cpp
     src/ui/dialog.cpp
     src/ui/searchdialog.cpp
+    src/ui/numberingdialog.cpp
     src/editor/scintillaedit.cpp
     src/editor/multicursorcontroller.cpp
     src/editor/searchcontroller.cpp
@@ -217,6 +218,7 @@ add_library(qcnote_core STATIC
     src/core/inifile.cpp
     src/core/sessionmanager.cpp
     src/core/draftcachemanager.cpp
+    src/core/numbering.cpp
 )
 # PUBLIC 传播到 qcnote 应用与测试目标（沿用应用层统一编译口径）
 target_compile_options(qcnote_core PUBLIC /std:c++latest /utf-8)
@@ -269,7 +271,8 @@ set_tests_properties(core PROPERTIES ENVIRONMENT
 add_executable(test_ui tests/test_ui.cpp tests/test_manifest.rc
                            src/ui/theme.cpp src/ui/titlebar.cpp
                            src/ui/statusbar.cpp src/ui/tooltip.cpp src/ui/dialog.cpp
-                           src/ui/searchdialog.cpp src/ui/toolbar.cpp)
+                           src/ui/searchdialog.cpp src/ui/numberingdialog.cpp
+                           src/ui/toolbar.cpp)
 target_compile_options(test_ui PRIVATE /std:c++latest /utf-8)
 # NOMINMAX：statusbar/dialog 用 std::min/max；WINVER=Win10 同应用目标
 target_compile_definitions(test_ui PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x0A00 _WIN32_WINNT=0x0A00)

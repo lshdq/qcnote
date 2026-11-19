@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "core/multicursor.h"
+#include "core/numbering.h"
 #include "core/searchengine.h"
 
 using namespace core;
@@ -660,5 +661,62 @@ TEST_CASE("TC-U28 wordRangeAt：中英文词边界", "[mc][word]") {
         REQUIRE(wordRangeAt("玛丽·居里", 6) == std::nullopt);  // · 分隔
         REQUIRE(wordRangeAt("玛丽·居里", 8) == std::optional<SelRange>{SelRange{8, 14}});
         REQUIRE(wordRangeAt("a\xC2\xBD" "b", 1) == std::optional<SelRange>{SelRange{0, 4}});  // ½ 词字符
+    }
+}
+// ===== 列模式填充编号（numberingTexts 纯函数；DEC-007/DEC-008） =====
+
+TEST_CASE("编号：基础/起始增量/负数/倒序（不补零）", "[numbering]") {
+    SECTION("基础：count=3, start=1, step=1 → 1 2 3") {
+        REQUIRE(numberingTexts(3, 1, 1, false) == std::vector<std::string>{"1", "2", "3"});
+    }
+    SECTION("起始/增量：start=10, step=5, count=3 → 10 15 20") {
+        REQUIRE(numberingTexts(3, 10, 5, false) == std::vector<std::string>{"10", "15", "20"});
+    }
+    SECTION("负起始不补零：start=-3, step=2 → -3 -1 1 3") {
+        REQUIRE(numberingTexts(4, -3, 2, false) == std::vector<std::string>{"-3", "-1", "1", "3"});
+    }
+    SECTION("负增量倒序：start=5, step=-2 → 5 3 1") {
+        REQUIRE(numberingTexts(3, 5, -2, false) == std::vector<std::string>{"5", "3", "1"});
+    }
+    SECTION("0 起始：start=0, step=1 → 0 1 2") {
+        REQUIRE(numberingTexts(3, 0, 1, false) == std::vector<std::string>{"0", "1", "2"});
+    }
+}
+
+TEST_CASE("编号：补零自动位数（负号在宽度之外）", "[numbering][pad]") {
+    SECTION("1..100 → 001..100（断言首/末与位数）") {
+        const auto v = numberingTexts(100, 1, 1, true);
+        REQUIRE(v.size() == 100);
+        REQUIRE(v.front() == "001");
+        REQUIRE(v[1] == "002");
+        REQUIRE(v[98] == "099");
+        REQUIRE(v.back() == "100");
+        for (const auto& s : v)
+            REQUIRE(s.size() == 3);  // 全体宽度 = 100 的位数 3
+    }
+    SECTION("负起始补零（-xxx 形态，负号在宽度外）：start=-505, step=100 → -505 -405 -305") {
+        // DEC-002：宽度 = 最大绝对值位数（505 → 3），负号不计入宽度。
+        // （任务示例 {-5,-4,-3}→"-005" 与 DEC-002 规则 A 矛盾，按 DEC-002 取
+        //  等价的宽度 3 负数场景覆盖同一形态。）
+        REQUIRE(numberingTexts(3, -505, 100, true) == std::vector<std::string>{"-505", "-405", "-305"});
+        REQUIRE(numberingTexts(3, -5, 1, true) == std::vector<std::string>{"-5", "-4", "-3"});  // 宽度 1 不补
+    }
+    SECTION("混合正负宽度按绝对值最大者：start=-12, step=6 → -12 -06 00 06") {
+        REQUIRE(numberingTexts(4, -12, 6, true) == std::vector<std::string>{"-12", "-06", "00", "06"});
+    }
+}
+
+TEST_CASE("编号：边界与溢出钳制（DEC-007）", "[numbering][limit]") {
+    SECTION("count=0 → 空；count=1 → 单元素") {
+        REQUIRE(numberingTexts(0, 1, 1, false).empty());
+        REQUIRE(numberingTexts(-5, 1, 1, false).empty());
+        REQUIRE(numberingTexts(1, 7, 3, false) == std::vector<std::string>{"7"});
+    }
+    SECTION("start=10^17, step=9×10^17, count=3：不崩溃、钳制到 ±10^18、首元素正确") {
+        const auto v = numberingTexts(3, 100'000'000'000'000'000LL, 900'000'000'000'000'000LL, false);
+        REQUIRE(v.size() == 3);
+        REQUIRE(v[0] == "100000000000000000");
+        REQUIRE(v[1] == "1000000000000000000");  // 10^17+9×10^17 = 10^18，安全界内
+        REQUIRE(v[2] == "1000000000000000000");  // 再加越界 → 钳制保持 10^18
     }
 }
