@@ -4,7 +4,7 @@
 // - 会话数据构建与持久化：[documents] size=N + N\url / N\cursor / N\encoding
 //   （utf8/gbk）+ 未命名 N\uid（uid 即标签位置记录，DEC-001）+ active（URL）
 //   或 activeUid（两键互斥，整组重写）+ [window] x/y/width/height/maximized
-//  （[editor] wordWrap 前向兼容读写）；
+//  （[editor] wordWrap/lineNumbers 前向兼容读写）；
 // - 恢复查询：parseSession 容错解析（坏条目丢弃、编号跳号容忍、url 与 uid
 //   均空丢弃、旧格式无 uid 未命名条目跳过【DEC-005】、编码非法回退自动识别、
 //   文件存在性预检注入【缺失/目录静默跳过】）；
@@ -65,6 +65,7 @@ struct SessionData {
     std::optional<std::string> activeUid;           ///< 活动标签为未命名
     std::optional<WindowGeometry> window;           ///< 五键齐全才有值
     std::optional<bool> wordWrap;                   ///< [editor] 全局设置（前向兼容）
+    std::optional<bool> lineNumbers;                ///< [editor] 显示行号（默认显示）
     std::optional<bool> darkTheme;                  ///< [editor] 深色主题（E5，M6）
 
     bool operator==(const SessionData&) const = default;

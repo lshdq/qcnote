@@ -5,7 +5,7 @@
 //   - 通过编码重新加载（整组）：有活动文档且有磁盘路径（未命名禁用）
 //   - 通过编码保存（整组）：有活动文档即可用；当前编码项打勾
 //   - 搜索四项：有活动文档才可用（欢迎页置灰）
-//   - 深色主题/自动换行：勾选态（stub，状态源 M2/M6 接）
+//   - 深色主题/自动换行/显示行号：勾选态（stub，状态源 M2/M6 接）
 //   - 编辑▸插入编号…：有活动文档且多光标态（选区数 ≥ 2）才可用（列模式
 //     填充编号；无快捷键，DEC-006）
 // 子菜单叶子（UTF-8/GBK）不单独承载 enabled——父级置灰即整组不可达
@@ -67,6 +67,7 @@ MenuModel BuildMainMenu(const MainMenuState& state) {
     const int view = m.addMenu(L"视图");
     m.addItem(view, L"深色主题", {}, Command::ToggleDarkTheme).checked = state.darkTheme;
     m.addItem(view, L"自动换行", {}, Command::ToggleWordWrap).checked = state.wordWrap;
+    m.addItem(view, L"显示行号", {}, Command::ToggleLineNumbers).checked = state.lineNumbers;
 
     // —— 主菜单（顶层：文件▸ / 编辑▸ / 搜索▸ / ── / 视图▸ / ── / 退出）——
     m.addSubmenuEntry(root, L"文件", file);

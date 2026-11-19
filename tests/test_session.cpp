@@ -395,22 +395,35 @@ TEST_CASE("TC-U18：会话序列化往返（uid 位置/编码键/active 互斥�
     REQUIRE(raw2->value("documents", "activeUid") == std::nullopt);
     REQUIRE(SessionManager::parseSession(ini) == data2);
 
-    // 窗口几何 + wordWrap/darkTheme 往返
+    // 窗口几何 + wordWrap/lineNumbers/darkTheme 往返
     SessionData withWindow;
     withWindow.documents = data.documents;
     withWindow.window = WindowGeometry{-1920, 50, 1280, 720, true};
     withWindow.wordWrap = false;
+    withWindow.lineNumbers = false;
     withWindow.darkTheme = true;  // E5：显式 true 落盘
     REQUIRE(SessionManager::persistNow(ini, withWindow));
     {
         auto raw = IniFile::read(ini);
         REQUIRE(raw->value("editor", "darkTheme") == "true");
+        REQUIRE(raw->value("editor", "lineNumbers") == "false");
     }
     const SessionData parsedWindow = SessionManager::parseSession(ini);
     REQUIRE(parsedWindow.window.has_value());
     REQUIRE(*parsedWindow.window == WindowGeometry{-1920, 50, 1280, 720, true});
     REQUIRE(parsedWindow.wordWrap == false);
+    REQUIRE(parsedWindow.lineNumbers == false);
     REQUIRE(parsedWindow.darkTheme == true);
+
+    // lineNumbers 开态往返（true 同样落盘）
+    SessionData withLines = withWindow;
+    withLines.lineNumbers = true;
+    REQUIRE(SessionManager::persistNow(ini, withLines));
+    {
+        auto raw = IniFile::read(ini);
+        REQUIRE(raw->value("editor", "lineNumbers") == "true");
+    }
+    REQUIRE(SessionManager::parseSession(ini).lineNumbers == true);
 
     // 显式 false 同样落盘（阻却旧会话残留 true；切回浅色后重启仍浅色）
     SessionData lightTheme = withWindow;
@@ -482,6 +495,8 @@ TEST_CASE("TC-U19：会话容错（坏条目/跳号/均空/旧格式/非法值�
     REQUIRE(parsed.wordWrap == true);
     // darkTheme：无键 → nullopt（保持浅色默认，前向兼容旧会话）
     REQUIRE(parsed.darkTheme == std::nullopt);
+    // lineNumbers：无键 → nullopt（保持显示默认，前向兼容旧会话）
+    REQUIRE(parsed.lineNumbers == std::nullopt);
 
     // darkTheme 宽容解析（与 wordWrap 同款 "1" 形态；写侧只产 true/false）
     testutil::writeBytes(tmp.file(L"editor-dark.ini"),
@@ -492,6 +507,16 @@ TEST_CASE("TC-U19：会话容错（坏条目/跳号/均空/旧格式/非法值�
         "[editor]\r\n"
         "darkTheme=0\r\n");
     REQUIRE(SessionManager::parseSession(tmp.file(L"editor-light.ini")).darkTheme == false);
+
+    // lineNumbers 宽容解析（与 wordWrap 同款 "1"/"0" 形态；写侧只产 true/false）
+    testutil::writeBytes(tmp.file(L"editor-lines-on.ini"),
+        "[editor]\r\n"
+        "lineNumbers=1\r\n");
+    REQUIRE(SessionManager::parseSession(tmp.file(L"editor-lines-on.ini")).lineNumbers == true);
+    testutil::writeBytes(tmp.file(L"editor-lines-off.ini"),
+        "[editor]\r\n"
+        "lineNumbers=0\r\n");
+    REQUIRE(SessionManager::parseSession(tmp.file(L"editor-lines-off.ini")).lineNumbers == false);
 
     // 无预检（纯数据解析）：缺失文件条目保留（B 层打开时再跳过）
     const SessionData noProbe = SessionManager::parseSession(ini);

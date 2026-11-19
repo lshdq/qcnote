@@ -33,6 +33,7 @@ enum class Command : int {
     // —— 视图（E5/B2）——
     ToggleDarkTheme,  // 深色主题（勾选态）
     ToggleWordWrap,   // 自动换行（勾选态）
+    ToggleLineNumbers,  // 显示行号（勾选态，菜单唯一入口，无快捷键）
 
     // —— Tab 右键菜单（A3，M1 第三阶段接入；命令 id 先行定义供菜单与
     //     单测共享，快捷键无绑定）——
@@ -67,6 +68,7 @@ inline const wchar_t* CommandName(Command c) {
     case Command::InsertNumbering: return L"InsertNumbering";
     case Command::ToggleDarkTheme: return L"ToggleDarkTheme";
     case Command::ToggleWordWrap: return L"ToggleWordWrap";
+    case Command::ToggleLineNumbers: return L"ToggleLineNumbers";
     case Command::CloseCurrentTab: return L"CloseCurrentTab";
     case Command::CloseTabsToRight: return L"CloseTabsToRight";
     case Command::CloseTabsToLeft: return L"CloseTabsToLeft";

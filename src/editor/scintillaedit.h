@@ -26,6 +26,14 @@
 //
 // 换行：全局开关（旧 QML SessionManager.wordWrap 全局、所有文档共享；
 // EditorArea.qml 注释「跟随全局设置」实证），新实例继承当前模式。
+//
+// 行号：同款全局开关（默认显示），margin 0 固定 SC_MARGIN_NUMBER 类型，
+// 宽度按行数位数自适应（SCI_TEXTWIDTH 按 STYLE_LINENUMBER 字体实测，
+// 最少 3 位预留）加左右对称边距 LineNumberPaddingX（左边距并入边宽、
+// 右边距经 SCI_SETMARGINLEFT），关闭时宽度置 0、左内边距恢复默认 1
+//（行号边完全消失，编辑区占满）。
+// 宽度重算触发点：行数变化（SCN_MODIFIED linesAdded）/开关切换/缩放/
+// 装载，以及主窗口 WM_DPICHANGED（跨 DPI 屏拖动，见 refreshLineNumberWidths）。
 #pragma once
 
 #include <windows.h>
@@ -44,6 +52,8 @@ namespace editor_metrics {
 constexpr int FontPt = 11;      // Consolas 11pt（旧 QML 同值）
 constexpr int TabWidth = 4;     // Tab 宽 4 等宽字符（旧 QML tabStopDistance=advance("0000")）
 constexpr int CaretSlopX = 20;  // 光标水平边缘留白（CARET_SLOP 距离，逻辑像素）
+constexpr int LineNumberPaddingX = 4;  // 行号左右边距（左边距加在边宽、右边距经
+                                        // SCI_SETMARGINLEFT；逻辑像素，DPI 缩放）
 
 }  // namespace editor_metrics
 
@@ -96,6 +106,13 @@ public:
     // —— 视图 ——
     void setWordWrap(bool wrap);  // 全局（旧版语义：所有文档共享）
     bool wordWrap() const { return wordWrap_; }
+    void setLineNumbers(bool on);  // 全局（同款语义：所有文档共享；默认显示）
+    bool lineNumbers() const { return lineNumbers_; }
+    // DPI 变化后重算全部实例行号边宽度：跨屏拖动时 Scintilla 子窗口经
+    // WM_DPICHANGED_AFTERPARENT 按新 DPI 重测字体，但 zoom 不变、不发
+    // SCN_ZOOM，行号宽（SCI_TEXTWIDTH 固定像素）不会自愈——主窗口
+    // WM_DPICHANGED 延迟一拍（PostMessage）调用本方法补触发
+    void refreshLineNumberWidths();
 
     // —— 主题（E5）：全部已创建实例按 CurrentPalette 重设配色并重绘 ——
     // 滚动条暗色：实例窗口切换 DarkMode_Explorer 视觉样式类（Win11 深色滚动
@@ -141,6 +158,10 @@ private:
     const Entry* find(const core::Document* doc) const;
     HWND createEditor();
     void configure(HWND sci, UINT dpi) const;
+    // 行号边宽度自适应：开启态按行数位数实测加宽（最少 3 位）+ 左右边距
+    // LineNumberPaddingX（右边距经 SCI_SETMARGINLEFT）；关闭态边宽 0、左内
+    // 边距恢复默认 1；边宽与左内边距均与当前值相同才跳过（常规键入零冗余重设）
+    void updateLineNumberWidth(HWND sci) const;
     // 主题相关配色（configure 与 retheme 共用；字体/策略等与主题无关的项不重设）
     static void applyThemeColors(HWND sci);
     void loadFromDocument(Entry& e);
@@ -150,6 +171,7 @@ private:
     core::Document* active_ = nullptr;
     core::Document* applying_ = nullptr;  // 编辑器回写进行中（防回灌标志）
     bool wordWrap_ = false;
+    bool lineNumbers_ = true;  // 行号显示全局开关（默认显示；宽度随行数自适应）
     RECT contentRect_{};
 };
 

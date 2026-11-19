@@ -1,6 +1,6 @@
 // 主菜单内容构建（M1-2）：按需求 E1 表格静态定义完整菜单结构，命令路由 stub。
 // 状态源（M2 接入）：hasActiveDocument/activeDocumentHasUrl 由文档系统驱动，
-// currentEncoding/darkTheme/wordWrap 由文档/主题/会话驱动。每次打开菜单前按
+// currentEncoding/darkTheme/wordWrap/lineNumbers 由文档/主题/会话驱动。每次打开菜单前按
 // 当前状态重建模型（BuildMainMenu 为纯函数，无窗口依赖，可直接单测）。
 #pragma once
 
@@ -17,6 +17,7 @@ struct MainMenuState {
     Encoding currentEncoding = Encoding::Utf8;  // 「通过编码保存」当前编码项打勾
     bool darkTheme = false;  // 视图▸深色主题 勾选态（实现 M6 接，E5）
     bool wordWrap = false;   // 视图▸自动换行 勾选态（实现 M2 接，B2）
+    bool lineNumbers = true;  // 视图▸显示行号 勾选态（默认显示，会话驱动）
     bool multiCursorActive = false;  // 编辑▸插入编号 使能条件之一（活动编辑器
                                      // 选区数 ≥ 2 的多光标态；组装层在弹出前
                                      // 刷新，列模式填充编号）

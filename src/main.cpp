@@ -125,6 +125,10 @@ constexpr UINT kMsgThemeSelftestStage = WM_APP + 9;
 // 列模式填充编号自测推进（--selftest-numbering；+10 在 MenuHost/对话框
 // WM_APP..+9 测试透传段之外，与既有自测模式互斥不并发）
 constexpr UINT kMsgNumberingSelftestStage = WM_APP + 10;
+// DPI 变化后行号边宽度重算（主窗口 WM_DPICHANGED 处理内 PostMessage
+// 「延迟一拍」触发：入队晚于 WM_DPICHANGED 的 sent-message 链，执行时
+// Scintilla 子窗口已按新 DPI 重测字体（WM_DPICHANGED_AFTERPARENT））
+constexpr UINT kMsgRefreshLineNumbers = WM_APP + 11;
 
 // 主窗口宿主 timer id 分配（tabs.cpp / toolbar.h / statusbar.h 同源约定，
 // 单窗口内必须互斥，否则 WM_TIMER 互相误路由）：
@@ -162,6 +166,7 @@ bool g_windowActive = true;    // E2 边界线活动/非活动换色（标题栏
 bool g_trackingClientMouse = false;  // 客户区 TrackMouseEvent（TME_LEAVE）挂载标志
 bool g_fileDialogOpen = false;       // 文件对话框打开中（uiLocked 语义 + WM_CLOSE 拒绝）
 bool g_wordWrap = false;             // 自动换行全局开关（旧版全局语义，B2）
+bool g_lineNumbers = true;           // 显示行号全局开关（默认显示，会话持久化）
 
 // 启动位置参数（D2：待打开文件路径，可多个）
 std::vector<std::filesystem::path> g_initialPaths;
@@ -271,13 +276,14 @@ std::filesystem::path ExePathOf() {
 // 会话持久化（构建 = 文档快照 + 本层维护的窗口几何/全局设置）
 // ---------------------------------------------------------------------------
 
-/// 立即落盘当前会话（文档 + normal 几何 + 最大化标志 + wordWrap/darkTheme）
+/// 立即落盘当前会话（文档 + normal 几何 + 最大化标志 + wordWrap/lineNumbers/darkTheme）
 void PersistSessionNow() {
     if (!PersistenceActive()) return;
     core::SessionData data = core::SessionManager::buildSessionData(g_docManager);
     data.window = g_lastNormal;
     data.window->maximized = g_lastMaximized;
     data.wordWrap = g_wordWrap;
+    data.lineNumbers = g_lineNumbers;
     data.darkTheme = ui::IsDarkTheme();
     core::SessionManager::persistNow(g_paths.iniPath, data);
 }
@@ -334,6 +340,7 @@ void RefreshMenuState() {
             : ui::MainMenuState::Encoding::Utf8;
     g_menuState.darkTheme = ui::IsDarkTheme();
     g_menuState.wordWrap = g_wordWrap;
+    g_menuState.lineNumbers = g_lineNumbers;
     // 编辑▸插入编号使能条件之一：活动编辑器选区数 ≥ 2（多光标态）；无文档
     //（欢迎页）为 false。弹出前 RefreshMenuState 全量刷新（OpenMainMenu 唯一
     // 生产调用点，勾选/置灰实时），多光标增删后无需额外事件驱动
@@ -1067,6 +1074,13 @@ void RouteCommand(ui::Command cmd) {
         g_wordWrap = !g_wordWrap;
         g_editors.setWordWrap(g_wordWrap);  // 全局（旧版所有文档共享）
         g_toolbar.setWrapEnabled(g_wordWrap);  // F2：工具栏 toggle 激活态同步
+        RefreshMenuState();
+        break;
+    case ui::Command::ToggleLineNumbers:
+        // 显示行号：全局语义同 wordWrap；菜单唯一入口（无工具栏/快捷键）；
+        // 不即时触发会话落盘——退出时 PersistSessionNow 统一写
+        g_lineNumbers = !g_lineNumbers;
+        g_editors.setLineNumbers(g_lineNumbers);  // 全局（所有文档共享）
         RefreshMenuState();
         break;
     case ui::Command::Quit:
@@ -3296,6 +3310,12 @@ void RestoreAtStartup(HWND hwnd) {
         RefreshMenuState();
     }
 
+    // —— [editor] lineNumbers（同款先于文档打开；无记录保持默认显示）——
+    if (session.lineNumbers) {
+        g_lineNumbers = *session.lineNumbers;
+    }
+    g_editors.setLineNumbers(g_lineNumbers);  // 此时无实例：仅落标志，后续 configure 继承
+
     // —— 1) 文档按序打开 + 光标恢复 ——
     core::Document* lastSuccess = nullptr;
     for (const auto& entry : session.documents) {
@@ -3962,9 +3982,14 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_titleBar.onDpiChanged();
         g_tabs.onDpiChanged();
         // Scintilla 经 WM_DPICHANGED_AFTERPARENT 自行重测字体；布局经 WM_SIZE 重排
+        // 行号边宽度按新字体重测（PostMessage 延迟一拍：保证子窗口字体已就绪）
+        PostMessageW(hwnd, kMsgRefreshLineNumbers, 0, 0);
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
+    case kMsgRefreshLineNumbers:
+        g_editors.refreshLineNumberWidths();
+        return 0;
     case WM_SIZE:
         g_tabs.onLayoutChanged();
         g_editors.layout(EditorContentRect(hwnd));

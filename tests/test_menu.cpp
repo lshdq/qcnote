@@ -204,15 +204,18 @@ TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
         }
     }
 
-    // 视图：勾选态 stub（默认全不勾）
+    // 视图：勾选态 stub（dark/wordWrap 默认不勾；lineNumbers 默认显示即勾选）
     const int view = m.item(0, 4).submenu;
-    REQUIRE(m.itemCount(view) == 2);
+    REQUIRE(m.itemCount(view) == 3);
     CHECK(m.item(view, 0).text == L"深色主题");
     CHECK(m.item(view, 0).command == Command::ToggleDarkTheme);
     CHECK_FALSE(m.item(view, 0).checked);
     CHECK(m.item(view, 1).text == L"自动换行");
     CHECK(m.item(view, 1).command == Command::ToggleWordWrap);
     CHECK_FALSE(m.item(view, 1).checked);
+    CHECK(m.item(view, 2).text == L"显示行号");
+    CHECK(m.item(view, 2).command == Command::ToggleLineNumbers);
+    CHECK(m.item(view, 2).checked);  // MainMenuState.lineNumbers 默认 true
 }
 
 TEST_CASE("主菜单状态接线（有文档/GBK/主题开关）", "[menu][mainmenu]") {
@@ -222,6 +225,7 @@ TEST_CASE("主菜单状态接线（有文档/GBK/主题开关）", "[menu][mainm
     s.currentEncoding = MainMenuState::Encoding::Gbk;
     s.darkTheme = true;
     s.wordWrap = true;
+    s.lineNumbers = false;  // 显示行号关闭态（勾选态随状态源）
     const MenuModel m = BuildMainMenu(s);
 
     CHECK(m.isEnabled(Command::Save));
@@ -241,9 +245,10 @@ TEST_CASE("主菜单状态接线（有文档/GBK/主题开关）", "[menu][mainm
     CHECK_FALSE(m.item(encSave, 0).checked);
     CHECK(m.item(encSave, 1).checked);
 
-    // 视图勾选
+    // 视图勾选（lineNumbers 关闭 → 不勾；开态勾选由默认态用例覆盖）
     CHECK(m.isChecked(Command::ToggleDarkTheme));
     CHECK(m.isChecked(Command::ToggleWordWrap));
+    CHECK_FALSE(m.isChecked(Command::ToggleLineNumbers));
 }
 
 TEST_CASE("主菜单按命令更新的集成路径（弹出前重建 + 命令定位）", "[menu][mainmenu]") {

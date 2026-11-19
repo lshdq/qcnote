@@ -141,8 +141,10 @@ void EditorHost::configure(HWND sci, UINT dpi) const {
     // 缩进/换行输入语义：内存内容契约 LF（Enter 经 SC_EOL_LF 插入 "\n"）
     send(SCI_SETTABWIDTH, editor_metrics::TabWidth);
     send(SCI_SETEOLMODE, SC_EOL_LF);
-    // 纯文本编辑器：无行号边（去掉默认折叠边占位）
-    send(SCI_SETMARGINWIDTHN, 0, 0);
+    // 行号边：margin 0 固定数字类型（1 起编号、与文档行一一对应）；宽度按
+    // lineNumbers_ 开关与行数位数自适应（关闭时宽度 0 即完全隐藏）
+    send(SCI_SETMARGINTYPEN, 0, SC_MARGIN_NUMBER);
+    updateLineNumberWidth(sci);
     // 长行横向滚动：滚动宽跟踪（NoWrap 长行常驻横向滚动条的前提）
     send(SCI_SETSCROLLWIDTHTRACKING, TRUE);
     // 光标边缘留白（水平方向 SLOP；垂直保持默认策略）
@@ -191,6 +193,44 @@ void EditorHost::configure(HWND sci, UINT dpi) const {
     send(SCI_SETUNDOSELECTIONHISTORY, 1 /* UndoSelectionHistoryOption::Enabled */);
 }
 
+// 行号边宽度自适应 + 左右对称边距：开启态取行数位数的等位 '9' 串经
+// SCI_TEXTWIDTH 按 STYLE_LINENUMBER 字体实测像素宽（最少 3 位预留，免短文档
+// 行号边过窄跳动），再加左边距 P（行号右对齐，多出宽度落在数字左侧）；
+// 右边距经 SCI_SETMARGINLEFT（文本区左内边距）同设 P，使数字与正文留白对称。
+// 关闭态边宽 0（行号边完全消失，编辑区占满）且左内边距恢复 Scintilla 默认 1。
+// P 固定逻辑像素（非字体度量），不随 zoom 缩放；DPI 取本子窗口
+// ui::WindowDpi（GetDpiForWindow 动态解析，PMv2，与 configure 的 CaretSlopX
+// 同机制）。
+// 同值跳过扩展为两项：边宽（SCI_GETMARGINWIDTHN）与左内边距
+//（SCI_GETMARGINLEFT）均等于目标才跳过——位数不变时常规键入零冗余重设。
+void EditorHost::updateLineNumberWidth(HWND sci) const {
+    if (!sci) return;
+    auto send = [sci](UINT msg, WPARAM w = 0, LPARAM l = 0) {
+        return SendMessageW(sci, msg, w, l);
+    };
+    const UINT dpi = ui::WindowDpi(sci);
+    LRESULT target = 0;      // 目标边宽
+    LRESULT targetLeft = 1;  // 目标文本区左内边距（关闭态恢复 Scintilla 默认 1）
+    if (lineNumbers_) {
+        const int lines = static_cast<int>(send(SCI_GETLINECOUNT, 0, 0));
+        int digits = 1;
+        for (int n = lines; n >= 10; n /= 10) ++digits;
+        digits = (std::max)(digits, 3);
+        const std::string nines(digits, '9');
+        const LRESULT width = send(
+            SCI_TEXTWIDTH, STYLE_LINENUMBER,
+            reinterpret_cast<LPARAM>(nines.c_str()));
+        const int padding = ui::Scale(editor_metrics::LineNumberPaddingX, dpi);
+        if (width > 0) target = width + padding;  // 左边距：数字实测宽 + P
+        targetLeft = padding;                     // 右边距：正文左内边距 = P
+    }
+    if (target == send(SCI_GETMARGINWIDTHN, 0, 0) &&
+        targetLeft == send(SCI_GETMARGINLEFT, 0, 0))
+        return;  // 两项均相同：跳过（零冗余重设）
+    send(SCI_SETMARGINWIDTHN, 0, static_cast<LPARAM>(target));
+    send(SCI_SETMARGINLEFT, 0, static_cast<LPARAM>(targetLeft));
+}
+
 // 主题相关配色（浅/深两套取值均来自 CurrentPalette；构造期与 retheme 共用）：
 // 默认样式字色/底色、选区实底、光标色、查找高亮 indicator 8/9。STYLECLEARALL
 // 把默认样式传播到全样式槽（本编辑器无词法着色，仅默认样式在用）。
@@ -204,6 +244,13 @@ void EditorHost::applyThemeColors(HWND sci) {
     send(SCI_STYLESETBACK, STYLE_DEFAULT,
          static_cast<LPARAM>(ui::ToColorRef(pal.contentBackground)));
     send(SCI_STYLECLEARALL);
+    // 行号边配色：文字比正文淡一档（textSecondary）、底色同内容区；字体不
+    // 单独设置——STYLECLEARALL 已把默认样式（Consolas 11pt）传播给
+    // STYLE_LINENUMBER，缩放（SCN_ZOOM）时行号随全体样式一起缩放
+    send(SCI_STYLESETFORE, STYLE_LINENUMBER,
+         static_cast<LPARAM>(ui::ToColorRef(pal.textSecondary)));
+    send(SCI_STYLESETBACK, STYLE_LINENUMBER,
+         static_cast<LPARAM>(ui::ToColorRef(pal.contentBackground)));
     // 选区（F3）：不透明实底（VS Code 同款 ADD6FF/264F78）。有意不设置
     // SCI_SETSELFORE——选区内文字保持原样式字色（「原字色」语义；未设置
     // SelectionText 元素时 Scintilla 的 SelectionForeground 返回空、绘制用
@@ -282,6 +329,7 @@ void EditorHost::loadFromDocument(Entry& e) {
     e.lastSelStart = SendMessageW(e.hwnd, SCI_GETSELECTIONSTART, 0, 0);
     e.lastSelEnd = SendMessageW(e.hwnd, SCI_GETSELECTIONEND, 0, 0);
     SendMessageW(e.hwnd, SCI_SETSAVEPOINT, 0, 0);  // 装载态 == 基线（干净）
+    updateLineNumberWidth(e.hwnd);  // 行数已变：宽度自适应兜底（不依赖通知路径）
     e.loading = false;
 }
 
@@ -379,6 +427,28 @@ void EditorHost::setWordWrap(bool wrap) {
     }
 }
 
+void EditorHost::setLineNumbers(bool on) {
+    if (lineNumbers_ == on) return;
+    lineNumbers_ = on;
+    // 全部已建实例应用（新实例经 configure 继承）；updateLineNumberWidth
+    // 关闭态置 0 / 开启态按行数位数实测，margin 类型 configure 已固定
+    for (Entry& e : entries_) {
+        if (e.hwnd) {
+            updateLineNumberWidth(e.hwnd);
+        }
+    }
+}
+
+// DPI 变化后重算全部实例行号边宽度（跨屏拖动场景；详见头文件接口注释）。
+// updateLineNumberWidth 内 SCI_TEXTWIDTH 会 RefreshStyleData 按新字体重测。
+void EditorHost::refreshLineNumberWidths() {
+    for (Entry& e : entries_) {
+        if (e.hwnd) {
+            updateLineNumberWidth(e.hwnd);
+        }
+    }
+}
+
 void EditorHost::layout(const RECT& contentRect) {
     contentRect_ = contentRect;
     const int w = contentRect.right - contentRect.left;
@@ -414,6 +484,10 @@ bool EditorHost::handleNotify(const NMHDR* hdr) {
 
     if (hdr->code == SCN_MODIFIED) {
         const auto* sn = reinterpret_cast<const SCNotification*>(hdr);
+        // 行号边自适应：行数变化即重算宽度。注意在 loading 提前返回之前
+        //——SCI_SETTEXT 批量装载（loading 抑制回写）同样改变行数
+        if (sn->linesAdded != 0 && lineNumbers_)
+            updateLineNumberWidth(e->hwnd);
         if (e->loading || !e->doc) return true;  // 程序化装载：忽略
         const int type = sn->modificationType;
         if ((type & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) == 0) return true;
@@ -455,6 +529,13 @@ bool EditorHost::handleNotify(const NMHDR* hdr) {
                 SendMessageW(e->hwnd, SCI_GETCURRENTPOS, 0, 0));
             e->doc->setCursorPosition(pos);
         }
+        return true;
+    }
+    if (hdr->code == SCN_ZOOM) {
+        // 字体缩放后行号像素宽随字号变化：按新字号重测
+        //（STYLE_LINENUMBER 经 STYLECLEARALL 继承默认样式，一并缩放）
+        if (lineNumbers_)
+            updateLineNumberWidth(e->hwnd);
         return true;
     }
     if (hdr->code == SCN_UPDATEUI) {
