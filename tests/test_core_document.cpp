@@ -2,6 +2,7 @@
 // 遮蔽重载/编码转换/回调）。TC-U09 文档侧（BOM 历史值）亦在此。
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -372,6 +373,94 @@ TEST_CASE("DocumentManager save 与 saveAs", "[core][dm]") {
 }
 
 // ===========================================================================
+// DocumentManager::rename：重命名/移动（TC-006~010，脏保留为 VS Code 语义）
+// ===========================================================================
+TEST_CASE("DocumentManager rename 重命名/移动", "[core][dm]") {
+    testutil::TempDir dir(L"rename");
+    DocumentManager m;
+
+    SECTION("TC-006 成功：url/显示名更新、脏保留、随后 save 写新路径并清脏") {
+        const auto file = dir.file(L"old.txt");
+        testutil::writeBytes(file, "base");
+        Document* doc = *m.openPath(file);
+        doc->setContent("edited"); // 置脏
+        REQUIRE(doc->modified());
+        const auto newPath = dir.file(L"new.txt");
+        int metaEvents = 0;
+        const auto token =
+            m.documentMetadataChanged.subscribe([&](Document*) { ++metaEvents; });
+        REQUIRE(m.rename(doc, newPath).has_value());
+        m.documentMetadataChanged.unsubscribe(token);
+        REQUIRE(metaEvents == 1); // setUrl 触发元数据事件（TC-011 core 侧：上层自动刷新）
+        REQUIRE(doc->url() == newPath);                    // url 更新
+        REQUIRE(doc->displayName() == L"new.txt");         // 显示名随 url
+        REQUIRE(doc->modified());                          // 脏保留（不 markSaved）
+        REQUIRE_FALSE(std::filesystem::exists(file));      // 旧路径文件消失
+        REQUIRE(testutil::readBytes(newPath) == "base");   // 磁盘旧内容随文件移动
+        // 随后保存写入新路径且清脏
+        REQUIRE(m.save(doc).has_value());
+        REQUIRE_FALSE(doc->modified());
+        REQUIRE(testutil::readBytes(newPath) == "edited");
+    }
+
+    SECTION("TC-007 未命名文档 → InvalidUrl，文档状态不变") {
+        Document* doc = m.newDocument();
+        doc->setContent("x");
+        const auto r = m.rename(doc, dir.file(L"n.txt"));
+        REQUIRE_FALSE(r.has_value());
+        REQUIRE(r.error().kind == StorageErrorKind::InvalidUrl);
+        REQUIRE(doc->url().empty());            // 状态不变
+        REQUIRE(doc->modified());
+        REQUIRE_FALSE(std::filesystem::exists(dir.file(L"n.txt"))); // 磁盘未产生
+    }
+
+    SECTION("TC-008 目标是其他已打开文档的 url → AlreadyExists，两文档与磁盘不变") {
+        const auto a = dir.file(L"a.txt");
+        const auto b = dir.file(L"b.txt");
+        testutil::writeBytes(a, "AAA");
+        testutil::writeBytes(b, "BBB");
+        Document* docA = *m.openPath(a);
+        Document* docB = *m.openPath(b);
+        docA->setContent("dirty a");
+        const auto r = m.rename(docA, b);
+        REQUIRE_FALSE(r.has_value());
+        REQUIRE(r.error().kind == StorageErrorKind::AlreadyExists);
+        REQUIRE(r.error().message.find(L"其他标签页") != std::wstring::npos);
+        REQUIRE(docA->url() == a);                   // 文档状态不变（脏保留）
+        REQUIRE(docA->modified());
+        REQUIRE(docB->url() == b);
+        REQUIRE(testutil::readBytes(a) == "AAA");    // 磁盘不变
+        REQUIRE(testutil::readBytes(b) == "BBB");
+    }
+
+    SECTION("TC-009 目标磁盘已存在（未被打开）→ AlreadyExists，双方不变") {
+        const auto a = dir.file(L"a.txt");
+        const auto target = dir.file(L"exists.txt");
+        testutil::writeBytes(a, "AAA");
+        testutil::writeBytes(target, "KEEP");
+        Document* doc = *m.openPath(a);
+        const auto r = m.rename(doc, target);
+        REQUIRE_FALSE(r.has_value());
+        REQUIRE(r.error().kind == StorageErrorKind::AlreadyExists);
+        REQUIRE(r.error().message.find(L"目标文件已存在") != std::wstring::npos);
+        REQUIRE(testutil::readBytes(target) == "KEEP"); // 目标不被覆盖
+        REQUIRE(doc->url() == a);                       // 文档状态不变
+        REQUIRE(testutil::readBytes(a) == "AAA");       // 原文件不动
+    }
+
+    SECTION("TC-010 同路径 rename → 成功 no-op，磁盘与文档状态不变") {
+        const auto file = dir.file(L"same.txt");
+        testutil::writeBytes(file, "same");
+        Document* doc = *m.openPath(file);
+        doc->setContent("dirty");
+        REQUIRE(m.rename(doc, file).has_value());           // no-op 成功
+        REQUIRE(doc->url() == file);                        // 状态不变
+        REQUIRE(doc->modified());
+        REQUIRE(testutil::readBytes(file) == "same");       // 磁盘无变化
+    }
+}
+
+// ===========================================================================
 // reloadWithEncoding：换行重探测、光标钳制、不置脏
 // ===========================================================================
 TEST_CASE("DocumentManager reloadWithEncoding", "[core][dm]") {
@@ -707,4 +796,69 @@ TEST_CASE("DocumentManager 聚合查询", "[core][dm]") {
     REQUIRE(m.documentForPath(file) == *opened);
     REQUIRE(m.documentForPath({}) == nullptr);
     REQUIRE(m.documentForPath(dir.file(L"none.txt")) == nullptr);
+}
+
+// ===========================================================================
+// 入口路径归一（make_preferred）：会话恢复等来源可能携带正斜杠（ini 存储用
+// generic_wstring，path 构造不转换分隔符），三入口归一后内存态 url 恒为反斜杠
+//（Win32 公共对话框/explorer 不接受正斜杠路径）
+// ===========================================================================
+namespace {
+/// 把路径 wstring 中反斜杠全部替换为正斜杠（模拟 SessionManager::urlValueToPath
+/// 恢复出的正斜杠形态——path 构造不转换分隔符，正斜杠原样保留）
+std::filesystem::path toForwardSlashForm(const std::filesystem::path& p) {
+    std::wstring s = p.wstring();
+    std::replace(s.begin(), s.end(), L'\\', L'/');
+    return std::filesystem::path(s);
+}
+} // namespace
+
+TEST_CASE("DocumentManager 入口路径归一（正斜杠 → 反斜杠）", "[core][dm]") {
+    testutil::TempDir dir(L"slash");
+    DocumentManager m;
+
+    SECTION("正斜杠路径 openPath：成功打开且 url 全为反斜杠") {
+        const auto file = dir.file(L"a.txt");
+        testutil::writeBytes(file, "content");
+        auto opened = m.openPath(toForwardSlashForm(file));
+        REQUIRE(opened.has_value());
+        REQUIRE((*opened)->url().wstring().find(L'/') == std::wstring::npos);
+        REQUIRE((*opened)->url() == file); // 与反斜杠原始形态一致
+    }
+
+    SECTION("saveAs 到正斜杠目标路径：url 归一为反斜杠、磁盘就位") {
+        Document* doc = m.newDocument();
+        doc->setContent("saved");
+        const auto target = dir.file(L"b.txt");
+        const SaveAsResult r = m.saveAs(doc, toForwardSlashForm(target));
+        REQUIRE(r.written);
+        REQUIRE_FALSE(r.error.has_value());
+        REQUIRE(doc->url().wstring().find(L'/') == std::wstring::npos);
+        REQUIRE(doc->url() == target);
+        REQUIRE(testutil::readBytes(target) == "saved");
+    }
+
+    SECTION("rename 到正斜杠新路径：url 归一为反斜杠、磁盘文件正确移动") {
+        const auto file = dir.file(L"old.txt");
+        testutil::writeBytes(file, "base");
+        Document* doc = *m.openPath(file);
+        const auto newPath = dir.file(L"new.txt");
+        REQUIRE(m.rename(doc, toForwardSlashForm(newPath)).has_value());
+        REQUIRE(doc->url().wstring().find(L'/') == std::wstring::npos);
+        REQUIRE(doc->url() == newPath);
+        REQUIRE_FALSE(std::filesystem::exists(file));      // 旧路径消失
+        REQUIRE(testutil::readBytes(newPath) == "base");   // 内容随文件移动
+    }
+
+    SECTION("已用反斜杠打开后，同一文件的正斜杠形态再 openPath：不双开") {
+        const auto file = dir.file(L"c.txt");
+        testutil::writeBytes(file, "ccc");
+        Document* doc = *m.openPath(file);
+        const std::size_t count = m.documentCount();
+        auto again = m.openPath(toForwardSlashForm(file));
+        REQUIRE(again.has_value());
+        REQUIRE(*again == doc); // 激活已有文档
+        REQUIRE(m.documentCount() == count);
+        REQUIRE(m.activeDocument() == doc);
+    }
 }

@@ -239,6 +239,80 @@ TEST_CASE("补充：原子写失败不破坏原文件且清理临时文件", "[c
 }
 
 // ===========================================================================
+// 重命名/移动（LocalStorage::move）：成功/目标已存在/源不存在（TC-003~005）
+// ===========================================================================
+TEST_CASE("LocalStorage::move 重命名/移动", "[core][storage]") {
+    testutil::TempDir dir(L"move");
+    LocalStorage& s = storage();
+
+    SECTION("TC-003 成功移动：内容读回一致且源消失") {
+        const auto from = dir.file(L"from.txt");
+        const auto to = dir.file(L"to.txt");
+        testutil::writeBytes(from, kUtf8NiHao);
+        REQUIRE(s.move(from, to).has_value());
+        REQUIRE(testutil::readBytes(to) == kUtf8NiHao); // 内容随文件移动
+        REQUIRE_FALSE(std::filesystem::exists(from));  // 源消失
+        REQUIRE(testutil::entryCount(dir.path) == 1);  // 无残留
+    }
+
+    SECTION("TC-004 目标已存在：AlreadyExists 且双方内容不变（不覆盖）") {
+        const auto from = dir.file(L"from.txt");
+        const auto to = dir.file(L"to.txt");
+        testutil::writeBytes(from, "source");
+        testutil::writeBytes(to, "target");
+        const auto r = s.move(from, to);
+        REQUIRE_FALSE(r.has_value());
+        REQUIRE(r.error().kind == StorageErrorKind::AlreadyExists);
+        REQUIRE(r.error().message.find(L"目标文件已存在") != std::wstring::npos);
+        REQUIRE(r.error().message.find(to.wstring()) != std::wstring::npos); // 消息含路径
+        REQUIRE(testutil::readBytes(from) == "source"); // 源不变
+        REQUIRE(testutil::readBytes(to) == "target");   // 目标不被覆盖
+    }
+
+    SECTION("TC-005 源不存在：NotFound 中文消息，目标未产生") {
+        const auto r = s.move(dir.file(L"missing.txt"), dir.file(L"to.txt"));
+        REQUIRE_FALSE(r.has_value());
+        REQUIRE(r.error().kind == StorageErrorKind::NotFound);
+        REQUIRE(r.error().message.find(L"文件不存在") != std::wstring::npos);
+        REQUIRE(r.error().message.find(dir.file(L"missing.txt").wstring())
+                != std::wstring::npos);                                       // 消息含路径
+        REQUIRE_FALSE(std::filesystem::exists(dir.file(L"to.txt"))); // 目标未产生
+    }
+
+    SECTION("补充：源是目录 → NotFound（目录不作重命名源），目录原样") {
+        const auto sub = dir.path / L"subdir";
+        std::filesystem::create_directories(sub);
+        const auto r = s.move(sub, dir.file(L"to.txt"));
+        REQUIRE_FALSE(r.has_value());
+        REQUIRE(r.error().kind == StorageErrorKind::NotFound);
+        REQUIRE(std::filesystem::is_directory(sub)); // 目录原样
+    }
+
+    SECTION("补充：默认 move（未覆写的存储）→ UnsupportedScheme") {
+        class PlainStub : public DocumentStorage {
+        public:
+            std::wstring scheme() const override { return L"stub"; }
+            std::expected<LoadedData, StorageError>
+            read(const std::filesystem::path&, std::optional<TextEncoding>) const override {
+                return std::unexpected(
+                    StorageError{StorageErrorKind::UnsupportedScheme, L"stub 不可读"});
+            }
+            std::expected<void, StorageError>
+            write(const std::filesystem::path&, const std::string&, TextEncoding, bool,
+                  LineEnding) const override {
+                return std::unexpected(
+                    StorageError{StorageErrorKind::UnsupportedScheme, L"stub 不可写"});
+            }
+        };
+        PlainStub stub;
+        const auto r = stub.move(dir.file(L"a.txt"), dir.file(L"b.txt"));
+        REQUIRE_FALSE(r.has_value());
+        REQUIRE(r.error().kind == StorageErrorKind::UnsupportedScheme);
+        REQUIRE(r.error().message.find(L"不支持重命名") != std::wstring::npos);
+    }
+}
+
+// ===========================================================================
 // 补充：读取错误路径（不存在/目录/空路径）
 // ===========================================================================
 TEST_CASE("补充：读取错误类别与消息", "[core][storage]") {

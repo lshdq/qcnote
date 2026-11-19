@@ -34,6 +34,9 @@ namespace ui {
 struct TabItem {
     std::wstring displayName;
     bool modified = false;
+    bool hasPath = false;  // 文档有磁盘路径（url 非空）——右键菜单「文件重命名…/
+                           // 打开所在文件夹」可用性；新增字段带默认值，既有
+                           // {name, modified} 聚合初始化不受影响
 };
 
 // —— 尺寸 token（逻辑像素，96 DPI 基准；使用处经 Scale(dpi) 换算）——
@@ -112,7 +115,9 @@ int TabStripHitTest(const TabStripGeometry& geo, POINT clientPt);
 
 // A3：关闭当前文件 / 关闭右边所有 (N) / 关闭左边所有 (N) / 关闭其他文件 (N)。
 // 数量为动态文本；无可关闭对象时置灰不隐藏（对齐旧 QML enabled 规则）。
-MenuModel BuildTabContextMenu(int index, int totalCount);
+// 尾部分隔线后接「文件重命名…」「打开所在文件夹」——仅当该标签有磁盘路径
+// （item.hasPath）时可用，未命名文档置灰不隐藏（与批量关闭置灰约定一致）。
+MenuModel BuildTabContextMenu(const TabItem& item, int index, int totalCount);
 
 // 无障碍名称：未保存状态入名（A2：「readme.md，未保存」）。
 std::wstring AccessibleTabName(const TabItem& item);
@@ -132,6 +137,10 @@ public:
     void removeTab(int index);                      // 移除并钳制 active/focus/scroll
     void removeRange(int from, int to);             // 移除 [from, to)
     void setModified(int index, bool modified);
+    /// hasPath 写入（文档 url 空↔非空翻转，如未命名→另存为）：越界防御；
+    /// 变化频率低，仅影响右键菜单可用性不参与测量，但同值短路避免无效置脏重绘
+    /// @return true = 实际变化（已置脏失效），false = 同值或越界（无操作）
+    bool setHasPath(int index, bool hasPath);
     /// 显示名写入；同值短路返回 false（不置脏不重绘）——选区拖拽路径每帧经
     /// OnDocumentMetadataChanged 到达此处，同值必须消除无效置脏
     /// @return true = 实际变化（已置脏失效），false = 同值或越界（无操作）

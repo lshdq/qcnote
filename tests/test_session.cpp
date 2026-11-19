@@ -1069,6 +1069,64 @@ TEST_CASE("TC-U26：baselineHash 稳定性（同内容同哈希/改一字不同�
     REQUIRE(d1->baselineHash() == sha256Hex("新内容"));
 }
 
+// ===========================================================================
+// TC-U28 会话恢复 → DocumentManager 入口归一闭环（DEC-005 修复防回归）
+//
+// 缺陷根因链条：persistNow 写侧 pathToUrlValue 用 generic_wstring（正斜杠，
+// ini 格式兼容）→ parseSession 读侧 urlValueToPath 按 path 原样构造（不转
+// 分隔符）→ 恢复态 url 为正斜杠形态；GetSaveFileNameW 与 explorer /select
+// 不接受正斜杠（表现为「重命名对话框不弹 / 打开所在文件夹落桌面」，Win32
+// 文件 API 接受故其余功能正常）。修复：DocumentManager openPath/saveAs/rename
+// 三入口 make_preferred 归一，内存态 url 恒为反斜杠（存储格式不变）。
+//
+// 注意：path 的 operator== 在 Windows 上按词法元素比较（形态不敏感，
+// C:/a 与 C:\a 相等），故本用例全程用 wstring() 断言「形态」而非等价性。
+// test_core_document.cpp「入口路径归一」用 toForwardSlashForm 模拟正斜杠
+// 来源；本用例走真实 SessionManager 存取闭环锁定链条两端。
+// ===========================================================================
+TEST_CASE("TC-U28：会话恢复闭环——正斜杠存储经 openPath 归一为反斜杠", "[session][u28]") {
+    testutil::TempDir tmp(L"u28");
+    const std::filesystem::path file = tmp.file(L"reopen.txt"); // TEMP 派生，反斜杠形态
+    testutil::writeBytes(file, "session content");
+
+    // 1) 存储侧：反斜杠路径落 ini 必然是正斜杠形态（generic_wstring，根因所在；
+    //    存储格式保持不动——ini 字节级兼容）
+    SessionData data;
+    data.documents = {urlEntry(file, 0)};
+    data.activeUrl = file;
+    const std::filesystem::path ini = tmp.file(L"qcnote.ini");
+    REQUIRE(SessionManager::persistNow(ini, data));
+    {
+        auto raw = IniFile::read(ini);
+        REQUIRE(raw.has_value());
+        const auto stored = raw->value("documents", "1/url");
+        REQUIRE(stored.has_value());
+        REQUIRE(stored->find('/') != std::string::npos);  // 分隔符全部为正斜杠
+        REQUIRE(stored->find('\\') == std::string::npos); // 无反斜杠残留
+    }
+
+    // 2) 恢复侧：parseSession 读回的 url 保持正斜杠形态（path 构造不转分隔符，
+    //    缺陷根因形态在此可复现）——该形态直接喂给 openPath 即缺陷触发路径
+    const SessionData parsed = SessionManager::parseSession(ini);
+    REQUIRE(parsed.documents.size() == 1);
+    const std::wstring restored = parsed.documents[0].url.wstring();
+    REQUIRE(restored.find(L'/') != std::wstring::npos);  // 正斜杠保留
+    REQUIRE(restored.find(L'\\') == std::wstring::npos); // 全程无反斜杠
+    REQUIRE(parsed.activeUrl.has_value());
+    REQUIRE(parsed.activeUrl->wstring().find(L'/') != std::wstring::npos); // active 同形态
+
+    // 3) 修复效果：正斜杠恢复态经 DocumentManager::openPath 打开——内存态
+    //    doc->url() 恒为纯反斜杠形态（无 L'/'），与原始路径指向同一文件
+    //    （词法等价：path 的 == 按元素比较、形态不敏感——file 可能因
+    //    QCNOTE_TEST_TMP 环境变量携带正斜杠而是混合形态，逐字符比较不适用）
+    DocumentManager mgr;
+    auto opened = mgr.openPath(parsed.documents[0].url);
+    REQUIRE(opened.has_value());
+    REQUIRE((*opened)->url().wstring().find(L'/') == std::wstring::npos); // 无正斜杠
+    REQUIRE((*opened)->url() == file);                                    // 同一文件（词法等价）
+    REQUIRE((*opened)->content() == "session content");                   // 同一文件
+}
+
 TEST_CASE("TC-U27：restoreUntitledDraft 未命名带位置插入（M4-B 新增接口）",
           "[session][u27]") {
     testutil::TempDir tmp(L"u27");

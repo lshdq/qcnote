@@ -23,8 +23,11 @@
 #include <string>
 #include <vector>
 
+#include "platform/explorer.h"
 #include "platform/shellintegration.h"
 #include "platform/singleinstance.h"
+
+#include "test_core_common.h"
 
 using namespace platform::singleinstance;
 
@@ -363,4 +366,26 @@ TEST_CASE("shell 集成：注入键名与生产默认键路径布局", "[platfor
     // 只读探测不创建键：生产键不存在时 isRegistered/false 不落任何写入
     //（本机可能已有真实注册——不断言生产键状态，仅断言探测无副作用）
     REQUIRE(production.menuKeyPath().find(L"qcnote-selftest") == std::wstring::npos);
+}
+
+// ---------------------------------------------------------------------------
+// 资源管理器定位（D4 explorer）：不存在路径防御（TC-012 单测侧）
+//
+// 仅断言「不启动 explorer 直接返回 false」的防御分支（文件不存在/空路径）；
+// 存在路径会真实启动 explorer 窗口，违反测试防扰约定，不在单测范围
+//（由组装层 DoOpenContainingFolder 调用，错误提示路径经 e2e 回归）。
+// ---------------------------------------------------------------------------
+TEST_CASE("资源管理器定位：文件不存在/空路径返回 false 不启动 explorer",
+          "[platform][explorer]") {
+    testutil::TempDir dir(L"explorer");
+    // 目录真实存在 + 文件名含空格与中文，确保命中「路径合法但文件不存在」
+    REQUIRE(std::filesystem::is_directory(dir.path));
+    REQUIRE_FALSE(platform::OpenSelectInExplorer(dir.file(L"不存在的 文件.txt")));
+    // 深层路径整链不存在
+    REQUIRE_FALSE(platform::OpenSelectInExplorer(dir.path / L"no" / L"such" / L"a.txt"));
+    // 空路径：无效属性 → 防御 false（不崩溃、不启动 explorer）
+    REQUIRE_FALSE(platform::OpenSelectInExplorer({}));
+    // 注：存在的目录路径不在单测断言范围——实现仅拦 INVALID_FILE_ATTRIBUTES，
+    // 目录会真实启动 explorer（弹窗违反防扰约定）；生产路径 url 均为文件路径，
+    // 该场景不可达，详见测试报告观察项。
 }

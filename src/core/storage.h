@@ -29,6 +29,7 @@ enum class StorageErrorKind {
     EncodingFailed,    // GBK 不可编码（写盘前校验失败，磁盘未被触碰）
     DecodeFailed,      // 解码失败（系统缺 CP936 支持等）
     UnsupportedScheme, // 无匹配存储（scheme 未注册）
+    AlreadyExists,     // 重命名/移动的目标已存在（不覆盖语义）
 };
 
 struct StorageError {
@@ -70,6 +71,11 @@ public:
     virtual std::expected<void, StorageError>
     write(const std::filesystem::path& path, const std::string& content, TextEncoding encoding,
           bool hasBom, LineEnding lineEnding) const = 0;
+
+    /// 重命名/移动（不覆盖已存在目标）。默认实现返回 UnsupportedScheme 错误
+    ///（具体存储按能力覆写；LocalStorage 支持）
+    virtual std::expected<void, StorageError>
+    move(const std::filesystem::path& from, const std::filesystem::path& to) const;
 };
 
 /// file:// URL → 本地 path：file:/// 剥前缀；无 scheme 前缀的原样；

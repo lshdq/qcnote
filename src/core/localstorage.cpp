@@ -252,4 +252,34 @@ LocalStorage::write(const std::filesystem::path& path, const std::string& conten
     return {};
 }
 
+std::expected<void, StorageError>
+LocalStorage::move(const std::filesystem::path& from, const std::filesystem::path& to) const {
+    if (from.empty() || to.empty())
+        return std::unexpected(makeError(StorageErrorKind::InvalidUrl, L"不是有效的本地文件地址"));
+
+    // 源须存在且是文件（目录不适合作为重命名源：本存储只管文件，归入
+    // NotFound——调用方关心的是「源文件不在」，与读取的预检口径区分）
+    const DWORD fromAttrs = GetFileAttributesW(from.c_str());
+    if (fromAttrs == INVALID_FILE_ATTRIBUTES
+        || (fromAttrs & FILE_ATTRIBUTE_DIRECTORY) != 0)
+        return std::unexpected(
+            makeError(StorageErrorKind::NotFound, L"文件不存在：" + from.wstring()));
+
+    // 不覆盖已存在目标：预检后竞争窗口内被第三方创建的情形由不带
+    // MOVEFILE_REPLACE_EXISTING 的 MoveFileExW 兜底拒绝（双保险）
+    if (GetFileAttributesW(to.c_str()) != INVALID_FILE_ATTRIBUTES)
+        return std::unexpected(
+            makeError(StorageErrorKind::AlreadyExists, L"目标文件已存在：" + to.wstring()));
+
+    // COPY_ALLOWED：跨卷自动复制+删除；不带 REPLACE_EXISTING：目标存在必失败
+    if (!MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_COPY_ALLOWED)) {
+        const DWORD err = GetLastError();
+        return std::unexpected(makeError(StorageErrorKind::WriteFailed,
+                                         L"重命名文件失败 " + from.wstring() + L" → "
+                                             + to.wstring() + L"："
+                                             + lastWin32ErrorMessage(err)));
+    }
+    return {};
+}
+
 } // namespace core

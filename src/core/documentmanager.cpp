@@ -1,10 +1,23 @@
 #include "core/documentmanager.h"
 
 #include <algorithm>
+#include <system_error>
 
 #include "core/localstorage.h"
 
 namespace core {
+
+namespace {
+// 入口路径归一（openPath/saveAs/rename 共用）：make_preferred 把正斜杠转为
+// Windows 反斜杠（已是反斜杠无变化；不做 lexically_normal 的多余圆整）。
+// 会话恢复等来源可能携带正斜杠（ini 存储用 generic_wstring，path 构造不转换
+// 分隔符），Win32 公共对话框/explorer 不接受正斜杠路径——归一后内存态文档
+// url 恒为反斜杠。
+std::filesystem::path preferredPath(const std::filesystem::path& path) {
+    std::filesystem::path normalized = path;
+    return normalized.make_preferred();
+}
+} // namespace
 
 DocumentManager::DocumentManager(bool registerDefaults) {
     if (!registerDefaults)
@@ -127,7 +140,10 @@ std::vector<OpenError> DocumentManager::openPaths(const std::vector<std::filesys
 }
 
 std::expected<Document*, OpenError>
-DocumentManager::openPath(const std::filesystem::path& path, std::optional<TextEncoding> forced) {
+DocumentManager::openPath(const std::filesystem::path& rawPath, std::optional<TextEncoding> forced) {
+    // 入口归一须在查重/存储分发之前：正斜杠形态的已打开文件能正确激活已有文档，
+    // 且新建文档的 url 直接以反斜杠形态落内存
+    const std::filesystem::path path = preferredPath(rawPath);
     if (path.empty())
         return nullptr; // 空路径（非法输入）：跳过，不误激活未命名文档、不报错中断
 
@@ -189,7 +205,9 @@ std::expected<void, StorageError> DocumentManager::save(Document* doc) {
     return {};
 }
 
-SaveAsResult DocumentManager::saveAs(Document* doc, const std::filesystem::path& path) {
+SaveAsResult DocumentManager::saveAs(Document* doc, const std::filesystem::path& rawPath) {
+    // 入口归一：后续 shadowed 查重与 applyLoadedState/setUrl 自然使用归一值
+    const std::filesystem::path path = preferredPath(rawPath);
     if (!doc || path.empty())
         return SaveAsResult{false, StorageError{StorageErrorKind::InvalidUrl, L"另存路径无效"}};
 
@@ -223,6 +241,49 @@ SaveAsResult DocumentManager::saveAs(Document* doc, const std::filesystem::path&
                                    reloaded->encoding, reloaded->hasBom);
     }
     return SaveAsResult{true, std::nullopt};
+}
+
+std::expected<void, StorageError> DocumentManager::rename(Document* doc,
+                                                          const std::filesystem::path& rawNewPath) {
+    // 入口归一：同路径 no-op 判断（lexically_normal/equivalent）不受影响——
+    // lexically_normal 本身归一分隔符；归一后 setUrl 落反斜杠形态
+    const std::filesystem::path newPath = preferredPath(rawNewPath);
+    if (!doc || doc->url().empty() || newPath.empty())
+        return std::unexpected(
+            StorageError{StorageErrorKind::InvalidUrl, L"重命名路径无效"});
+
+    const std::filesystem::path& url = doc->url();
+
+    // 同路径（词法等价，或指向同一文件——如大小写/相对写法差异）→ no-op 成功；
+    // equivalent 对不存在的路径报错（error_code 不抛），此时交由后续 move 判定
+    if (newPath.lexically_normal() == url.lexically_normal())
+        return {};
+    std::error_code ec;
+    if (std::filesystem::equivalent(url, newPath, ec))
+        return {};
+
+    // 目标是其他已打开文档的 url：直接拒绝（避免同路径双开歧义；不同于另存为
+    // 的遮蔽重载——重命名无内容写盘，拒绝更安全直观）
+    if (Document* occupied = documentForPath(newPath); occupied && occupied != doc)
+        return std::unexpected(
+            StorageError{StorageErrorKind::AlreadyExists,
+                         L"该文件已在其他标签页打开：" + newPath.wstring()});
+
+    DocumentStorage* storage = storageForUrl(newPath);
+    if (!storage) {
+        return std::unexpected(StorageError{StorageErrorKind::UnsupportedScheme,
+                                            L"不支持的存储类型：" + newPath.wstring()});
+    }
+
+    auto moved = storage->move(url, newPath);
+    if (!moved)
+        return std::unexpected(moved.error()); // 失败透传（目标占用/源缺失/权限等）
+
+    // 仅更新 url：displayName 随之，setUrl 触发 onMetadataChanged → 上层自动
+    // 刷新 Tab/标题/状态栏/会话记忆。不动内容/编码/换行/BOM/光标，不
+    // markSaved——磁盘旧内容随文件改名，内存修改仍脏，随后 save 写入新路径
+    doc->setUrl(newPath);
+    return {};
 }
 
 void DocumentManager::close(std::size_t index) {

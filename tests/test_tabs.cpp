@@ -208,9 +208,9 @@ TEST_CASE("Tab 条命中：本体与空白、滚动偏移", "[tabs]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("右键菜单模型：动态数量文本与置灰规则", "[tabs]") {
-    // index 1 / 共 5：右 3、左 1、其他 4——全可用
-    MenuModel m = BuildTabContextMenu(1, 5);
-    REQUIRE(m.itemCount(0) == 4);
+    // index 1 / 共 5：右 3、左 1、其他 4——关闭项全可用；hasPath=true 新两项可用
+    MenuModel m = BuildTabContextMenu({L"readme.md", false, true}, 1, 5);
+    REQUIRE(m.itemCount(0) == 7);
     CHECK(m.item(0, 0).text == L"关闭当前文件");
     CHECK(m.item(0, 0).command == Command::CloseCurrentTab);
     CHECK(m.item(0, 0).enabled);
@@ -223,18 +223,37 @@ TEST_CASE("右键菜单模型：动态数量文本与置灰规则", "[tabs]") {
     CHECK(m.item(0, 3).text == L"关闭其他文件 (4)");
     CHECK(m.item(0, 3).command == Command::CloseOtherTabs);
     CHECK(m.item(0, 3).enabled);
+    // 第 4 项：分隔线（无命令无文本，键盘导航跳过）
+    CHECK(m.item(0, 4).kind == MenuItem::Kind::Separator);
+    CHECK(m.item(0, 4).command == Command::None);
+    CHECK(m.item(0, 4).text.empty());
+    // 第 5/6 项：文件定位类新项（hasPath=true → 可用）
+    CHECK(m.item(0, 5).text == L"文件重命名…");
+    CHECK(m.item(0, 5).command == Command::RenameFile);
+    CHECK(m.item(0, 5).enabled);
+    CHECK(m.item(0, 6).text == L"打开所在文件夹");
+    CHECK(m.item(0, 6).command == Command::OpenContainingFolder);
+    CHECK(m.item(0, 6).enabled);
 
-    // index 0 / 共 1：右 0、左 0、其他 0——批量三项置灰（不隐藏）
-    m = BuildTabContextMenu(0, 1);
-    REQUIRE(m.itemCount(0) == 4);
+    // index 0 / 共 1：右 0、左 0、其他 0——批量三项置灰（不隐藏）；
+    // 未命名文档（hasPath 默认 false）：新两项置灰不隐藏，关闭项行为不变
+    m = BuildTabContextMenu({L"未命名-1", true}, 0, 1);
+    REQUIRE(m.itemCount(0) == 7);
     CHECK(m.item(0, 0).enabled);
     CHECK_FALSE(m.item(0, 1).enabled);
     CHECK_FALSE(m.item(0, 2).enabled);
     CHECK_FALSE(m.item(0, 3).enabled);
     CHECK(m.item(0, 1).text == L"关闭右边所有 (0)");
+    CHECK(m.item(0, 4).kind == MenuItem::Kind::Separator);
+    CHECK(m.item(0, 5).text == L"文件重命名…");
+    CHECK(m.item(0, 5).command == Command::RenameFile);
+    CHECK_FALSE(m.item(0, 5).enabled);
+    CHECK(m.item(0, 6).text == L"打开所在文件夹");
+    CHECK(m.item(0, 6).command == Command::OpenContainingFolder);
+    CHECK_FALSE(m.item(0, 6).enabled);
 
-    // index 2 / 共 3：右 0 置灰、左 2 可用、其他 2 可用
-    m = BuildTabContextMenu(2, 3);
+    // index 2 / 共 3：右 0 置灰、左 2 可用、其他 2 可用（hasPath=true）
+    m = BuildTabContextMenu({L"notes.txt", false, true}, 2, 3);
     CHECK_FALSE(m.item(0, 1).enabled);
     CHECK(m.item(0, 2).enabled);
     CHECK(m.item(0, 3).enabled);

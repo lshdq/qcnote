@@ -113,7 +113,9 @@ public:
     std::vector<OpenError> openPaths(const std::vector<std::filesystem::path>& paths);
 
     /// 单路径打开；forced 有值按指定编码解码（会话记忆编码/纠正识别错误入口）。
-    /// 空路径返回 nullptr 成功值（跳过，不报错——旧 openSingle 语义）
+    /// 空路径返回 nullptr 成功值（跳过，不报错——旧 openSingle 语义）。
+    /// 入口路径统一 make_preferred 归一（会话恢复等来源可能携带正斜杠，
+    /// Win32 公共对话框/explorer 不接受正斜杠路径）
     std::expected<Document*, OpenError>
     openPath(const std::filesystem::path& path, std::optional<TextEncoding> forced = std::nullopt);
 
@@ -123,8 +125,17 @@ public:
 
     /// 另存为：成功后更新 url（displayName 随之）并清脏。遮蔽语义（DEC-008）：
     /// 目标路径同时是其他已打开文档的 url 时，写盘后按刚写出的编码从磁盘强制
-    /// 重读并重载该文档（防止其内存旧内容再次保存时覆盖磁盘新内容）
+    /// 重读并重载该文档（防止其内存旧内容再次保存时覆盖磁盘新内容）。
+    /// 入口路径统一 make_preferred 归一（正斜杠来源与理由同 openPath）
     SaveAsResult saveAs(Document* doc, const std::filesystem::path& path);
+
+    /// 重命名/移动已保存文档的磁盘文件并更新 url（displayName 随 url 更新）。
+    /// 保留未保存修改状态（不 markSaved：磁盘旧内容随文件改名，内存修改仍脏，
+    /// 随后 save 写入新路径——VS Code 同语义）。校验：未命名/空路径→InvalidUrl；
+    /// 同路径→no-op 成功；目标是其他已打开文档 url→AlreadyExists（该文件已在
+    /// 其他标签页打开）；其余错误透传存储层。
+    /// 入口路径统一 make_preferred 归一（正斜杠来源与理由同 openPath）
+    std::expected<void, StorageError> rename(Document* doc, const std::filesystem::path& newPath);
 
     /// 关闭（激活邻居：优先前一个，其次后一个，无则活动文档置空）
     void close(std::size_t index);

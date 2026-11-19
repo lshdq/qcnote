@@ -12,4 +12,12 @@ std::optional<std::filesystem::path> parseFileUrl(const std::wstring& url) {
     return std::filesystem::path(url); // 纯路径原样
 }
 
+std::expected<void, StorageError>
+DocumentStorage::move(const std::filesystem::path& from, const std::filesystem::path& to) const {
+    (void)from;
+    (void)to;
+    return std::unexpected(
+        StorageError{StorageErrorKind::UnsupportedScheme, L"该存储不支持重命名"});
+}
+
 } // namespace core

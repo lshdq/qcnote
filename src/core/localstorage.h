@@ -27,6 +27,11 @@ public:
     write(const std::filesystem::path& path, const std::string& content, TextEncoding encoding,
           bool hasBom, LineEnding lineEnding) const override;
 
+    /// 重命名/移动（不覆盖已存在目标；跨卷由 MOVEFILE_COPY_ALLOWED 自动
+    /// 复制+删除，绝不带 REPLACE_EXISTING）
+    std::expected<void, StorageError>
+    move(const std::filesystem::path& from, const std::filesystem::path& to) const override;
+
 private:
     /// 校验路径（存在且是常规文件，目录不算）并读取全部原始字节
     std::expected<std::string, StorageError> readRawBytes(const std::filesystem::path& path) const;

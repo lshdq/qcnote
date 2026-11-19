@@ -40,6 +40,8 @@ enum class Command : int {
     CloseTabsToRight, // 关闭右边所有
     CloseTabsToLeft,  // 关闭左边所有
     CloseOtherTabs,   // 关闭其他文件
+    RenameFile,            // 文件重命名…（有路径的标签）
+    OpenContainingFolder,  // 打开所在文件夹（有路径的标签）
 
     // —— 应用 ——
     Quit,  // 退出（C4 热退出，M2 接草稿 flush）
@@ -69,6 +71,8 @@ inline const wchar_t* CommandName(Command c) {
     case Command::CloseTabsToRight: return L"CloseTabsToRight";
     case Command::CloseTabsToLeft: return L"CloseTabsToLeft";
     case Command::CloseOtherTabs: return L"CloseOtherTabs";
+    case Command::RenameFile: return L"RenameFile";
+    case Command::OpenContainingFolder: return L"OpenContainingFolder";
     case Command::Quit: return L"Quit";
     default: return L"<unknown>";
     }

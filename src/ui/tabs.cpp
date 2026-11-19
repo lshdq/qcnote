@@ -126,7 +126,7 @@ int TabStripHitTest(const TabStripGeometry& geo, POINT clientPt) {
 // 右键菜单与无障碍（纯函数）
 // ---------------------------------------------------------------------------
 
-MenuModel BuildTabContextMenu(int index, int totalCount) {
+MenuModel BuildTabContextMenu(const TabItem& item, int index, int totalCount) {
     MenuModel m;
     const int menu = m.addMenu();
     m.addItem(menu, L"关闭当前文件", {}, Command::CloseCurrentTab);  // 恒可用
@@ -139,6 +139,11 @@ MenuModel BuildTabContextMenu(int index, int totalCount) {
               Command::CloseTabsToLeft).enabled = left > 0;
     m.addItem(menu, L"关闭其他文件 (" + std::to_wstring(others) + L")", {},
               Command::CloseOtherTabs).enabled = others > 0;
+    // 尾部分隔线 + 文件定位类新项：仅磁盘文件可用（未命名置灰不隐藏）
+    m.addSeparator(menu);
+    m.addItem(menu, L"文件重命名…", {}, Command::RenameFile).enabled = item.hasPath;
+    m.addItem(menu, L"打开所在文件夹", {}, Command::OpenContainingFolder).enabled =
+        item.hasPath;
     return m;
 }
 
@@ -258,6 +263,18 @@ void TabStrip::setModified(int index, bool modified) {
     }
     items_[static_cast<size_t>(index)].modified = modified;
     markDirtyAndInvalidate();
+}
+
+bool TabStrip::setHasPath(int index, bool hasPath) {
+    if (index < 0 || index >= static_cast<int>(items_.size())) {
+        return false;
+    }
+    if (items_[static_cast<size_t>(index)].hasPath == hasPath) {
+        return false; // 同值短路：不置脏、不触发重绘（与 setDisplayName 同策略）
+    }
+    items_[static_cast<size_t>(index)].hasPath = hasPath;
+    markDirtyAndInvalidate();
+    return true;
 }
 
 bool TabStrip::setDisplayName(int index, const std::wstring& name) {
@@ -584,7 +601,8 @@ void TabStrip::openContextMenu(int index, POINT clientPt) {
         return;  // 防御：弹出期间模型被外部变动导致索引失效
     }
     hideTooltip();
-    MenuModel model = BuildTabContextMenu(index, static_cast<int>(items_.size()));
+    MenuModel model = BuildTabContextMenu(items_[static_cast<size_t>(index)],
+                                           index, static_cast<int>(items_.size()));
     POINT anchor = clientPt;
     ClientToScreen(hwnd_, &anchor);
     // 命令经 track 返回值 → onTabContextCommand 上抛（携带被右键 Tab 的 index）；

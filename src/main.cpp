@@ -76,6 +76,7 @@
 #include "editor/multicursorcontroller.h"
 #include "editor/scintillaedit.h"
 #include "editor/searchcontroller.h"
+#include "platform/explorer.h"
 #include "platform/shellintegration.h"
 #include "platform/singleinstance.h"
 #include "ui/commands.h"
@@ -399,11 +400,12 @@ void RefreshStatusBar() {
     g_statusBar.update(d);
 }
 
-// Tab 数据 = 管理器文档列表快照（displayName + modified）
+// Tab 数据 = 管理器文档列表快照（displayName + modified + hasPath——hasPath
+// 驱动右键菜单「文件重命名…/打开所在文件夹」可用性）
 void RefreshTabsFromManager() {
     std::vector<ui::TabItem> items;
     for (core::Document* doc : g_docManager.documents()) {
-        items.push_back({doc->displayName(), doc->modified()});
+        items.push_back({doc->displayName(), doc->modified(), !doc->url().empty()});
     }
     g_tabs.setItems(std::move(items));
 }
@@ -475,6 +477,8 @@ void OnDocumentContentChanged(core::Document* doc) {
 void OnDocumentMetadataChanged(core::Document* doc) {
     const int idx = IndexOfDocument(doc);
     if (idx >= 0) g_tabs.setDisplayName(idx, doc->displayName());
+    // url 空↔非空翻转（未命名→另存为/重命名取消回退）：右键菜单新项可用性同步
+    if (idx >= 0) g_tabs.setHasPath(idx, !doc->url().empty());
     if (doc == g_docManager.activeDocument()) {
         RefreshWindowTitle();
         RefreshStatusBar();
@@ -705,6 +709,49 @@ std::optional<std::filesystem::path> ShowSaveFileDialog(const core::Document* do
     return std::filesystem::path(buffer);
 }
 
+// Tab 右键「文件重命名…」对话框：复用另存为形态（同过滤器/预填当前完整路径/
+// g_fileDialogOpen 与 FocusActiveEditor 包夹），差别——
+//   标题「重命名」；
+//   不带 OFN_OVERWRITEPROMPT：目标已存在由核心层 rename 拒绝并给出明确错误，
+//     避免「确认替换文件」的覆盖歧义（需求：不覆盖任何已存在文件）；
+//   不带 OFN_NOREADONLYRETURN：重命名不写内容，只读文件也允许改名；
+//   不设 lpstrDefExt：重命名语义下静默补 ".txt" 会意外改变文件类型，去掉更
+//     符合「用户输入什么就是什么」的预期。
+std::optional<std::filesystem::path> ShowRenameFileDialog(const core::Document* doc) {
+    std::wstring filter = BuildFileDialogFilter();
+    wchar_t buffer[4096] = {};
+    const std::wstring initialPath =
+        doc && !doc->url().empty() ? doc->url().wstring() : std::wstring();
+    if (!initialPath.empty()) {
+        wcsncpy_s(buffer, initialPath.c_str(), _TRUNCATE);
+    }
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_mainWindow;
+    ofn.lpstrFilter = filter.c_str();
+    ofn.lpstrFile = buffer;
+    ofn.nMaxFile = 4096;
+    ofn.lpstrTitle = L"重命名";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+    g_fileDialogOpen = true;
+    const BOOL ok = GetSaveFileNameW(&ofn);
+    g_fileDialogOpen = false;
+    FocusActiveEditor();
+    if (!ok) {
+        // 用户取消（CommDlgExtendedError()==0）维持静默；真失败不再吞掉（DEC-006）——
+        // 预填路径含正斜杠等场景对话框直接失败，此前表现为「点击无反应」
+        const DWORD err = CommDlgExtendedError();
+        if (err != 0) {
+            ShowErrorDialog(
+                L"重命名",
+                L"无法打开重命名对话框（错误码 " + std::to_wstring(err) + L"）\n" + initialPath);
+        }
+        return std::nullopt;
+    }
+    if (!buffer[0]) return std::nullopt;
+    return std::filesystem::path(buffer);
+}
+
 // ---------------------------------------------------------------------------
 // 命令实现（A1 全链路）
 // ---------------------------------------------------------------------------
@@ -729,6 +776,33 @@ void DoSaveAsDocument(core::Document* doc) {
         ShowErrorDialog(L"另存为",
                         L"文件已保存，但同路径的另一个已打开文档重新加载失败：\n" +
                             r.error->message);
+    }
+}
+
+// Tab 右键「文件重命名…」（改名/移动，A3 扩展）：核心层 rename 完成磁盘移动
+// 与 url 更新（保留脏状态）；成功后经 documentMetadataChanged 既有管线自动
+// 刷新 Tab 显示名/标题栏/状态栏/会话记忆，组装层无需手动刷新
+void DoRenameDocument(core::Document* doc) {
+    if (!doc || doc->url().empty()) return;  // 未命名不可达（菜单已置灰，防御）
+    const auto picked = ShowRenameFileDialog(doc);
+    if (!picked) return;  // 取消重命名：无任何变化
+    const auto r = g_docManager.rename(doc, *picked);
+    if (!r) {
+        ShowErrorDialog(L"重命名失败", picked->wstring() + L"\n" + r.error().message);
+    }
+}
+
+// Tab 右键「打开所在文件夹」：资源管理器打开并选中该文件（A3 扩展）；
+// 文件不在磁盘上（被外部删除）弹错误框，不启动 explorer
+void DoOpenContainingFolder(core::Document* doc) {
+    if (!doc || doc->url().empty()) return;  // 未命名不可达（菜单已置灰，防御）
+    std::error_code ec;
+    if (!std::filesystem::exists(doc->url(), ec)) {
+        ShowErrorDialog(L"打开所在文件夹", L"文件不在磁盘上：\n" + doc->url().wstring());
+        return;
+    }
+    if (!platform::OpenSelectInExplorer(doc->url())) {
+        ShowErrorDialog(L"打开所在文件夹", L"文件不在磁盘上：\n" + doc->url().wstring());
     }
 }
 
@@ -1032,9 +1106,16 @@ void OnTabContextCommand(int index, ui::Command cmd) {
             }
             break;
         default:
-            break;
+            // 新命令（RenameFile/OpenContainingFolder）与未知命令：mock 数据上
+            // 无文档系统语义，只记录 g_stCtxCmd 采样后直接返回（不执行锚点/
+            // welcome 逻辑；正式路径见下方 switch）
+            return;
         }
-        if (cmd != ui::Command::CloseCurrentTab && index >= 0 && index < g_tabs.count()) {
+        // 仅三个批量关闭命令激活锚点（A3）；CloseCurrentTab 无锚点（邻居规则兜底）
+        const bool batchClose = cmd == ui::Command::CloseTabsToRight ||
+                                cmd == ui::Command::CloseTabsToLeft ||
+                                cmd == ui::Command::CloseOtherTabs;
+        if (batchClose && index >= 0 && index < g_tabs.count()) {
             g_tabs.setActiveIndex(index);  // A3 锚点
         }
         if (g_tabs.count() > 0) g_welcome.reset();
@@ -1053,6 +1134,12 @@ void OnTabContextCommand(int index, ui::Command cmd) {
     case ui::Command::CloseCurrentTab:
         CloseDocumentWithConfirm(anchor);
         return;  // 关闭当前无锚点（邻居激活规则兜底）
+    case ui::Command::RenameFile:
+        DoRenameDocument(anchor);
+        return;
+    case ui::Command::OpenContainingFolder:
+        DoOpenContainingFolder(anchor);
+        return;
     case ui::Command::CloseTabsToRight:
         for (int i = index + 1; i < count; ++i) range.push_back(docs[static_cast<size_t>(i)]);
         break;
@@ -1381,6 +1468,9 @@ void RunTabsSelftestStage() {
     } else if (g_tabsStage == 3) {
         g_tabsStage = 4;
         // —— 场景 4：右键菜单弹出与命令回调 ——
+        // 导航不变式：mock tab0 为未命名（hasPath=false），右键菜单尾部分隔线 +
+        // 「文件重命名…/打开所在文件夹」均置灰，MenuHost 键盘导航跳过分隔线与
+        // 置灰项——DOWN×2 仍选中第 1 项「关闭右边所有 (2)」，无需调整
         ui::TabStripGeometry geo = g_tabs.geometry();
         const RECT& b = geo.tabs[0].bounds;
         const POINT pt{(b.left + b.right) / 2, (b.top + b.bottom) / 2};

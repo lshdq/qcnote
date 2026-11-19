@@ -163,6 +163,7 @@ add_executable(qcnote WIN32
     src/main.cpp
     src/platform/singleinstance.cpp
     src/platform/shellintegration.cpp
+    src/platform/explorer.cpp
     src/ui/theme.cpp
     src/ui/titlebar.cpp
     src/ui/tabs.cpp
@@ -339,14 +340,16 @@ set_tests_properties(session PROPERTIES ENVIRONMENT
 # 编解码（空列表/空格中文路径/坏帧拒绝）、主窗口域标签选择（枚举注入）、
 # TryForwardToPrimary 真实降级契约、位置参数绝对化（D2）、shell 注册表键值
 # 精确断言（注入随机子树，RAII 清理，全程不碰真实键）。
-# 直接编译 src/platform 源码（user32：窗口枚举/消息；advapi32：注册表）。
+# 直接编译 src/platform 源码（user32：窗口枚举/消息；advapi32：注册表；
+# shell32：explorer.cpp 的 ShellExecuteW）。
 add_executable(test_platform
     tests/test_platform.cpp
     src/platform/singleinstance.cpp
     src/platform/shellintegration.cpp
+    src/platform/explorer.cpp
 )
 target_compile_options(test_platform PRIVATE /std:c++latest /utf-8)
 target_compile_definitions(test_platform PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x0A00 _WIN32_WINNT=0x0A00 CATCH_CONFIG_WCHAR)
 target_include_directories(test_platform PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(test_platform PRIVATE Catch2::Catch2WithMain user32 advapi32)
+target_link_libraries(test_platform PRIVATE Catch2::Catch2WithMain user32 advapi32 shell32)
 add_test(NAME platform COMMAND test_platform)
