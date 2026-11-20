@@ -1,7 +1,8 @@
 // qcnote 纯逻辑核心层：文档生命周期管理器（M2-A，旧 documentmanager.cpp 语义移植）。
 //
 // 职责：文档集合（有序，对应 Tab 顺序）+ 活动文档；新建（未命名-N 递增跳过
-// 占用）、打开（重复路径激活已有、失败收集不中断）、保存/另存为（遮蔽其他已
+// 占用）、打开（重复路径激活已有、失败收集不中断）、顺序重排（Tab 拖拽，
+// moveDocument 只改顺序不动活动指针）、保存/另存为（遮蔽其他已
 // 打开文档时写盘后从磁盘重载被遮蔽文档——旧初始化 DEC-008）、关闭（激活邻居）、
 // 按编码重载（换行重探测、光标钳制、不置脏）/按编码保存（一步转换、失败回滚）。
 // 无窗口依赖；文件对话框不在本层（M2-B UI）。
@@ -93,6 +94,13 @@ public:
     Document* activeDocument() const;
     void setActiveDocument(Document* document);
     void activate(std::size_t index);
+
+    /// 顺序重排（Tab 拖拽松手提交，DEC-001）：把下标 from 的文档移动到下标 to
+    ///（from≠to 时 to 解释为「插入后的目标下标」，即先 erase(from) 再
+    /// insert(begin()+to) 的语义）。from == to 或任一越界（≥ documentCount()）
+    /// 为 no-op，不 emit 任何事件；成功移动后活动文档指针保持不变（顺序变化
+    /// 不改变活动文档，不发 activeDocumentChanged），只 emit documentsChanged 一次。
+    void moveDocument(std::size_t from, std::size_t to);
 
     // —— 生命周期 ——
     /// 新建「未命名-N」文档并激活；N 由编号器递增、跳过已占用显示名

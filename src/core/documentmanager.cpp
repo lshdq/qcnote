@@ -64,6 +64,19 @@ void DocumentManager::activate(std::size_t index) {
         setActiveDocument(m_documents[index].get());
 }
 
+void DocumentManager::moveDocument(std::size_t from, std::size_t to) {
+    // 越界与 from==to 均 no-op（不 emit）；语义见头文件注释（DEC-001：拖拽
+    // 松手时一次提交，活动文档指针不随顺序变化）
+    if (from >= m_documents.size() || to >= m_documents.size() || from == to)
+        return;
+    auto doc = std::move(m_documents[from]);
+    m_documents.erase(m_documents.begin() + static_cast<std::ptrdiff_t>(from));
+    m_documents.insert(m_documents.begin() + static_cast<std::ptrdiff_t>(to), std::move(doc));
+    // 只改顺序：m_activeDocument 为非拥有指针，erase/insert 不析构所指对象，
+    // 保持不变；不发 activeDocumentChanged
+    documentsChanged.emit();
+}
+
 bool DocumentManager::displayNameInUse(const std::wstring& name) const {
     return std::any_of(m_documents.cbegin(), m_documents.cend(),
                        [&name](const std::unique_ptr<Document>& doc) {

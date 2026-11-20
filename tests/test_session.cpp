@@ -447,6 +447,40 @@ TEST_CASE("TC-U18：会话序列化往返（uid 位置/编码键/active 互斥�
 }
 
 // ===========================================================================
+// TC-010（Tab 拖拽重排）：moveDocument 后会话顺序一致
+// ===========================================================================
+
+TEST_CASE("TC-010：moveDocument 后 buildSessionData 顺序与重排一致", "[session][dm-move]") {
+    testutil::TempDir tmp(L"tc010-move");
+    testutil::writeBytes(tmp.file(L"a.txt"), "AAA");
+    testutil::writeBytes(tmp.file(L"b.txt"), "BBB");
+    testutil::writeBytes(tmp.file(L"c.txt"), "CCC");
+
+    DocumentManager mgr;
+    REQUIRE(mgr
+                .openPaths({tmp.file(L"a.txt"), tmp.file(L"b.txt"), tmp.file(L"c.txt")})
+                .empty());
+    REQUIRE(mgr.documentCount() == 3);
+
+    // a,b,c → 把 c（2）移到开头（2 → 0）：c,a,b
+    mgr.moveDocument(2, 0);
+    const SessionData data = SessionManager::buildSessionData(mgr);
+    REQUIRE(data.documents.size() == 3);
+    REQUIRE(data.documents[0].url == tmp.file(L"c.txt"));
+    REQUIRE(data.documents[1].url == tmp.file(L"a.txt"));
+    REQUIRE(data.documents[2].url == tmp.file(L"b.txt"));
+    // 活动文档（c，openPaths 最后成功打开者）仍正确记录
+    REQUIRE(data.activeUrl == tmp.file(L"c.txt"));
+
+    // 再把 b（现 2）移到 1：c,b,a
+    mgr.moveDocument(2, 1);
+    const SessionData data2 = SessionManager::buildSessionData(mgr);
+    REQUIRE(data2.documents[0].url == tmp.file(L"c.txt"));
+    REQUIRE(data2.documents[1].url == tmp.file(L"b.txt"));
+    REQUIRE(data2.documents[2].url == tmp.file(L"a.txt"));
+}
+
+// ===========================================================================
 // TC-U19 会话容错
 // ===========================================================================
 

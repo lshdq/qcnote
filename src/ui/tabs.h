@@ -6,8 +6,14 @@
 //                                  结果向下取整、饱和回退最小宽 + 横向滚动）
 //   ComputeTabStripGeometry    —— 几何纯函数：各 Tab 本体/文字/● 标记矩形、分隔线可见性、
 //                                  内容宽/溢出判定/最大滚动量（布局/命中/绘制三方共用）
+//   TabDragSwapIndex           —— 拖拽中点交换判定纯函数：光标 x 越过相邻 Tab bounds
+//                                  中点（严格越过）才交换；首下标向左/末下标向右 → -1
 //   TabStrip                   —— 数据（TabItem mock，M2 换文档系统）+ 绘制 + 交互
-//                                  （激活点击/右键菜单/键盘导航/滚轮滚动/tooltip）
+//                                  （激活点击/右键菜单/键盘导航/滚轮滚动/tooltip/
+//                                  拖拽重排：位移越过系统拖拽阈值进入拖拽，中点交换仅
+//                                  本地 items_ 预览（实时交换式），松手顺序有变才一次
+//                                  onTabReordered 提交；Esc/捕获丢失/失焦统一取消收口
+//                                  回滚视觉序不回调——DEC-001/002，详见 tabs.cpp 头注释）
 //
 // 命中链整合：Tab 本体与「溢出滚动区」归 HTCLIENT（main.cpp 在 ComputeCaptionHitTest
 // 返回 HTCAPTION 后追加 hitInteractive 判定）；未溢出时空白区维持 HTCAPTION（可拖动
@@ -62,6 +68,12 @@ constexpr int SeparatorHeight = 20;    // 标签间竖分隔线高（≈标签�
 constexpr int SeparatorWidth = 1;      // 竖分隔线宽
 constexpr int TooltipDelayMs = 600;    // tooltip 悬停延迟（旧 QML ToolTip.delay）
 constexpr int WheelStep = 60;          // 滚轮每格滚动步长（逻辑像素）
+constexpr int DragEdgeZone = 20;       // 拖拽溢出自动滚动的条区左右边缘带宽（逻辑像素；
+                                       // 需求「约 20」：约 1/5 最小宽 Tab，光标进入即
+                                       // 步进一级，停住即停——移动驱动，无定时器）
+constexpr int DragEdgeScrollStep = 60; // 边缘带内每次鼠标移动的滚动步长（逻辑像素）。
+                                       // 取滚轮 WheelStep 同量级（≈2/3 个最小宽 Tab）：
+                                       // 每步可感知又不跳跃
 
 }  // namespace tab_metrics
 
@@ -108,6 +120,12 @@ TabStripGeometry ComputeTabStripGeometry(const std::vector<TabItem>& items, int 
 
 // 命中（窗口客户区坐标）：Tab 本体 → 下标；空白区 → -1。
 int TabStripHitTest(const TabStripGeometry& geo, POINT clientPt);
+
+// 拖拽中点交换判定（纯函数）：dragIndex 为被拖 Tab 当前下标，clientX 为光标 x
+// （窗口客户区坐标）。光标严格越过相邻 Tab bounds（已含滚动偏移）中点 → 返回
+// 应与之交换的相邻下标（dragIndex-1 / dragIndex+1）；否则 -1（同位未越过、
+// 首下标向左、末下标向右、dragIndex 越界、空几何均不交换）。
+int TabDragSwapIndex(const TabStripGeometry& geo, int dragIndex, int clientX);
 
 // ---------------------------------------------------------------------------
 // 右键菜单与无障碍（纯函数）
@@ -156,6 +174,7 @@ public:
     bool overflow() const { return geometry().overflow; }
     int scrollOffset() const { geometry(); return scrollOffset_; }
     int focusIndex() const { return focusIndex_; }  // 键盘焦点（仅指示，非活动文档）
+    bool dragging() const { return dragging_; }     // 拖拽态（组装层消息路由查询）
 
     // —— 命中（窗口客户区坐标；供 main.cpp 的 NCHITTEST/鼠标路由）——
     int hitTab(POINT clientPt) const;               // Tab 本体 → index；空白 -1
@@ -163,13 +182,17 @@ public:
 
     // —— 交互（main.cpp 转发；坐标为客户区）——
     void onMouseMove(POINT clientPt);
-    void onMouseLeave();                            // 客户区/非客户区离开均走此（清 hover + tooltip）
-    void onLButtonDown(POINT clientPt);             // 命中 Tab → 激活（down 即激活）
+    void onMouseLeave();                            // 客户区/非客户区离开均走此（清 hover + tooltip；
+                                                    // 拖拽态不取消——捕获期间光标短暂离窗是正常拖拽）
+    void onLButtonDown(POINT clientPt);             // 命中 Tab → 激活（down 即激活）+ 记录按下
+    void onLButtonUp(POINT clientPt);               // 松手：拖拽结束、顺序有变才一次提交；
+                                                    // 未拖拽仅清按下记录（no-op 安全）
     void onRButtonDown(POINT clientPt);             // 命中 Tab → 右键菜单（不激活该 Tab）
     void onMouseWheel(bool horizontal, int delta);  // 溢出时横向滚动（竖直轮映射为横向）
     bool onKeyDown(UINT vk, bool shiftDown);        // 键盘导航；返回是否消费
     void onTimer(UINT_PTR timerId);                 // tooltip 延迟计时
-    void onWindowKillFocus();                       // 窗口失焦：隐藏键盘焦点环
+    void onCaptureChanged();                        // 鼠标捕获丢失：取消拖拽（回滚视觉序，不回调）
+    void onWindowKillFocus();                       // 窗口失焦：取消拖拽（如在拖）+ 隐藏键盘焦点环
     void onDpiChanged();
     void onLayoutChanged();                         // 窗口尺寸变化：钳制滚动 + 重绘
     void onThemeChanged();                          // E5：主题切换（tooltip 换肤 + 重绘）
@@ -180,6 +203,8 @@ public:
     // —— 挂接点（main.cpp 组装）——
     std::function<void(int)> onTabActivated;                // 激活回调（鼠标/键盘）
     std::function<void(int, Command)> onTabContextCommand;  // 右键菜单命令（index + 命令）
+    std::function<void(int, int)> onTabReordered;           // 拖拽重排提交：松手时顺序有变才触发
+                                                            // 一次（from=按下时下标，to=最终下标）
 
 private:
     void markDirtyAndInvalidate();
@@ -188,6 +213,13 @@ private:
     void activate(int index);        // 激活 + 回调
     void moveFocus(int delta);       // 循环移动键盘焦点
     void scrollIntoView(int index);  // 滚动使指定 Tab 完整可见（QML Contain 语义）
+    // —— 拖拽重排状态机（实时交换式预览 + 松手一次提交，DEC-001/002）——
+    void beginDrag();                   // 位移越阈值：进入拖拽（捕获 + 悬停/tooltip 让位）
+    void dragMove(POINT clientPt);      // 拖拽中 move：按钮防呆收口/x 钳制/边缘滚动/中点交换
+    void swapPreview(int neighbor);     // 本地交换预览（drag/active/focus 索引随迁）
+    void cancelDrag();                  // 统一取消收口：回滚视觉序 + 释放捕获，不回调
+    void clearDragState();              // 清全部拖拽/按下状态（不触捕获、不回调）
+    void resetPressAndDragState();      // 外部数据重建：安全终止（不回滚、不回调）
     void openContextMenu(int index, POINT clientPt);
     void openContextMenuAtFocus();   // Menu 键 / Shift+F10
     void armTooltipTimer();
@@ -202,6 +234,14 @@ private:
     int activeIndex_ = -1;
     int focusIndex_ = -1;
     int hoverIndex_ = -1;
+    // —— 拖拽重排状态（命名对齐 hoverIndex_ 风格）——
+    int pressIndex_ = -1;           // 左键按下命中的 Tab 下标（拖拽判定起点；-1 无按下）
+    POINT pressPt_{};               // 按下位置（位移阈值基准点）
+    bool pressRealButton_ = false;  // 本次按下源自真实按钮（down 时刻 GetKeyState 采样；
+                                    // selftest/单测的合成驱动为 false——按钮防呆据此豁免）
+    bool dragging_ = false;         // 拖拽态：位移越阈值进入，松手提交/取消收口退出
+    int dragIndex_ = -1;            // 被拖 Tab 当前下标（预览交换中随迁）
+    int dragFromIndex_ = -1;        // 拖拽起始下标（提交 from / 取消回滚锚点）
     // 键盘焦点环可见性（对齐 QML activeFocus 语义）：仅键盘导航后显示，鼠标点击/
     // 窗口失焦隐藏；focusIndex 本身始终维护（键盘导航的起点状态）
     bool focusVisible_ = false;

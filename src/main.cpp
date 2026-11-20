@@ -55,6 +55,7 @@
 #include <shellapi.h>  // CommandLineToArgvW
 #include <imm.h>       // IMN_* 常量（IME 消息注入自查；不调用 IMM 函数）
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -216,6 +217,12 @@ int g_stCtxIndex = -1;         // 最近一次 onTabContextCommand 的 index
 ui::Command g_stCtxCmd = ui::Command::None;
 bool g_stTabsInit = false, g_stTabsClick = false, g_stTabsKeyboard = false;
 bool g_stTabsContext = false, g_stTabsOverflow = false, g_stTabsWelcome = false;
+// Tab 拖拽重排场景（TC-005..009；mock 直驱，DEC-003）
+bool g_stTabsDragCommit = false, g_stTabsDragClick = false, g_stTabsDragEsc = false;
+bool g_stTabsDragCapture = false, g_stTabsDragEdge = false;
+int g_stReorderedFrom = -1;   // 最近一次 onTabReordered 的 from（自测采样）
+int g_stReorderedTo = -1;     // 最近一次 onTabReordered 的 to
+int g_stReorderedCount = 0;   // onTabReordered 触发计数
 
 // —— M2-B 文档全链路自动化验证（--selftest-doc=<结果文件>）状态 ——
 bool g_selftestDoc = false;
@@ -1481,7 +1488,153 @@ void RunTabsSelftestStage() {
         PostMessageW(g_mainWindow, kMsgTabsSelftestStage, 0, 0);
     } else if (g_tabsStage == 3) {
         g_tabsStage = 4;
-        // —— 场景 4：右键菜单弹出与命令回调 ——
+        // —— 场景 4：拖拽重排（TC-005..009；mock 直驱口径，DEC-003）——
+        // 每个子场景自足重建规范 3 Tab 序（与场景 1 相同），互不残留
+        const auto resetMockTabs = [] {
+            g_tabs.setItems({{L"未命名-1", true},
+                             {L"readme.md", false},
+                             {L"很长的中文文件名测试用例.txt", false}});
+            g_tabs.setActiveIndex(0);
+        };
+        // 拖拽阈值采样（与 TabStrip::onMouseMove 同口径：两轴取最大，0 退 4px）
+        int dragThresh =
+            std::max(GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG));
+        if (dragThresh <= 0) dragThresh = 4;
+        // onTabReordered 采样接管：mock 直驱下 moveDocument 无文档可动，本场景
+        // 断言回调值即可；生产接线（WM_CREATE 挂接的 moveDocument 管线）场景
+        // 结束原样恢复（DEC-003）
+        const auto prodReorder = g_tabs.onTabReordered;
+        g_tabs.onTabReordered = [](int from, int to) {
+            g_stReorderedFrom = from;
+            g_stReorderedTo = to;
+            ++g_stReorderedCount;
+        };
+        const auto tabCenter = [](const RECT& b) {
+            return POINT{(b.left + b.right) / 2, (b.top + b.bottom) / 2};
+        };
+        ui::TabStripGeometry geo = g_tabs.geometry();
+
+        // —— TC-005：拖拽提交（越阈值拖起 → 中点交换预览 → 松手一次上抛）——
+        resetMockTabs();
+        geo = g_tabs.geometry();
+        const POINT p0 = tabCenter(geo.tabs[0].bounds);
+        g_stReorderedFrom = g_stReorderedTo = -1;
+        g_stReorderedCount = 0;
+        g_tabs.onLButtonDown(p0);  // down 即激活 tab0（已是活动项：无激活回调）
+        // 越阈值即拖起（增量远小于右邻中点距离：不触发交换）
+        g_tabs.onMouseMove({p0.x + dragThresh + 2, p0.y});
+        bool ok = g_tabs.dragging() && g_tabs.activeIndex() == 0 &&
+                  g_tabs.item(0).displayName == L"未命名-1";
+        geo = g_tabs.geometry();  // 未交换 → bounds 未变
+        const RECT& b1 = geo.tabs[1].bounds;
+        const POINT p1{(b1.left + b1.right) / 2 + 1, p0.y};  // 严格越过 tab1 中点
+        g_tabs.onMouseMove(p1);
+        ok = ok && g_tabs.dragging() &&
+             g_tabs.item(0).displayName == L"readme.md" &&  // 预览交换：item(0) 换名
+             g_tabs.item(1).displayName == L"未命名-1" && g_tabs.item(1).modified &&
+             g_tabs.activeIndex() == 1 && g_tabs.focusIndex() == 1;  // 索引随迁
+        g_tabs.onLButtonUp(p1);
+        g_stTabsDragCommit = ok && g_stReorderedCount == 1 && g_stReorderedFrom == 0 &&
+                             g_stReorderedTo == 1 && !g_tabs.dragging() &&
+                             g_tabs.item(0).displayName == L"readme.md" &&
+                             g_tabs.item(1).displayName == L"未命名-1";
+
+        // —— TC-006：纯点击（未超阈值）不重排，仅激活 ——
+        resetMockTabs();
+        geo = g_tabs.geometry();
+        const POINT p2 = tabCenter(geo.tabs[2].bounds);
+        g_stReorderedCount = 0;
+        g_stActivatedCb = -1;
+        g_tabs.onLButtonDown(p2);              // down 即激活 tab2（回调采样）
+        g_tabs.onMouseMove({p2.x + 1, p2.y});  // 1px 微动：dist²=1 恒不越阈值
+        g_tabs.onLButtonUp({p2.x + 1, p2.y});
+        g_stTabsDragClick =
+            !g_tabs.dragging() && g_stReorderedCount == 0 && g_stActivatedCb == 2 &&
+            g_tabs.activeIndex() == 2 &&
+            g_tabs.item(0).displayName == L"未命名-1" &&
+            g_tabs.item(2).displayName == L"很长的中文文件名测试用例.txt";
+
+        // —— TC-007：Esc 取消（预览交换后回滚视觉序，不回调）——
+        resetMockTabs();
+        geo = g_tabs.geometry();
+        const POINT e0 = tabCenter(geo.tabs[0].bounds);
+        g_stReorderedCount = 0;
+        g_tabs.onLButtonDown(e0);
+        g_tabs.onMouseMove({e0.x + dragThresh + 2, e0.y});
+        geo = g_tabs.geometry();
+        const RECT& eb1 = geo.tabs[1].bounds;
+        g_tabs.onMouseMove({(eb1.left + eb1.right) / 2 + 1, e0.y});  // 已交换
+        const bool escSwapped =
+            g_tabs.dragging() && g_tabs.item(0).displayName == L"readme.md";
+        const bool escConsumed = g_tabs.onKeyDown(VK_ESCAPE, false);  // 拖拽中消费
+        g_stTabsDragEsc = escSwapped && escConsumed && !g_tabs.dragging() &&
+                          g_stReorderedCount == 0 &&
+                          g_tabs.item(0).displayName == L"未命名-1" &&
+                          g_tabs.item(1).displayName == L"readme.md" &&
+                          g_tabs.activeIndex() == 0;
+
+        // —— TC-008：捕获丢失取消（同 Esc 回滚语义，不回调）——
+        resetMockTabs();
+        geo = g_tabs.geometry();
+        const POINT c0 = tabCenter(geo.tabs[0].bounds);
+        g_stReorderedCount = 0;
+        g_tabs.onLButtonDown(c0);
+        g_tabs.onMouseMove({c0.x + dragThresh + 2, c0.y});
+        geo = g_tabs.geometry();
+        const RECT& cb1 = geo.tabs[1].bounds;
+        g_tabs.onMouseMove({(cb1.left + cb1.right) / 2 + 1, c0.y});  // 已交换
+        const bool capSwapped =
+            g_tabs.dragging() && g_tabs.item(0).displayName == L"readme.md";
+        g_tabs.onCaptureChanged();
+        g_stTabsDragCapture = capSwapped && !g_tabs.dragging() &&
+                              g_stReorderedCount == 0 &&
+                              g_tabs.item(0).displayName == L"未命名-1" &&
+                              g_tabs.item(1).displayName == L"readme.md" &&
+                              g_tabs.activeIndex() == 0;
+
+        // —— TC-009：溢出边缘步进滚动（移动驱动；步进 + 钳制 [0, maxScroll]）——
+        resetMockTabs();
+        for (int i = 0; i < 18; ++i) {
+            g_tabs.addTab({L"溢出测试文档-" + std::to_wstring(i) + L".txt", i % 3 == 0});
+        }
+        geo = g_tabs.geometry();
+        const int step = ui::Scale(ui::tab_metrics::DragEdgeScrollStep, dpi);
+        bool ok9 = g_tabs.count() == 21 && geo.overflow && geo.maxScroll > 0 &&
+                   g_tabs.scrollOffset() == 0;
+        const POINT r0 = tabCenter(geo.tabs[0].bounds);  // scroll=0：tab0 可见
+        g_stReorderedCount = 0;
+        g_tabs.onLButtonDown(r0);
+        g_tabs.onMouseMove({r0.x + dragThresh + 2, r0.y});  // 拖起（不在边缘带内）
+        ok9 = ok9 && g_tabs.dragging() && g_tabs.scrollOffset() == 0;
+        const POINT rightEdge{geo.area.right - 1, r0.y};  // 条区右边缘带内
+        g_tabs.onMouseMove(rightEdge);
+        ok9 = ok9 && g_tabs.scrollOffset() ==
+                         std::min(step, g_tabs.geometry().maxScroll);  // 步进一级
+        for (int i = 0; i < 60; ++i) {
+            g_tabs.onMouseMove(rightEdge);  // 反复步进 → 钳制在 maxScroll
+        }
+        ok9 = ok9 && g_tabs.scrollOffset() == g_tabs.geometry().maxScroll;
+        const POINT leftEdge{geo.area.left + 1, r0.y};  // 条区左边缘带内
+        for (int i = 0; i < 60; ++i) {
+            g_tabs.onMouseMove(leftEdge);  // 反向步进 → 回滚到 0（钳制下界）
+        }
+        ok9 = ok9 && g_tabs.scrollOffset() == 0;
+        g_stReorderedCount = 0;
+        g_tabs.onLButtonUp(leftEdge);
+        // 松手至多一次提交（多次预览交换也只上抛一次；是否回到原位取决于
+        // 步进次数，回调语义已由 TC-005 精确断言）
+        ok9 = ok9 && !g_tabs.dragging() && g_stReorderedCount <= 1;
+        g_stTabsDragEdge = ok9;
+
+        // —— 恢复：生产接线 + 规范 3 Tab 序（active 对齐键盘导航场景后的进入态，
+        // 后续右键菜单场景依赖该 mock 状态）——
+        g_tabs.onTabReordered = prodReorder;
+        resetMockTabs();
+        g_tabs.setActiveIndex(2);
+        PostMessageW(g_mainWindow, kMsgTabsSelftestStage, 0, 0);
+    } else if (g_tabsStage == 4) {
+        g_tabsStage = 5;
+        // —— 场景 5：右键菜单弹出与命令回调 ——
         // 导航不变式：mock tab0 为未命名（hasPath=false），右键菜单尾部分隔线 +
         // 「文件重命名…/打开所在文件夹」均置灰，MenuHost 键盘导航跳过分隔线与
         // 置灰项——DOWN×2 仍选中第 1 项「关闭右边所有 (2)」，无需调整
@@ -1504,9 +1657,9 @@ void RunTabsSelftestStage() {
             g_tabs.count() == 1 && g_tabs.activeIndex() == 0 &&
             g_tabs.item(0).displayName == L"未命名-1";
         PostMessageW(g_mainWindow, kMsgTabsSelftestStage, 0, 0);
-    } else if (g_tabsStage == 4) {
-        g_tabsStage = 5;
-        // —— 场景 5：超量溢出 + 横向滚动 + 命中路由 ——
+    } else if (g_tabsStage == 5) {
+        g_tabsStage = 6;
+        // —— 场景 6：超量溢出 + 横向滚动 + 命中路由 ——
         for (int i = 0; i < 20; ++i) {
             g_tabs.addTab({L"溢出测试文档-" + std::to_wstring(i) + L".txt", i % 3 == 0});
         }
@@ -1530,9 +1683,9 @@ void RunTabsSelftestStage() {
         ok = ok && g_tabs.scrollOffset() == 0;
         g_stTabsOverflow = ok;
         PostMessageW(g_mainWindow, kMsgTabsSelftestStage, 0, 0);
-    } else if (g_tabsStage == 5) {
-        g_tabsStage = 6;
-        // —— 场景 6：清空 → 欢迎页 → 重新出现 Tab ——
+    } else if (g_tabsStage == 6) {
+        g_tabsStage = 7;
+        // —— 场景 7：清空 → 欢迎页 → 重新出现 Tab ——
         g_tabs.removeRange(0, g_tabs.count());
         bool ok = g_tabs.count() == 0 && g_tabs.activeIndex() == -1 && g_tabs.focusIndex() == -1;
         RECT br = g_welcome.buttonRect();
@@ -1562,9 +1715,11 @@ void RunTabsSelftestStage() {
                                 MAKELPARAM(ts.x, ts.y)) == HTCLIENT;
         g_stTabsWelcome = ok;
         PostMessageW(g_mainWindow, kMsgTabsSelftestStage, 0, 0);
-    } else if (g_tabsStage == 6) {
-        g_tabsStage = 7;
-        const bool all = g_stTabsInit && g_stTabsClick && g_stTabsKeyboard && g_stTabsContext &&
+    } else if (g_tabsStage == 7) {
+        g_tabsStage = 8;
+        const bool all = g_stTabsInit && g_stTabsClick && g_stTabsKeyboard &&
+                         g_stTabsDragCommit && g_stTabsDragClick && g_stTabsDragEsc &&
+                         g_stTabsDragCapture && g_stTabsDragEdge && g_stTabsContext &&
                          g_stTabsOverflow && g_stTabsWelcome;
         std::error_code ec;
         std::filesystem::path out(g_selftestTabsOut);
@@ -1578,6 +1733,17 @@ void RunTabsSelftestStage() {
           << (g_stTabsClick ? "PASS" : "FAIL") << "\n";
         f << "scenario=keyboard navigation cycles without activation, enter activates: "
           << (g_stTabsKeyboard ? "PASS" : "FAIL") << "\n";
+        f << "scenario=drag reorder commit (threshold, midpoint swap preview, "
+             "one-shot submit): "
+          << (g_stTabsDragCommit ? "PASS" : "FAIL") << "\n";
+        f << "scenario=drag below threshold is pure click without reorder: "
+          << (g_stTabsDragClick ? "PASS" : "FAIL") << "\n";
+        f << "scenario=drag cancel via escape rolls back order without callback: "
+          << (g_stTabsDragEsc ? "PASS" : "FAIL") << "\n";
+        f << "scenario=drag cancel via capture loss rolls back order without callback: "
+          << (g_stTabsDragCapture ? "PASS" : "FAIL") << "\n";
+        f << "scenario=drag edge auto scroll steps and clamps while overflow: "
+          << (g_stTabsDragEdge ? "PASS" : "FAIL") << "\n";
         f << "scenario=tab context menu popup and close-right command callback: "
           << (g_stTabsContext ? "PASS" : "FAIL") << "\n";
         f << "scenario=overflow horizontal scroll with clamping and hit routing: "
@@ -3658,6 +3824,15 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_tabs.attach(hwnd, &g_menuHost);
         g_tabs.onTabActivated = &OnTabActivated;
         g_tabs.onTabContextCommand = &OnTabContextCommand;
+        // Tab 拖拽重排提交（DEC-001：拖拽全程仅本地预览，松手一次提交）：上抛
+        // → 数据层 moveDocument 重排（活动文档指针不动，仅 emit documentsChanged
+        // 一次）；既有订阅自动完成 Tab 整表重建（OnDocumentsChanged →
+        // RefreshAllAfterDocumentsChanged）+ 会话 500ms 防抖落盘
+        //（TriggerSessionSave）——本接线无需新增管线代码。
+        g_tabs.onTabReordered = [](int from, int to) {
+            g_docManager.moveDocument(static_cast<std::size_t>(from),
+                                      static_cast<std::size_t>(to));
+        };
         g_welcome.attach(hwnd);
         g_welcome.setChromeInsets(ui::toolbar_metrics::Height, ui::statusbar_metrics::Height);
         g_welcome.onOpenClicked = [] { RouteCommand(ui::Command::OpenDialog); };
@@ -3765,7 +3940,10 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
     case WM_NCMOUSEMOVE:
         g_titleBar.onNcMouseMove({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)});
-        g_tabs.onMouseLeave();
+        if (!g_tabs.dragging()) {
+            // 拖拽中防御性跳过（捕获期间不会收到 NC 移动；即便到达也不清状态）
+            g_tabs.onMouseLeave();
+        }
         break;
     case WM_NCMOUSELEAVE:
         g_titleBar.onNcMouseLeave();
@@ -3857,7 +4035,11 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         GetClientRect(hwnd, &client);
         const UINT dpi = ui::WindowDpi(hwnd);
         const int capH = ui::Scale(ui::metrics::CaptionHeight, dpi);
-        if (pt.y < capH) {
+        if (g_tabs.dragging()) {
+            // 拖拽路由优先：捕获持续送坐标（光标可到条外/窗外），直接驱动拖拽，
+            // 跳过下方 onMouseLeave 分支
+            g_tabs.onMouseMove(pt);
+        } else if (pt.y < capH) {
             g_tabs.onMouseMove(pt);  // Tab 悬停/tooltip
         } else {
             g_tabs.onMouseLeave();
@@ -3875,6 +4057,11 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_toolbar.onMouseLeave();
         g_statusBar.onMouseLeave();
         g_welcome.onMouseLeave();
+        return 0;
+    case WM_CAPTURECHANGED:
+        // 主窗口鼠标捕获被夺走/释放（lParam = 获得捕获的新窗口句柄，无需处理）
+        // → 通知 Tab 条取消拖拽（DEC-002：回滚视觉序不回调；非拖拽态 no-op）
+        g_tabs.onCaptureChanged();
         return 0;
     case WM_LBUTTONDOWN: {
         const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -3897,6 +4084,20 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
         break;  // 编辑区：Scintilla 子窗口自行处理
+    }
+    case WM_LBUTTONUP: {
+        const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        const UINT dpi = ui::WindowDpi(hwnd);
+        const int capH = ui::Scale(ui::metrics::CaptionHeight, dpi);
+        // 拖拽中（捕获把松手重定向到主窗口，可发生在条外/编辑区上方）或标题栏
+        // Tab 区内的纯点击松手（判定与 WM_LBUTTONDOWN 同款）→ 收口 TabStrip
+        //（提交拖拽 / 清按下记录）；非拖拽且标题栏外不拦截——编辑区
+        //（Scintilla 子窗口）等维持既有 DefWindowProc 原路径。
+        if (g_tabs.dragging() || pt.y < capH) {
+            g_tabs.onLButtonUp(pt);
+            return 0;
+        }
+        break;
     }
     case WM_RBUTTONDOWN: {
         const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -4314,6 +4515,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
         if (msg.message == WM_KEYDOWN && !g_selftestMenu && !g_selftestTabs &&
             HandleGlobalShortcut(static_cast<UINT>(msg.wParam))) {
             continue;  // 已消费：不产生 WM_CHAR、不分发
+        }
+        // 拖拽取消失效修复（DEC-004 方案①）：焦点在 Scintilla 编辑器子窗口时，
+        // 裸 Esc 经消息循环直达子窗口，主窗口 WM_KEYDOWN 收不到，拖拽无法取消；
+        // 故在消息循环层预拦截（与上方快捷键拦截同理，焦点在编辑器时同样生效）。
+        // 仅 g_tabs.dragging() 态独占：非拖拽态裸 Esc 语义完全不变（编辑器内
+        // Esc/取消等既有行为不受影响）。selftest-tabs 为同步直驱，消息循环泵
+        // 消息时不可能处于拖拽态，故无需 selftest 守卫。
+        if (msg.message == WM_KEYDOWN && g_tabs.dragging() &&
+            static_cast<UINT>(msg.wParam) == VK_ESCAPE) {
+            g_tabs.onKeyDown(VK_ESCAPE, false);  // 拖拽态下取消拖拽
+            continue;  // 已消费：不产生 WM_CHAR、不分发到任何子窗口
         }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);

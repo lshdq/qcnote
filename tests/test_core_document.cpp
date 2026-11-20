@@ -649,6 +649,113 @@ TEST_CASE("DocumentManager close 与激活邻居", "[core][dm]") {
 }
 
 // ===========================================================================
+// moveDocument：Tab 拖拽顺序重排（DEC-001：松手一次提交，活动指针不变）
+// ===========================================================================
+TEST_CASE("DocumentManager moveDocument 基本重排（TC-001）", "[core][dm]") {
+    DocumentManager m;
+    Document* d1 = m.newDocument();
+    Document* d2 = m.newDocument();
+    Document* d3 = m.newDocument();
+    d2->setContent("content-2"); // 顺序变化不得影响指针与内容
+
+    SECTION("0 → 2：首位移到末尾") {
+        m.moveDocument(0, 2);
+        const std::vector<Document*> docs = m.documents();
+        REQUIRE(docs.size() == 3);
+        REQUIRE(docs[0] == d2);
+        REQUIRE(docs[1] == d3);
+        REQUIRE(docs[2] == d1);
+    }
+    SECTION("2 → 0：末位移到开头") {
+        m.moveDocument(2, 0);
+        const std::vector<Document*> docs = m.documents();
+        REQUIRE(docs[0] == d3);
+        REQUIRE(docs[1] == d1);
+        REQUIRE(docs[2] == d2);
+    }
+    SECTION("中间位 1 → 2：目标为插入后下标") {
+        m.moveDocument(1, 2);
+        const std::vector<Document*> docs = m.documents();
+        REQUIRE(docs[0] == d1);
+        REQUIRE(docs[1] == d3);
+        REQUIRE(docs[2] == d2);
+    }
+    SECTION("指针与内容不变") {
+        m.moveDocument(0, 2); // (d1,d2,d3) → (d2,d3,d1)
+        REQUIRE(m.documentAt(2) == d1);
+        REQUIRE(m.documentAt(0) == d2);
+        REQUIRE(m.documentAt(0)->content() == "content-2");
+        REQUIRE(m.documentAt(1) == d3);
+    }
+}
+
+TEST_CASE("DocumentManager moveDocument 边界 no-op（TC-002）", "[core][dm]") {
+    DocumentManager m;
+    int listChanged = 0;
+    const auto token = m.documentsChanged.subscribe([&] { ++listChanged; });
+
+    SECTION("from == to：no-op 不发事件") {
+        m.newDocument();
+        m.newDocument();
+        m.newDocument();
+        REQUIRE(listChanged == 3); // newDocument 各发一次
+        m.moveDocument(1, 1);
+        REQUIRE(listChanged == 3);
+    }
+    SECTION("越界（≥N 与巨大值）：no-op 不发事件") {
+        m.newDocument();
+        m.newDocument();
+        m.moveDocument(2, 0); // from 越界（N=2）
+        m.moveDocument(0, 2); // to 越界
+        m.moveDocument(100, 0);
+        m.moveDocument(0, 100);
+        m.moveDocument(static_cast<std::size_t>(-1), 0);
+        REQUIRE(listChanged == 2); // 仅两次 newDocument
+    }
+    SECTION("单文档：from==to=0 唯一合法操作") {
+        m.newDocument();
+        m.moveDocument(0, 0);
+        REQUIRE(listChanged == 1);
+        REQUIRE(m.documentCount() == 1);
+    }
+    SECTION("空表：任意调用 no-op") {
+        m.moveDocument(0, 0);
+        m.moveDocument(0, 1);
+        REQUIRE(listChanged == 0);
+        REQUIRE(m.documentCount() == 0);
+    }
+    m.documentsChanged.unsubscribe(token);
+}
+
+TEST_CASE("DocumentManager moveDocument 活动与事件（TC-003）", "[core][dm]") {
+    DocumentManager m;
+    Document* d1 = m.newDocument();
+    Document* d2 = m.newDocument();
+    Document* d3 = m.newDocument();
+    REQUIRE(m.activeDocument() == d3);
+
+    int listChanged = 0, activeChanged = 0;
+    const auto t1 = m.documentsChanged.subscribe([&] { ++listChanged; });
+    const auto t2 = m.activeDocumentChanged.subscribe([&] { ++activeChanged; });
+
+    SECTION("移动非活动文档：活动指针不变，documentsChanged 恰一次") {
+        m.moveDocument(0, 1); // d1（非活动）
+        REQUIRE(m.activeDocument() == d3);
+        REQUIRE(listChanged == 1);
+        REQUIRE(activeChanged == 0);
+    }
+    SECTION("移动的正是活动文档：指针同样不变") {
+        m.moveDocument(2, 0); // d3（活动）
+        REQUIRE(m.activeDocument() == d3);
+        REQUIRE(listChanged == 1);
+        REQUIRE(activeChanged == 0);
+        REQUIRE(m.documents()[0] == d3);
+    }
+    m.documentsChanged.unsubscribe(t1);
+    m.activeDocumentChanged.unsubscribe(t2);
+}
+
+// ===========================================================================
 // 回调：多订阅、退订、各事件触发点
 // ===========================================================================
 TEST_CASE("DocumentManager 回调事件", "[core][dm]") {
