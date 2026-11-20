@@ -93,7 +93,7 @@ private:
     bool wrapActive_ = false;  // 换行 toggle 激活态（DEC-006 激活视觉依据）
     int hover_ = -1;   // hover 按钮下标（-1 无）
     int pressed_ = -1;
-    UINT_PTR tipTimerId_ = 3;  // 主窗口宿主 id 分配：1 会话轮询/2 TabStrip/3 工具栏/4 状态栏/5 转发重试（见 main.cpp）
+    UINT_PTR tipTimerId_ = 3;  // 主窗口宿主 id 分配：1 会话轮询/2 TabStrip/3 工具栏/4 状态栏/5 转发重试/6 Tab 拖拽让位动画（见 main.cpp）
     bool tipTimerArmed_ = false;
     bool tipVisible_ = false;
     Button tipButton_ = Button::New;

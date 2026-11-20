@@ -122,7 +122,7 @@ private:
     mutable RECT clientCache_{};
     mutable UINT layoutDpi_ = 0;
     mutable bool layoutDirty_ = true;
-    UINT_PTR tipTimerId_ = 4;  // 主窗口宿主 id 分配：1 会话轮询/2 TabStrip/3 工具栏/4 状态栏/5 转发重试（见 main.cpp）
+    UINT_PTR tipTimerId_ = 4;  // 主窗口宿主 id 分配：1 会话轮询/2 TabStrip/3 工具栏/4 状态栏/5 转发重试/6 Tab 拖拽让位动画（见 main.cpp）
     bool tipTimerArmed_ = false;
     bool tipVisible_ = false;
     ManualTooltip tooltip_;

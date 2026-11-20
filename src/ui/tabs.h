@@ -6,14 +6,23 @@
 //                                  结果向下取整、饱和回退最小宽 + 横向滚动）
 //   ComputeTabStripGeometry    —— 几何纯函数：各 Tab 本体/文字/● 标记矩形、分隔线可见性、
 //                                  内容宽/溢出判定/最大滚动量（布局/命中/绘制三方共用）
-//   TabDragSwapIndex           —— 拖拽中点交换判定纯函数：光标 x 越过相邻 Tab bounds
-//                                  中点（严格越过）才交换；首下标向左/末下标向右 → -1
+//   TabDragSwapIndex           —— 拖拽中点交换判定纯函数（链式相邻交换的历史口径，保留供
+//                                  原单测覆盖；拖拽路径已改用 TabDragInsertIndex——DEC-002）
+//   TabDragInsertIndex         —— 拖拽插入槽位判定纯函数（DEC-002 压缩流中点）：抽掉被拖
+//                                  槽位后的邻居静息位置，光标严格越过压缩中点即计入
+//   ComputeTabDragOffsets      —— 拖拽让位偏移纯函数：被拖 Tab = 跟随偏移；起始/插入槽位
+//                                  之间的邻居 ±(被拖宽+间距)，区间外 0
+//   ApproachPx                 —— 指数趋近缓动纯函数：每帧趋近剩余距离的固定比例，
+//                                  |Δ|≤落位阈值时精确取目标（单调不越目标、有限帧收敛）
 //   TabStrip                   —— 数据（TabItem mock，M2 换文档系统）+ 绘制 + 交互
 //                                  （激活点击/右键菜单/键盘导航/滚轮滚动/tooltip/
-//                                  拖拽重排：位移越过系统拖拽阈值进入拖拽，中点交换仅
-//                                  本地 items_ 预览（实时交换式），松手顺序有变才一次
-//                                  onTabReordered 提交；Esc/捕获丢失/失焦统一取消收口
-//                                  回滚视觉序不回调——DEC-001/002，详见 tabs.cpp 头注释）
+//                                  拖拽重排：视觉偏移式（DEC-001，拖拽期间 items_/
+//                                  active/focus 零改动）——越阈值拖起后被拖 Tab 水平
+//                                  跟随光标（钳制条内），邻居经 WM_TIMER 缓动让位
+//                                  （DEC-003），松手顺序有变才一次 onTabReordered(from,
+//                                  insert) 提交（直接落位）；Esc/捕获丢失/失焦统一取消
+//                                  收口（清状态 + 停表 + 重绘回原位，不回调）——详见
+//                                  tabs.cpp 头注释）
 //
 // 命中链整合：Tab 本体与「溢出滚动区」归 HTCLIENT（main.cpp 在 ComputeCaptionHitTest
 // 返回 HTCAPTION 后追加 hitInteractive 判定）；未溢出时空白区维持 HTCAPTION（可拖动
@@ -75,7 +84,20 @@ constexpr int DragEdgeScrollStep = 60; // 边缘带内每次鼠标移动的滚�
                                        // 取滚轮 WheelStep 同量级（≈2/3 个最小宽 Tab）：
                                        // 每步可感知又不跳跃
 
+constexpr double DragAnimApproachRatio = 0.45;  // 邻居让位动画每帧指数趋近比例（DEC-003）：
+                                                // 10ms 请求节拍下 ~7 帧收敛到 1px 阈值
+                                                // （≈100-150ms，对齐 Chrome 手感）；帧率波动
+                                                // 只影响收敛快慢、不影响终点
+constexpr int DragAnimTimerMs = 10;     // 让位动画 WM_TIMER 请求间隔（系统实际派发
+                                        // ~15.6ms ≈ 64fps；收敛即停表，无残留计时器）
+constexpr int DragAnimSnapPx = 1;       // 让位动画精确落位阈值（|Δ|≤1px 直接取目标，
+                                        // 保证有限帧内终止——ApproachPx 共用）
 }  // namespace tab_metrics
+
+// 拖拽让位动画计时器 id（主窗口宿主 id 分配：1 会话轮询 / 2 Tab tooltip / 3 工具栏 /
+// 4 状态栏 / 5 转发重试 / 6 本表——单窗口内互斥，见 main.cpp 分配表）。头文件公开供
+// 单测/selftest 合成节拍直驱 onTimer（DEC-004 测试缝的同源约定）。
+constexpr UINT_PTR kDragAnimTimerId = 6;
 
 // ---------------------------------------------------------------------------
 // 宽度自适应（纯函数；输入自然宽、输出分配宽，均物理像素）
@@ -121,11 +143,34 @@ TabStripGeometry ComputeTabStripGeometry(const std::vector<TabItem>& items, int 
 // 命中（窗口客户区坐标）：Tab 本体 → 下标；空白区 → -1。
 int TabStripHitTest(const TabStripGeometry& geo, POINT clientPt);
 
-// 拖拽中点交换判定（纯函数）：dragIndex 为被拖 Tab 当前下标，clientX 为光标 x
-// （窗口客户区坐标）。光标严格越过相邻 Tab bounds（已含滚动偏移）中点 → 返回
-// 应与之交换的相邻下标（dragIndex-1 / dragIndex+1）；否则 -1（同位未越过、
-// 首下标向左、末下标向右、dragIndex 越界、空几何均不交换）。
+// 拖拽中点交换判定（纯函数，链式相邻交换的历史口径——DEC-002 保留：原单测继续
+// 覆盖，拖拽路径已改用下方 TabDragInsertIndex）：dragIndex 为被拖 Tab 当前下标，
+// clientX 为光标 x（窗口客户区坐标）。光标严格越过相邻 Tab bounds（已含滚动偏移）
+// 中点 → 返回应与之交换的相邻下标（dragIndex-1 / dragIndex+1）；否则 -1（同位
+// 未越过、首下标向左、末下标向右、dragIndex 越界、空几何均不交换）。
 int TabDragSwapIndex(const TabStripGeometry& geo, int dragIndex, int clientX);
+
+// 拖拽插入槽位判定（纯函数，DEC-002 压缩流中点）：dragIndex 为被拖 Tab 下标
+// （视觉偏移式下数据零改动，恒为按下时下标），clientX 为光标 x（窗口客户区
+// 坐标）。把被拖槽位从流中抽掉：i<dragIndex 的邻居静息位置即 bounds[i] 本身；
+// i>dragIndex 的邻居左移 (被拖宽+间距)。插入槽位 = 压缩中点严格小于 clientX
+// 的邻居个数（无状态单阈值跨线，同点跨入跨出天然无振荡）。dragIndex 越界直接
+// 返回钳制到 [0, n-1] 的 dragIndex（不做判定）；空几何返回 0（纯防御——正常
+// 路径 dragFromIndex_ 恒有效）。
+int TabDragInsertIndex(const TabStripGeometry& geo, int dragIndex, int clientX);
+
+// 拖拽让位偏移（纯函数）：返回长度 n 的每 Tab 视觉目标偏移——i==fromIndex 为
+// followDx（被拖 Tab 跟随光标的偏移，直接生效不缓动）；i∈(from, insert] 的邻居
+// 为 -(被拖宽+间距)（右邻左移让位）；i∈[insert, from) 的邻居为 +(被拖宽+间距)
+// （左邻右移让位）；其余 0。被拖宽与间距均从 geo 推导；from/insert 越界钳制到
+// [0, n-1]（空几何返回空数组）。
+std::vector<int> ComputeTabDragOffsets(const TabStripGeometry& geo, int fromIndex,
+                                       int insertIndex, int followDx);
+
+// 指数趋近缓动（纯函数）：|target−current| ≤ tab_metrics::DragAnimSnapPx 时精确
+// 返回 target（终止性）；否则 current + round(Δ×ratio)。ratio∈(0,1)（越界钳制）
+// 单调收敛不越目标；步进取整退化为 0 时至少前进 1px——任意合法比例均有限帧收敛。
+int ApproachPx(int current, int target, double ratio);
 
 // ---------------------------------------------------------------------------
 // 右键菜单与无障碍（纯函数）
@@ -175,6 +220,11 @@ public:
     int scrollOffset() const { geometry(); return scrollOffset_; }
     int focusIndex() const { return focusIndex_; }  // 键盘焦点（仅指示，非活动文档）
     bool dragging() const { return dragging_; }     // 拖拽态（组装层消息路由查询）
+    int dragInsertIndex() const {                  // 插入槽位（压缩流中点判定；提交 to；
+        return dragInsertIndex_;                    // 非拖拽态 -1——DEC-004 只读测试缝）
+    }
+    std::vector<int> dragVisualOffsets() const;     // 每 Tab 当前视觉偏移完整数组（被拖=
+                                                    // 跟随值，邻居=动画当前值；非拖拽态全 0）
 
     // —— 命中（窗口客户区坐标；供 main.cpp 的 NCHITTEST/鼠标路由）——
     int hitTab(POINT clientPt) const;               // Tab 本体 → index；空白 -1
@@ -191,7 +241,7 @@ public:
     void onMouseWheel(bool horizontal, int delta);  // 溢出时横向滚动（竖直轮映射为横向）
     bool onKeyDown(UINT vk, bool shiftDown);        // 键盘导航；返回是否消费
     void onTimer(UINT_PTR timerId);                 // tooltip 延迟计时
-    void onCaptureChanged();                        // 鼠标捕获丢失：取消拖拽（回滚视觉序，不回调）
+    void onCaptureChanged();                        // 鼠标捕获丢失：取消拖拽（清状态+停表+重绘回原位，不回调）
     void onWindowKillFocus();                       // 窗口失焦：取消拖拽（如在拖）+ 隐藏键盘焦点环
     void onDpiChanged();
     void onLayoutChanged();                         // 窗口尺寸变化：钳制滚动 + 重绘
@@ -204,7 +254,7 @@ public:
     std::function<void(int)> onTabActivated;                // 激活回调（鼠标/键盘）
     std::function<void(int, Command)> onTabContextCommand;  // 右键菜单命令（index + 命令）
     std::function<void(int, int)> onTabReordered;           // 拖拽重排提交：松手时顺序有变才触发
-                                                            // 一次（from=按下时下标，to=最终下标）
+                                                            // 一次（from=按下时下标，to=最终插入槽位）
 
 private:
     void markDirtyAndInvalidate();
@@ -213,13 +263,16 @@ private:
     void activate(int index);        // 激活 + 回调
     void moveFocus(int delta);       // 循环移动键盘焦点
     void scrollIntoView(int index);  // 滚动使指定 Tab 完整可见（QML Contain 语义）
-    // —— 拖拽重排状态机（实时交换式预览 + 松手一次提交，DEC-001/002）——
-    void beginDrag();                   // 位移越阈值：进入拖拽（捕获 + 悬停/tooltip 让位）
-    void dragMove(POINT clientPt);      // 拖拽中 move：按钮防呆收口/x 钳制/边缘滚动/中点交换
-    void swapPreview(int neighbor);     // 本地交换预览（drag/active/focus 索引随迁）
-    void cancelDrag();                  // 统一取消收口：回滚视觉序 + 释放捕获，不回调
-    void clearDragState();              // 清全部拖拽/按下状态（不触捕获、不回调）
-    void resetPressAndDragState();      // 外部数据重建：安全终止（不回滚、不回调）
+    // —— 拖拽重排状态机（视觉偏移式 + 松手一次提交，DEC-001/002/003）——
+    void beginDrag();                   // 位移越阈值：进入拖拽（捕获 + 悬停/tooltip 让位 +
+                                        // 初始化跟随/让位状态 + 起动画表）
+    void dragMove(POINT clientPt);      // 拖拽中 move：按钮防呆收口/x 钳制/边缘滚动/
+                                        // 插入槽位判定/跟随钳制/让位目标更新
+    void cancelDrag();                  // 统一取消收口：清状态 + 停表 + 释放捕获，不回调
+    void clearDragState();              // 清全部拖拽/按下状态与动画表（不触捕获、不回调）
+    void resetPressAndDragState();      // 外部数据重建：安全终止（不回调）
+    void armDragAnimTimer();            // 起让位动画表（10ms；无 hwnd 跳过）
+    void killDragAnimTimer();           // 停让位动画表（仅自己持有才杀）
     void openContextMenu(int index, POINT clientPt);
     void openContextMenuAtFocus();   // Menu 键 / Shift+F10
     void armTooltipTimer();
@@ -234,14 +287,20 @@ private:
     int activeIndex_ = -1;
     int focusIndex_ = -1;
     int hoverIndex_ = -1;
-    // —— 拖拽重排状态（命名对齐 hoverIndex_ 风格）——
+    // —— 拖拽重排状态（命名对齐 hoverIndex_ 风格；视觉偏移式：数据零改动）——
     int pressIndex_ = -1;           // 左键按下命中的 Tab 下标（拖拽判定起点；-1 无按下）
     POINT pressPt_{};               // 按下位置（位移阈值基准点）
     bool pressRealButton_ = false;  // 本次按下源自真实按钮（down 时刻 GetKeyState 采样；
                                     // selftest/单测的合成驱动为 false——按钮防呆据此豁免）
     bool dragging_ = false;         // 拖拽态：位移越阈值进入，松手提交/取消收口退出
-    int dragIndex_ = -1;            // 被拖 Tab 当前下标（预览交换中随迁）
-    int dragFromIndex_ = -1;        // 拖拽起始下标（提交 from / 取消回滚锚点）
+    int dragFromIndex_ = -1;        // 拖拽起始下标（= 被拖 Tab 下标：数据零改动不随迁；
+                                    // 提交 from / 跟随槽位锚点）
+    int dragInsertIndex_ = -1;      // 插入槽位（压缩流中点判定；提交 to；非拖拽 -1）
+    int dragGrabX_ = 0;             // beginDrag 时抓取点距槽左缘的物理偏移（跟随锚定）
+    int followDx_ = 0;              // 被拖 Tab 跟随偏移（直接生效，不缓动；仅横向）
+    std::vector<int> dragVisualDx_; // 邻居当前视觉偏移（动画值；被拖项同步为 followDx_）
+    std::vector<int> dragTargetDx_; // 邻居目标偏移（让位/回位终点）
+    bool dragAnimArmed_ = false;    // 让位动画表在跑（仅自己持有才杀）
     // 键盘焦点环可见性（对齐 QML activeFocus 语义）：仅键盘导航后显示，鼠标点击/
     // 窗口失焦隐藏；focusIndex 本身始终维护（键盘导航的起点状态）
     bool focusVisible_ = false;

@@ -1,13 +1,18 @@
 // Tab 条实现。宽度自适应与几何为纯函数（单测直接覆盖），文字宽度经 GDI
 // GetTextExtentPoint32 实测（与标签渲染同一字体，随 DPI 重建）；绘制全 GDI，
 // 与标题栏同一 WM_PAINT 内直接落笔（WM_ERASEBKGND 已禁，无闪烁）。
-// 拖拽重排（DEC-001/002）：位移越过系统拖拽阈值（SM_CXDRAG/SM_CYDRAG 最大值，
-// 0 退 4px）进入拖拽并 SetCapture；中点交换（TabDragSwapIndex 判定）仅本地
-// items_ 预览，松手顺序有变才一次 onTabReordered 提交；Esc/捕获丢失/失焦经
-// cancelDrag 统一收口（回滚视觉序、ReleaseCapture、不回调），外部 setItems/
-// removeRange 到达时安全终止（不回滚不回调）。真实按钮会话在 move 中防呆检测
-// 左键已松（up 丢失）按取消收口；selftest/单测的合成驱动（down 时刻采样无真实
-// 按钮）豁免该检测，由显式 up/Esc/捕获丢失收口。
+// 拖拽重排（DEC-001/002/003，Chrome 式视觉跟随）：位移越过系统拖拽阈值
+// （SM_CXDRAG/SM_CYDRAG 最大值，0 退 4px）进入拖拽并 SetCapture；拖拽期间
+// items_/activeIndex_/focusIndex_ 零改动——被拖 Tab 仅在绘制层水平跟随光标
+// （抓取点锚定光标下，钳制条内，仅横向），插入槽位由 TabDragInsertIndex 压缩流
+// 中点判定（无状态单阈值无振荡），起始/插入槽位之间的邻居经 WM_TIMER（id 6，
+// 10ms 请求节拍 + ApproachPx 指数趋近 + 1px 精确落位）缓动滑入让位/回位空位，
+// 收敛即停表；松手顺序有变才一次 onTabReordered(from, insert) 提交（直接落位
+// 无收尾动画，DEC-005）；Esc/捕获丢失/失焦经 cancelDrag 统一收口（数据从未
+// 变动——清状态 + 停表 + 重绘即回原位，不回调），外部 setItems/removeRange 到达
+// 时安全终止（不回调）。真实按钮会话在 move 中防呆检测左键已松（up 丢失）按取消
+// 收口；selftest/单测的合成驱动（down 时刻采样无真实按钮）豁免该检测，由显式
+// up/Esc/捕获丢失收口。
 #include "tabs.h"
 
 #include <algorithm>
@@ -21,7 +26,7 @@ namespace ui {
 
 namespace {
 constexpr wchar_t kUnsavedMarkText[] = L"●";  // 未保存标记（形状即线索）
-constexpr UINT_PTR kTipTimerId = 2;           // tooltip 延迟计时器 id（主窗口宿主 id 分配：1 会话轮询 / 2 Tab / 3 工具栏 / 4 状态栏 / 5 转发重试，见 main.cpp）
+constexpr UINT_PTR kTipTimerId = 2;           // tooltip 延迟计时器 id（主窗口宿主 id 分配：1 会话轮询 / 2 Tab / 3 工具栏 / 4 状态栏 / 5 转发重试 / 6 Tab 拖拽让位动画（kDragAnimTimerId，tabs.h 公开），见 main.cpp）
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -152,6 +157,84 @@ int TabDragSwapIndex(const TabStripGeometry& geo, int dragIndex, int clientX) {
         }
     }
     return -1;  // 同位（未严格越过任一侧中点）/ 首向左 / 末向右
+}
+
+int TabDragInsertIndex(const TabStripGeometry& geo, int dragIndex, int clientX) {
+    const int n = static_cast<int>(geo.tabs.size());
+    if (n <= 0) {
+        return 0;  // 空几何：无有效槽位，返回 0（纯防御）
+    }
+    if (dragIndex < 0 || dragIndex >= n) {
+        return std::clamp(dragIndex, 0, n - 1);  // 越界：直接返回钳制后的 dragIndex（不判定）
+    }
+    const int idx = dragIndex;
+    const RECT& drag = geo.tabs[static_cast<size_t>(idx)].bounds;
+    const int dragW = std::max(0, static_cast<int>(drag.right) - static_cast<int>(drag.left));
+    // 间距从几何推导（布局恒等距）：任意相邻对 bounds[i+1].left − bounds[i].right
+    const int gap =
+        n >= 2 ? std::max(0, static_cast<int>(geo.tabs[1].bounds.left) -
+                                 static_cast<int>(geo.tabs[0].bounds.right))
+               : 0;
+    int insert = 0;
+    for (int i = 0; i < n; ++i) {
+        if (i == idx) {
+            continue;
+        }
+        // 压缩流静息位置：被拖槽位左侧的邻居不动，右侧邻居左移 (被拖宽+间距)
+        int restLeft = static_cast<int>(geo.tabs[static_cast<size_t>(i)].bounds.left);
+        if (i > idx) {
+            restLeft -= dragW + gap;
+        }
+        const RECT& r = geo.tabs[static_cast<size_t>(i)].bounds;
+        const int mid =
+            restLeft + std::max(0, static_cast<int>(r.right) - static_cast<int>(r.left)) / 2;
+        if (mid < clientX) {
+            ++insert;  // 光标严格越过该压缩中点
+        }
+    }
+    return insert;
+}
+
+std::vector<int> ComputeTabDragOffsets(const TabStripGeometry& geo, int fromIndex,
+                                       int insertIndex, int followDx) {
+    const int n = static_cast<int>(geo.tabs.size());
+    std::vector<int> out(static_cast<size_t>(std::max(0, n)), 0);
+    if (n <= 0) {
+        return out;
+    }
+    const int from = std::clamp(fromIndex, 0, n - 1);
+    const int insert = std::clamp(insertIndex, 0, n - 1);
+    // 让位量 = 被拖宽 + 间距（均从 geo 推导，随 DPI 自动正确）
+    const RECT& b = geo.tabs[static_cast<size_t>(from)].bounds;
+    const int shift = std::max(0, static_cast<int>(b.right) - static_cast<int>(b.left)) +
+                      (n >= 2 ? std::max(0, static_cast<int>(geo.tabs[1].bounds.left) -
+                                               static_cast<int>(geo.tabs[0].bounds.right))
+                              : 0);
+    out[static_cast<size_t>(from)] = followDx;  // 被拖 Tab：跟随偏移本身（不缓动）
+    if (insert > from) {
+        for (int i = from + 1; i <= insert; ++i) {
+            out[static_cast<size_t>(i)] = -shift;  // 右侧邻居左移让位
+        }
+    } else if (insert < from) {
+        for (int i = insert; i < from; ++i) {
+            out[static_cast<size_t>(i)] = shift;  // 左侧邻居右移让位
+        }
+    }
+    return out;
+}
+
+int ApproachPx(int current, int target, double ratio) {
+    const long long delta = static_cast<long long>(target) - static_cast<long long>(current);
+    const long long mag = delta < 0 ? -delta : delta;
+    if (mag <= tab_metrics::DragAnimSnapPx) {
+        return target;  // 落位阈值内：精确取目标（终止性）
+    }
+    const double r = std::clamp(ratio, 0.0, 1.0);
+    long long step = std::llround(static_cast<double>(delta) * r);
+    if (step == 0) {
+        step = delta > 0 ? 1 : -1;  // 极小比例步进取整退化：至少前进 1px（防停滞）
+    }
+    return static_cast<int>(static_cast<long long>(current) + step);
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +472,23 @@ bool TabStrip::hitInteractive(POINT clientPt) const {
     return hitTab(clientPt) >= 0;  // 未溢出：仅 Tab 本体接管，空白区留给 HTCAPTION
 }
 
+std::vector<int> TabStrip::dragVisualOffsets() const {
+    // DEC-004 只读测试缝：长度恒 = Tab 数；非拖拽态全 0（空表为空数组）
+    const int n = static_cast<int>(items_.size());
+    std::vector<int> out(static_cast<size_t>(std::max(0, n)), 0);
+    if (!dragging_) {
+        return out;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (i == dragFromIndex_) {
+            out[static_cast<size_t>(i)] = followDx_;  // 被拖项即时跟随（不缓动）
+        } else if (i < static_cast<int>(dragVisualDx_.size())) {
+            out[static_cast<size_t>(i)] = dragVisualDx_[static_cast<size_t>(i)];
+        }
+    }
+    return out;
+}
+
 void TabStrip::ensureFonts() const {
     const UINT dpi = WindowDpi(hwnd_);
     if (labelFont_ && markFont_ && fontDpi_ == dpi) {
@@ -537,23 +637,28 @@ void TabStrip::onLButtonUp(POINT /*clientPt*/) {
         pressRealButton_ = false;
         return;
     }
+    const int n = static_cast<int>(items_.size());
     const int from = dragFromIndex_;
-    const int to = dragIndex_;
+    int to = dragInsertIndex_;
+    if (to < 0 || to >= n) {
+        to = from;  // 防御：插入槽位失效视为未移动（from==to 不回调）
+    }
     // 先收口再回调：回调内的整表重建（setItems）与捕获变更重入都应看到已复位
-    // 的拖拽态（松手提交的是既成预览序，up 坐标无需再判定）
+    // 的拖拽态（up 坐标不再参与判定——提交的是既成插入槽位）。清状态即直接
+    // 落位（DEC-005：无收尾动画、不引入过渡态）
     clearDragState();
     if (hwnd_ && ::GetCapture() == hwnd_) {
         ReleaseCapture();  // 仅释放自己持有的捕获；未捕获时无副作用
     }
     invalidateArea();
     if (from != to && onTabReordered) {
-        onTabReordered(from, to);  // 松手一次提交（DEC-001）
+        onTabReordered(from, to);  // 松手一次提交（DEC-001；真实换序由 moveDocument 完成）
     }
 }
 
 void TabStrip::onCaptureChanged() {
     if (dragging_) {
-        cancelDrag();  // 捕获被夺走/释放：取消回滚，不回调
+        cancelDrag();  // 捕获被夺走/释放：清状态+停表+重绘回原位，不回调
     }
 }
 
@@ -622,7 +727,7 @@ bool TabStrip::onKeyDown(UINT vk, bool shiftDown) {
 
 void TabStrip::onWindowKillFocus() {
     if (dragging_) {
-        cancelDrag();  // 失焦取消：回滚视觉序，不回调（需求取消路径 3）
+        cancelDrag();  // 失焦取消：清状态+停表+重绘回原位，不回调（需求取消路径 3）
     }
     if (focusVisible_) {
         focusVisible_ = false;
@@ -631,6 +736,31 @@ void TabStrip::onWindowKillFocus() {
 }
 
 void TabStrip::onTimer(UINT_PTR timerId) {
+    if (timerId == kDragAnimTimerId) {
+        // 让位动画节拍（DEC-003）：全收敛 → 停表；否则逐项指数趋近 + tabArea 局部
+        // 重绘。被拖项 visual==target==followDx_（dragMove 直写），趋近自然 no-op
+        if (!dragging_) {
+            killDragAnimTimer();  // 陈旧节拍防御（收口路径已停表，双保险）
+            return;
+        }
+        bool settled = true;
+        for (size_t i = 0; i < dragVisualDx_.size() && i < dragTargetDx_.size(); ++i) {
+            if (dragVisualDx_[i] != dragTargetDx_[i]) {
+                settled = false;
+                break;
+            }
+        }
+        if (settled) {
+            killDragAnimTimer();
+            return;
+        }
+        for (size_t i = 0; i < dragVisualDx_.size() && i < dragTargetDx_.size(); ++i) {
+            dragVisualDx_[i] = ApproachPx(dragVisualDx_[i], dragTargetDx_[i],
+                                          tab_metrics::DragAnimApproachRatio);
+        }
+        invalidateArea();
+        return;
+    }
     if (timerId != kTipTimerId) {
         return;
     }
@@ -702,13 +832,25 @@ void TabStrip::scrollIntoView(int index) {
 }
 
 // ---------------------------------------------------------------------------
-// 拖拽重排状态机（DEC-001/002：实时交换式预览 + 松手一次提交）
+// 拖拽重排状态机（DEC-001/002/003：视觉偏移式 + 松手一次提交）
 // ---------------------------------------------------------------------------
 
 void TabStrip::beginDrag() {
     dragging_ = true;
-    dragIndex_ = pressIndex_;
     dragFromIndex_ = pressIndex_;
+    dragInsertIndex_ = pressIndex_;  // 首次 dragMove 即按压缩流中点重判（防御初值）
+    const TabStripGeometry g = geometry();
+    const int n = static_cast<int>(g.tabs.size());
+    if (dragFromIndex_ >= 0 && dragFromIndex_ < n) {
+        // 抓取点距槽左缘的物理偏移：跟随锚定（抓取点保持在光标下）
+        dragGrabX_ =
+            static_cast<int>(pressPt_.x) - static_cast<int>(g.tabs[static_cast<size_t>(dragFromIndex_)].bounds.left);
+    } else {
+        dragGrabX_ = 0;
+    }
+    followDx_ = 0;
+    dragVisualDx_.assign(items_.size(), 0);
+    dragTargetDx_.assign(items_.size(), 0);
     if (hwnd_) {
         // 捕获保证条外/窗外坐标继续送达；失败不阻塞进入拖拽态（headless/
         // selftest 下捕获可能不可用），无捕获时由再次交互/取消路径自然收口
@@ -716,6 +858,7 @@ void TabStrip::beginDrag() {
     }
     hoverIndex_ = -1;  // 悬停高亮让位给抓起描边
     hideTooltip();
+    armDragAnimTimer();
     invalidateArea();
 }
 
@@ -749,85 +892,89 @@ void TabStrip::dragMove(POINT clientPt) {
             if (clamped != scrollOffset_) {
                 scrollOffset_ = clamped;
                 invalidateArea();
-                g = geometry();  // 滚动后 bounds 平移，按新几何继续交换判定
+                g = geometry();  // 滚动后 bounds 平移，按新几何继续判定/跟随
             }
         }
     }
-    const int neighbor = TabDragSwapIndex(g, dragIndex_, static_cast<int>(x));
-    if (neighbor >= 0 && neighbor < static_cast<int>(items_.size())) {
-        swapPreview(neighbor);
+    const int n = static_cast<int>(items_.size());
+    if (dragFromIndex_ < 0 || dragFromIndex_ >= n ||
+        dragFromIndex_ >= static_cast<int>(g.tabs.size())) {
+        return;  // 防御：数据/几何不一致（正常路径由安全终止排除）
     }
-}
-
-void TabStrip::swapPreview(int neighbor) {
-    const int cur = dragIndex_;
-    if (cur < 0 || cur >= static_cast<int>(items_.size())) {
-        return;  // 防御：外部重建竞态（正常路径已由安全终止排除）
+    // 插入槽位：压缩流中点判定（DEC-002，无状态单阈值——同点跨入跨出无振荡）
+    dragInsertIndex_ = TabDragInsertIndex(g, dragFromIndex_, static_cast<int>(x));
+    // 跟随：抓取点保持在光标下（仅横向；竖直位移只参与进入拖拽的阈值判定），
+    // 视觉矩形钳制条内（不遮菜单按钮/窗口控制）。槽左缘取自重取后的 g——
+    // 滚动时光标下不漂移
+    const RECT& slot = g.tabs[static_cast<size_t>(dragFromIndex_)].bounds;
+    const int w = static_cast<int>(slot.right) - static_cast<int>(slot.left);
+    int followLeft = static_cast<int>(x) - dragGrabX_;
+    const int maxLeft = static_cast<int>(g.area.right) - w;
+    if (maxLeft >= static_cast<int>(g.area.left)) {
+        followLeft = std::clamp(followLeft, static_cast<int>(g.area.left), maxLeft);
+    } else {
+        followLeft = static_cast<int>(g.area.left);  // 条比 Tab 窄的退化防御
     }
-    std::swap(items_[static_cast<size_t>(cur)], items_[static_cast<size_t>(neighbor)]);
-    dragIndex_ = neighbor;
-    // active/focus 随迁：被拖 Tab 是活动 Tab（down 即激活的常态）时跟随移动；
-    // active 是另一 Tab 时迁到空出的下标——两种情况统一为「两下标互换」
-    if (activeIndex_ == cur) {
-        activeIndex_ = neighbor;
-    } else if (activeIndex_ == neighbor) {
-        activeIndex_ = cur;
+    followDx_ = followLeft - static_cast<int>(slot.left);
+    // 邻居让位目标：被拖项目标即当前跟随值（不缓动，直接生效）
+    dragTargetDx_ = ComputeTabDragOffsets(g, dragFromIndex_, dragInsertIndex_, followDx_);
+    if (dragVisualDx_.size() != dragTargetDx_.size()) {
+        dragVisualDx_.assign(dragTargetDx_.size(), 0);  // 防御：长度漂移重建
     }
-    if (focusIndex_ == cur) {
-        focusIndex_ = neighbor;
-    } else if (focusIndex_ == neighbor) {
-        focusIndex_ = cur;
+    dragVisualDx_[static_cast<size_t>(dragFromIndex_)] = followDx_;
+    // 起表：仅当确有未到位的让位偏移（目标变化但已到位/纯跟随移动时不空转）
+    bool pending = false;
+    for (size_t i = 0; i < dragVisualDx_.size() && i < dragTargetDx_.size(); ++i) {
+        if (dragVisualDx_[i] != dragTargetDx_[i]) {
+            pending = true;
+            break;
+        }
     }
-    markDirtyAndInvalidate();  // 置脏 → 自然宽随 items_ 新序重测（宽度与 Tab 同迁）
+    if (pending) {
+        armDragAnimTimer();
+    }
+    invalidateArea();  // 被拖 Tab 即时跟随 → 每次 move 都需重绘
 }
 
 void TabStrip::cancelDrag() {
     if (!dragging_) {
         return;
     }
-    // 回滚视觉序：被拖 Tab 从当前下标移回起始下标（DEC-002：数据层拖拽中从未
-    // 被修改，回滚是纯视觉操作零风险），active/focus 按同一移动映射恢复
-    const int cur = dragIndex_;
-    const int from = dragFromIndex_;
-    const int n = static_cast<int>(items_.size());
-    if (cur != from && cur >= 0 && cur < n && from >= 0 && from < n) {
-        const auto remap = [from, cur](int idx) {
-            if (idx == cur) {
-                return from;  // 被拖 Tab 归位
-            }
-            if (from < cur && idx >= from && idx < cur) {
-                return idx + 1;  // 区间内其余 Tab 右移一格
-            }
-            if (from > cur && idx > cur && idx <= from) {
-                return idx - 1;  // 区间内其余 Tab 左移一格
-            }
-            return idx;
-        };
-        if (from < cur) {
-            std::rotate(items_.begin() + from, items_.begin() + cur,
-                        items_.begin() + cur + 1);
-        } else {
-            std::rotate(items_.begin() + cur, items_.begin() + cur + 1,
-                        items_.begin() + from + 1);
-        }
-        activeIndex_ = remap(activeIndex_);
-        focusIndex_ = remap(focusIndex_);
-        markDirtyAndInvalidate();
-    }
+    // 视觉偏移式（DEC-001）：拖拽期间数据从未变动——清状态 + 停表 + 重绘即回
+    // 原位，无需回滚；不触发任何回调（DEC-002）
     clearDragState();
     if (hwnd_ && ::GetCapture() == hwnd_) {
         ReleaseCapture();  // 仅释放自己持有的捕获（防误伤他组件捕获）
     }
-    invalidateArea();  // 不触发任何回调（DEC-002）
+    invalidateArea();
 }
 
 void TabStrip::clearDragState() {
+    killDragAnimTimer();
     dragging_ = false;
-    dragIndex_ = -1;
     dragFromIndex_ = -1;
+    dragInsertIndex_ = -1;
+    dragGrabX_ = 0;
+    followDx_ = 0;
+    dragVisualDx_.clear();
+    dragTargetDx_.clear();
     pressIndex_ = -1;
     pressPt_ = {};
     pressRealButton_ = false;
+}
+
+void TabStrip::armDragAnimTimer() {
+    if (hwnd_ && !dragAnimArmed_) {
+        SetTimer(hwnd_, kDragAnimTimerId, tab_metrics::DragAnimTimerMs, nullptr);
+        dragAnimArmed_ = true;
+    }
+}
+
+void TabStrip::killDragAnimTimer() {
+    if (dragAnimArmed_ && hwnd_) {
+        KillTimer(hwnd_, kDragAnimTimerId);  // 仅杀自己持有的节拍（防误伤他组件计时器）
+    }
+    dragAnimArmed_ = false;
 }
 
 void TabStrip::resetPressAndDragState() {
@@ -962,15 +1109,33 @@ void TabStrip::paint(HDC dc) {
     const int hoverRadius = Scale(tab_metrics::HoverRadius, dpi);
     const int sepWidth = Scale(tab_metrics::SeparatorWidth, dpi);
     const int sepHalf = Scale(tab_metrics::SeparatorHeight, dpi) / 2;
+    const int n = static_cast<int>(g.tabs.size());
+    // 拖拽视觉偏移（DEC-001）：被拖 Tab = followDx_（直接生效），邻居 = 动画当前值；
+    // 各 Tab 的 bounds/label/mark 统一 OffsetRect 平移后再画（仅横向，视觉 y 不变）
+    const bool dragVis = dragging_ && dragFromIndex_ >= 0 && dragFromIndex_ < n;
+    const auto dxOf = [&](int i) -> int {
+        if (!dragVis) {
+            return 0;
+        }
+        if (i == dragFromIndex_) {
+            return followDx_;
+        }
+        return i >= 0 && i < static_cast<int>(dragVisualDx_.size())
+                   ? dragVisualDx_[static_cast<size_t>(i)]
+                   : 0;
+    };
+    const auto offset = [](RECT r, int dx) {
+        OffsetRect(&r, dx, 0);  // 仅横向平移（视觉 y 不变）
+        return r;
+    };
 
     // 裁剪到 tabArea：滚动半出区的 Tab 不得溢画到菜单/窗口控制按钮上
     SaveDC(dc);
     IntersectClipRect(dc, g.area.left, g.area.top, g.area.right, g.area.bottom);
 
-    // —— 背景层：活动卡片 / 悬停高亮 / 竖分隔线 ——
-    for (int i = 0; i < static_cast<int>(g.tabs.size()); ++i) {
-        const TabGeometry& t = g.tabs[static_cast<size_t>(i)];
-        const RECT& b = t.bounds;
+    // —— 背景层单 Tab：活动卡片 / 悬停高亮 / 竖分隔线（分隔线按平移后左缘）——
+    const auto drawBackground = [&](int i, const TabGeometry& t, int dx) {
+        const RECT b = offset(t.bounds, dx);
         if (i == activeIndex_) {
             // Win11 连通式：顶圆角卡片（activeTab=toolbarBackground，无描边）+
             // 同色补角矩形直化底边两圆角；底边与标题栏底边重合（与工具栏无缝）
@@ -1007,32 +1172,46 @@ void TabStrip::paint(HDC dc) {
             FillRect(dc, &line, lb);
             DeleteObject(lb);
         }
-    }
+    };
 
-    // —— 内容层：● 标记 + 标签名（超长省略号）——
-    const HGDIOBJ oldFont = SelectObject(dc, labelFont_);
-    SetBkMode(dc, TRANSPARENT);
-    for (int i = 0; i < static_cast<int>(g.tabs.size()); ++i) {
-        const TabGeometry& t = g.tabs[static_cast<size_t>(i)];
+    // —— 内容层单 Tab：● 标记 + 标签名（超长省略号；字体选择沿用原约定：
+    //    markFont 仅画标记期间切入，画完切回 labelFont）——
+    const auto drawContent = [&](int i, const TabGeometry& t, int dx) {
         if (t.hasMark) {
             SelectObject(dc, markFont_);
             SetTextColor(dc, ToColorRef(pal.unsavedMark));
-            RECT mr = t.mark;
+            RECT mr = offset(t.mark, dx);
             DrawTextW(dc, kUnsavedMarkText, -1, &mr,
                       DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
             SelectObject(dc, labelFont_);
         }
         SetTextColor(dc, ToColorRef(i == activeIndex_ ? pal.textPrimary : pal.textSecondary));
-        RECT lr = t.label;
+        RECT lr = offset(t.label, dx);
         DrawTextW(dc, items_[static_cast<size_t>(i)].displayName.c_str(), -1, &lr,
                   DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
+    };
+
+    // 画序：先画全部非被拖 Tab（背景层 + 内容层），被拖 Tab 最后置顶画（防叠压）
+    for (int i = 0; i < n; ++i) {
+        if (dragVis && i == dragFromIndex_) {
+            continue;
+        }
+        drawBackground(i, g.tabs[static_cast<size_t>(i)], dxOf(i));
     }
-    SelectObject(dc, oldFont);
+    const HGDIOBJ oldFont = SelectObject(dc, labelFont_);
+    SetBkMode(dc, TRANSPARENT);
+    for (int i = 0; i < n; ++i) {
+        if (dragVis && i == dragFromIndex_) {
+            continue;
+        }
+        drawContent(i, g.tabs[static_cast<size_t>(i)], dxOf(i));
+    }
 
     // —— 键盘焦点环（accent 双线框；仅键盘导航后显示，活动/非活动底上均可见，
-    //    非颜色线索）——
-    if (focusVisible_ && focusIndex_ >= 0 && focusIndex_ < static_cast<int>(g.tabs.size())) {
-        const RECT& b = g.tabs[static_cast<size_t>(focusIndex_)].bounds;
+    //    非颜色线索。拖拽态平移量随 Tab——常态鼠标路径不显示，防御性跟随）——
+    if (focusVisible_ && focusIndex_ >= 0 && focusIndex_ < n) {
+        const RECT b = offset(g.tabs[static_cast<size_t>(focusIndex_)].bounds,
+                              dxOf(focusIndex_));
         const int inset = Scale(tab_metrics::FocusInset, dpi);
         const int pw = Scale(tab_metrics::FocusPenWidth, dpi);
         const int fr = Scale(tab_metrics::FocusRadius, dpi);
@@ -1046,16 +1225,19 @@ void TabStrip::paint(HDC dc) {
         DeleteObject(pen);
     }
 
-    // —— 拖拽抓起描边（accent，复用焦点环手法与 Focus* 尺寸 token；描边即
-    //    「抓起」的形状线索，满足非「仅颜色」规范。实时交换式预览：被拖 Tab
-    //    始终在流内占位；常态为活动 Tab（down 即激活）圆角对齐 Radius，防御
+    // —— 被拖 Tab 置顶：背景 + 内容 + accent 抓起描边（按跟随平移后 bounds）。
+    //    描边复用焦点环手法与 Focus* 尺寸 token；描边即「抓起」的形状线索，满足
+    //    非「仅颜色」规范。常态为活动 Tab（down 即激活）圆角对齐 Radius，防御
     //    非活动抓起（合成驱动）时对齐 HoverRadius ——
-    if (dragging_ && dragIndex_ >= 0 && dragIndex_ < static_cast<int>(g.tabs.size())) {
-        const RECT& b = g.tabs[static_cast<size_t>(dragIndex_)].bounds;
+    if (dragVis) {
+        const TabGeometry& t = g.tabs[static_cast<size_t>(dragFromIndex_)];
+        drawBackground(dragFromIndex_, t, followDx_);
+        drawContent(dragFromIndex_, t, followDx_);
+        const RECT b = offset(t.bounds, followDx_);
         const int inset = Scale(tab_metrics::FocusInset, dpi);
         const int pw = Scale(tab_metrics::FocusPenWidth, dpi);
-        const int dr = Scale(dragIndex_ == activeIndex_ ? tab_metrics::Radius
-                                                        : tab_metrics::HoverRadius,
+        const int dr = Scale(dragFromIndex_ == activeIndex_ ? tab_metrics::Radius
+                                                            : tab_metrics::HoverRadius,
                              dpi);
         HPEN pen = CreatePen(PS_SOLID, pw, ToColorRef(pal.focus));
         HGDIOBJ oldPen = SelectObject(dc, pen);
@@ -1067,6 +1249,7 @@ void TabStrip::paint(HDC dc) {
         DeleteObject(pen);
     }
 
+    SelectObject(dc, oldFont);
     RestoreDC(dc, -1);
 }
 
