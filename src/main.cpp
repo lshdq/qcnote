@@ -432,6 +432,12 @@ void SyncEditorSet() {
 void RefreshAllAfterDocumentsChanged() {
     SyncEditorSet();
     RefreshTabsFromManager();
+    // 拖拽重排（moveDocument）只发 documentsChanged 不发 activeDocumentChanged
+    //（活动文档指针不动）：setItems 保留旧数值 activeIndex_ 会高亮到别的标签，
+    // 此处从活动文档指针精确映射（与 RefreshAllAfterActiveChanged 同手法，
+    // 对打开/关闭/新建等其余路径幂等）
+    const int idx = IndexOfDocument(g_docManager.activeDocument());
+    if (idx >= 0) g_tabs.setActiveIndex(idx);
     g_toolbar.setSaveEnabled(g_docManager.activeDocument() != nullptr);
     RefreshWindowTitle();
     RefreshStatusBar();
@@ -1792,6 +1798,7 @@ bool g_stDocSaveAs = false, g_stDocGbk = false, g_stDocReopen = false, g_stDocSt
 bool g_stDocDialog = false, g_stDocIme = false, g_stDocWrap = false, g_stDocCloseAll = false;
 bool g_stDocToolbar = false, g_stDocErrorDlg = false;
 bool g_stDocTitleShort = false;  // F1：标题同值短路（未变 0 次 / 变化恰 1 次）
+bool g_stDocDragReorder = false;  // 拖拽重排后活动标签仍指向被拖文档（生产管线）
 std::wstring g_docDetail;  // 各阶段采样明细（失败定位；写 <结果文件>.detail.txt）
 
 // 辅助：读编辑器全文（UTF-8）
@@ -1841,6 +1848,7 @@ void WriteDocSelftestResult() {
         {"word wrap toggle applies sc_wrap_word to editors", &g_stDocWrap},
         {"toolbar new button routes command via geometry hit", &g_stDocToolbar},
         {"open failure shows error dialog, no document created", &g_stDocErrorDlg},
+        {"drag reorder keeps active tab on dragged document (production pipeline)", &g_stDocDragReorder},
         {"close all documents shows welcome page and returns focus", &g_stDocCloseAll},
         {"title short-circuit: unchanged skips SetWindowTextW, change sets once", &g_stDocTitleShort},
     };
@@ -2157,6 +2165,85 @@ void RunDocSelftestStage() {
         PostMessageW(g_mainWindow, kMsgDocSelftestStage, 0, 0);
     } else if (g_docStage == 10) {
         g_docStage = 11;
+        // —— 拖拽重排：活动标签跟随被拖文档（生产管线，TC-001/TC-002）——
+        // 清场：直调 manager 关闭（干净文档无对话框），与「全部关闭」阶段同法
+        for (core::Document* d : g_docManager.documents()) {
+            g_docManager.closeDocument(d);
+        }
+        RouteCommand(ui::Command::NewDocument);
+        RouteCommand(ui::Command::NewDocument);
+        RouteCommand(ui::Command::NewDocument);
+        const auto docs = g_docManager.documents();
+        if (docs.size() != 3 || g_tabs.count() != 3) {
+            // 前置失败：跳过驱动（防无条件索引访问 UB），干净落 FAIL 并推进
+            g_docDetail += L"[stage10] precondition failed: docs=" +
+                           std::to_wstring(docs.size()) + L" tabs=" +
+                           std::to_wstring(g_tabs.count()) + L"\n";
+            g_stDocDragReorder = false;
+            PostMessageW(g_mainWindow, kMsgDocSelftestStage, 0, 0);
+            return;
+        }
+        bool ok = g_docManager.activeDocument() == docs[2] && g_tabs.activeIndex() == 2;
+        core::Document* A = docs[0];
+        core::Document* B = docs[1];
+        core::Document* C = docs[2];
+        const std::wstring nameA = A->displayName();  // 未命名编号动态，只记不断言
+        // 拖拽阈值采样（与 tabs selftest 同口径：两轴取最大，<=0 退 4px）
+        int dragThresh =
+            std::max(GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG));
+        if (dragThresh <= 0) dragThresh = 4;
+        // —— TC-001：右向拖 0→2 ——
+        ui::TabStripGeometry geo = g_tabs.geometry();
+        const POINT p0{(geo.tabs[0].bounds.left + geo.tabs[0].bounds.right) / 2,
+                       (geo.tabs[0].bounds.top + geo.tabs[0].bounds.bottom) / 2};
+        g_tabs.onLButtonDown(p0);  // 按下即激活 A
+        ok = ok && g_docManager.activeDocument() == A && g_tabs.activeIndex() == 0;
+        g_tabs.onMouseMove({p0.x + dragThresh + 2, p0.y});  // 越阈值拖起
+        // 压缩流中点（与 tabs selftest TC-005 同法）：抽掉 tab0 槽位后 tab2
+        // 的静息位置中点
+        const RECT& b2 = geo.tabs[2].bounds;
+        const int w0 = geo.tabs[0].bounds.right - geo.tabs[0].bounds.left;
+        const int gap = geo.tabs[1].bounds.left - geo.tabs[0].bounds.right;
+        const int shift = w0 + gap;
+        const int compMid2 = (b2.left - shift) + (b2.right - b2.left) / 2;
+        const int x2 = compMid2 + 1;  // 严格越过 tab2 压缩中点
+        g_tabs.onMouseMove({x2, p0.y});
+        ok = ok && g_tabs.dragging() && g_tabs.dragInsertIndex() == 2;
+        g_tabs.onLButtonUp({x2, p0.y});
+        {
+            const auto after = g_docManager.documents();
+            // 核心断言：顺序 {B,C,A}、活动指针不动、Tab 高亮跟随到 2
+            ok = ok && !g_tabs.dragging() && after.size() == 3 &&
+                 after[0] == B && after[1] == C && after[2] == A &&
+                 g_docManager.activeDocument() == A && g_tabs.activeIndex() == 2 &&
+                 g_tabs.item(2).displayName == nameA &&
+                 g_tabs.item(0).displayName == B->displayName();
+        }
+        // —— TC-002：左向拖回 2→0 ——
+        geo = g_tabs.geometry();
+        const POINT p2t{(geo.tabs[2].bounds.left + geo.tabs[2].bounds.right) / 2,
+                        (geo.tabs[2].bounds.top + geo.tabs[2].bounds.bottom) / 2};
+        g_tabs.onLButtonDown(p2t);  // A 已活动
+        g_tabs.onMouseMove({p2t.x - dragThresh - 2, p2t.y});
+        const int compMid0 = geo.tabs[0].bounds.left +
+                             (geo.tabs[0].bounds.right - geo.tabs[0].bounds.left) / 2;
+        const int x0 = compMid0 - 1;  // 严格越过 tab0 压缩中点（左侧）
+        g_tabs.onMouseMove({x0, p2t.y});
+        ok = ok && g_tabs.dragInsertIndex() == 0;
+        g_tabs.onLButtonUp({x0, p2t.y});
+        {
+            const auto after = g_docManager.documents();
+            ok = ok && after.size() == 3 && after[0] == A && after[1] == B &&
+                 after[2] == C && g_docManager.activeDocument() == A &&
+                 g_tabs.activeIndex() == 0 &&
+                 g_tabs.item(0).displayName == nameA;
+        }
+        g_stDocDragReorder = ok;
+        g_docDetail += L"[stage10] drag reorder: order restored {A,B,C}, active ptr == A, activeIndex == 0, ok=" +
+                       std::wstring(ok ? L"true" : L"false") + L"\n";
+        PostMessageW(g_mainWindow, kMsgDocSelftestStage, 0, 0);
+    } else if (g_docStage == 11) {
+        g_docStage = 12;
         // —— 全部关闭 → 欢迎页 + 焦点回主窗口 ——
         const auto docs = g_docManager.documents();
         for (core::Document* d : docs) {
