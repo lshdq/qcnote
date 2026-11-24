@@ -191,6 +191,7 @@ void Toolbar::onLButtonDown(POINT clientPt) {
     const Command cmd = kCommands[hit];
     pressed_ = -1;  // down 即执行（与标题栏按钮同款瞬时反馈语义）
     invalidateButton(static_cast<Button>(hit));
+    hideTooltip();  // 点击即收起 tooltip（Windows 惯例；命令可能是模态入口如打开文件）
     if (onCommand) onCommand(cmd);
 }
 

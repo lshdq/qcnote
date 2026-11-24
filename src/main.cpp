@@ -4036,6 +4036,17 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 PersistSessionNow();
             }
         }
+        // 失活即清自绘组件悬停与 tooltip：模态对话框（打开/另存为/MessageBox
+        // 等）期间 WM_MOUSEMOVE 不再到达主窗口，且 TrackMouseEvent 的
+        // WM_MOUSELEAVE 为纯几何判定（对话框覆盖主窗口时光标仍在客户矩形
+        // 内，不触发）——悬停高亮与 TOPMOST tooltip 会残留到对话框关闭后；
+        // 切换其他程序同样适用
+        if (LOWORD(wParam) == WA_INACTIVE) {
+            if (!g_tabs.dragging()) g_tabs.onMouseLeave();  // 拖拽防御（同 WM_NCMOUSEMOVE 口径）
+            g_toolbar.onMouseLeave();
+            g_statusBar.onMouseLeave();
+            g_welcome.onMouseLeave();
+        }
         InvalidateRect(hwnd, nullptr, FALSE);  // E2 边界线换色
         break;
     case WM_NCLBUTTONDOWN:

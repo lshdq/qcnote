@@ -901,6 +901,60 @@ TEST_CASE("工具栏 tooltip：悬停 600ms 计时到显示，离开隐藏", "[u
     CHECK_FALSE(IsWindowVisible(tb.tooltipHwndForTest()));
 }
 
+// 回归钉：点击工具栏按钮即收起 tooltip。真实缺陷链路（点击「打开文件」→
+// GetOpenFileNameW 模态循环）中 tooltip 为 TTF_TRACK 手动模式只显不隐，且
+// 模态期间 WM_MOUSELEAVE 不触发（几何判定），TOPMOST 浮层残留到对话框
+// 关闭之后——组件层钉「点击即 hideTooltip」语义；WM_ACTIVATE 失活清理属
+// main.cpp 组装层路由，由人工/走查覆盖（见测试用例 TC-002/TC-003）
+TEST_CASE("工具栏 tooltip：点击按钮即收起（打开对话框残留回归钉）", "[ui][toolbar]") {
+    ToolbarHost host;
+    REQUIRE(host.hwnd != nullptr);
+    Toolbar tb;
+    tb.attach(host.hwnd);
+    RECT client{};
+    GetClientRect(host.hwnd, &client);
+    RECT btns[4] = {};
+    tb.buttonRects(client, btns);
+    bool routed = false;
+    tb.onCommand = [&](Command) { routed = true; };
+    tb.onMouseMove(centerOf(btns[1]));        // 悬停「打开」按钮
+    tb.onTimer(3);                            // tipTimerId_ = 3（宿主 id 分配约定）
+    REQUIRE(tb.tooltipVisibleForTest());      // tooltip 已显示（系统级）
+    REQUIRE(IsWindowVisible(tb.tooltipHwndForTest()));
+    tb.onLButtonDown(centerOf(btns[1]));      // 点击 → 命令触发（真实链路为模态入口）
+    CHECK(routed);
+    CHECK_FALSE(tb.tooltipVisibleForTest());  // 点击即收起
+    CHECK_FALSE(IsWindowVisible(tb.tooltipHwndForTest()));
+}
+
+// 回归钉（测试用例 TC-002 组件层）：失活清理（main.cpp WM_ACTIVATE
+// WA_INACTIVE 路由调用 onMouseLeave）后悬停状态机须完整复位——hover_
+// 清空、tooltip 隐藏、计时器拆除；之后再次进入按钮时按 600ms 重新计时。
+// 若失活只隐藏 tooltip 而不复位 hover_，再次进入同一按钮时 hit==hover_
+// 不触发重新计时，tooltip 永不再出现
+TEST_CASE("工具栏 tooltip：失活清理后再次进入重新计时（TC-002 组件层钉）", "[ui][toolbar]") {
+    ToolbarHost host;
+    REQUIRE(host.hwnd != nullptr);
+    Toolbar tb;
+    tb.attach(host.hwnd);
+    RECT client{};
+    GetClientRect(host.hwnd, &client);
+    RECT btns[4] = {};
+    tb.buttonRects(client, btns);
+    tb.onMouseMove(centerOf(btns[1]));        // 悬停「打开」按钮
+    tb.onTimer(3);                            // tooltip 已显示（系统级）
+    REQUIRE(tb.tooltipVisibleForTest());
+    REQUIRE(IsWindowVisible(tb.tooltipHwndForTest()));
+    tb.onMouseLeave();                        // 失活路由（组件层）
+    CHECK_FALSE(tb.tooltipVisibleForTest());  // tooltip 隐藏
+    CHECK_FALSE(IsWindowVisible(tb.tooltipHwndForTest()));
+    tb.onMouseMove(centerOf(btns[1]));        // 失活后再次进入同一按钮
+    CHECK_FALSE(tb.tooltipVisibleForTest());  // onTimer 前不可见（重新计时中）
+    tb.onTimer(3);                            // 重新计时到
+    CHECK(tb.tooltipVisibleForTest());
+    CHECK(IsWindowVisible(tb.tooltipHwndForTest()));
+}
+
 // TC-006 禁用态文案链路：保存禁用时悬停 tooltip 显示禁用文案「保存文档
 // （当前没有文档）」，启用后恢复「保存文档（Ctrl+S）」。既有用例只断言
 // 可见性标志与系统窗口可见，覆盖不到「显示了哪段文案」——此处经真实
