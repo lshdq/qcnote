@@ -4,6 +4,8 @@
 // 底色与窗口控制按钮；E2 边界线独立为 paintWindowBorder，供组装层排序）。
 // 窗口级无边框机制（NCCALCSIZE/NCHITTEST 的边缘缩放与拖拽锚定/系统菜单）在
 // main.cpp 组装，其中命中计算复用本模块的纯函数（ComputeCaptionHitTest）。
+// 窗口控制按钮为标准 caption 按钮语义（按下记录 + 捕获、松开才执行），
+// 状态机见下方 CaptionPressSession（防点击穿透，方案 A）。
 #pragma once
 
 #include <windows.h>
@@ -35,6 +37,34 @@ enum class CaptionButton { None, Menu, Minimize, MaximizeRestore, Close };
 // 按钮命中（纯函数）：命中任一按钮矩形则返回之，否则 None。
 CaptionButton CaptionButtonAt(TitleBarLayout const& layout, POINT clientPt);
 
+// 标题栏窗口控制按钮「按下会话」纯状态机（防点击穿透，方案 A）。
+// 语义对齐系统 caption 按钮：按下只记录（组装层另做 SetCapture），松开时光标
+// 仍在原按钮上才执行动作。缺陷动机：旧版「down 即执行」在物理按键松开前
+// 销毁窗口，鼠标捕获随之失效，用户松开的 WM_LBUTTONUP 落到光标下方此刻的
+// 窗口（身后应用），其关闭按钮被连带触发。
+// 命中结果由调用方用 CaptionButtonAt / TitleBar::hitButton 预先算好传入，
+// 本类不依赖窗口与消息泵（tests/test_ui.cpp 直接单测）。
+class CaptionPressSession {
+public:
+    // 按下：记录目标按钮并进入按下视觉。button == None 时 no-op（不开会话）。
+    void begin(CaptionButton button);
+    // 捕获期间移动（hit = 光标当前位置命中的按钮）：仍在同一按钮上才保持
+    // 按下视觉（拖离取消、拖回恢复，对齐系统标题栏行为）。
+    void update(CaptionButton hit);
+    // 松开（hit = 松开位置命中的按钮）：与按下时同一按钮才返回该按钮（组装层
+    // 据此执行动作），否则返回 None（拖离取消）。无论是否触发都会结束会话。
+    CaptionButton complete(CaptionButton hit);
+    // 取消：捕获被系统/弹窗夺走等中断路径——清状态、不执行动作。
+    void cancel();
+    bool active() const;                 // 会话进行中（已按下未松开、未取消）
+    CaptionButton button() const;        // 按下时记录的按钮（无会话 = None）
+    CaptionButton visualButton() const;  // 当前应显示按下视觉的按钮（拖离时 None）
+
+private:
+    CaptionButton pressed_{CaptionButton::None};  // 按下的目标按钮（None = 无会话）
+    bool armed_ = true;  // 光标当前是否仍在目标按钮上（按下视觉的先决条件）
+};
+
 // WM_NCHITTEST 核心纯函数（main.cpp 做屏幕→客户坐标转换后调用；单测直接覆盖）。
 // 优先级：四角 → 四边缩放（zoomed 时禁用，顶部让位给 HTCAPTION 以支持
 // 最大化态拖拽还原）→ 窗口控制按钮（HTMAXBUTTON 交系统接管 Snap Layouts 悬停）
@@ -53,8 +83,15 @@ public:
     void onDpiChanged();                 // 整窗重绘（字体按新 DPI 惰性重建）
 
     // —— 交互 ——
-    void setPressed(CaptionButton button);       // 按下视觉状态（down 即执行的瞬时反馈）
+    // 设置/清除按下视觉：由窗口控制按钮按下会话驱动（按下、拖离撤销、拖回
+    // 恢复、松开/取消清除），不再是「down 即执行」的瞬时反馈
+    void setPressed(CaptionButton button);
     void performAction(CaptionButton button);    // 动作：min/max/restore/close/menu 回调
+    // 按下会话结束（松开/捕获被夺）：清按下视觉、复位 NC hover 跟踪
+    // （捕获会令系统取消 TrackMouseEvent 跟踪，trackingMouse_ 需复位以便下次
+    // onNcMouseMove 重新挂载），并按当前光标位置重算 hover（会话结束未必伴随
+    // WM_NCMOUSEMOVE，防高亮残留或丢失）。
+    void endCaptureSession();
 
     // —— 绘制（WM_PAINT 调用）——
     // 内容区底色 + 标题栏条带（双缓冲，含 Tab 区背景；Tab 内容由 TabStrip 另画）。

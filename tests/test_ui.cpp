@@ -238,6 +238,111 @@ TEST_CASE("NCHITTEST 命中 200%（DPI 换算正确性）", "[ui]") {
 }
 
 // ---------------------------------------------------------------------------
+// CaptionPressSession：窗口控制按钮按下会话纯逻辑（防点击穿透，方案 A）
+// 语义：按下只记录（组装层 SetCapture），松开时光标仍在原按钮上才执行——
+// TC-001（测试用例-标题栏按钮点击穿透修复.md）
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CaptionPressSession 基础：按下记录、命中保持、同按钮松开触发", "[ui][caption]") {
+    CaptionPressSession s;
+    CHECK_FALSE(s.active());
+    CHECK(s.button() == CaptionButton::None);
+    CHECK(s.visualButton() == CaptionButton::None);
+
+    s.begin(CaptionButton::Close);
+    CHECK(s.active());
+    CHECK(s.button() == CaptionButton::Close);
+    CHECK(s.visualButton() == CaptionButton::Close);  // 按下即进入按下视觉
+
+    s.update(CaptionButton::Close);                    // 移动仍在原按钮上
+    CHECK(s.visualButton() == CaptionButton::Close);
+
+    CHECK(s.complete(CaptionButton::Close) == CaptionButton::Close);  // 同按钮松开 → 触发
+    CHECK_FALSE(s.active());                           // 会话结束
+    CHECK(s.button() == CaptionButton::None);
+    CHECK(s.visualButton() == CaptionButton::None);    // 按下视觉清除
+}
+
+TEST_CASE("CaptionPressSession 拖离取消视觉/拖回恢复", "[ui][caption]") {
+    CaptionPressSession s;
+    s.begin(CaptionButton::Minimize);
+    CHECK(s.visualButton() == CaptionButton::Minimize);
+
+    s.update(CaptionButton::None);                     // 拖离到按钮外（标题栏空白）
+    CHECK(s.active());                                 // 会话仍在（未松开未取消）
+    CHECK(s.visualButton() == CaptionButton::None);    // 按下视觉撤销
+
+    s.update(CaptionButton::MaximizeRestore);          // 拖到相邻按钮上：非原按钮
+    CHECK(s.visualButton() == CaptionButton::None);    // 仍无按下视觉
+
+    s.update(CaptionButton::Minimize);                 // 拖回原按钮
+    CHECK(s.visualButton() == CaptionButton::Minimize);  // 视觉恢复
+
+    CHECK(s.complete(CaptionButton::Minimize) == CaptionButton::Minimize);  // 拖回原位松开 → 触发
+}
+
+TEST_CASE("CaptionPressSession 同按钮校验：松开在其他按钮/按钮外不触发", "[ui][caption]") {
+    // 按下关闭、松开在最小化按钮：不触发任何动作
+    CaptionPressSession s;
+    s.begin(CaptionButton::Close);
+    CHECK(s.complete(CaptionButton::Minimize) == CaptionButton::None);
+    CHECK_FALSE(s.active());
+
+    // 松开在按钮外（标题栏空白）：不触发
+    s.begin(CaptionButton::MaximizeRestore);
+    CHECK(s.complete(CaptionButton::None) == CaptionButton::None);
+    CHECK_FALSE(s.active());
+
+    // 松开在菜单按钮：同样不触发
+    s.begin(CaptionButton::Close);
+    CHECK(s.complete(CaptionButton::Menu) == CaptionButton::None);
+    CHECK_FALSE(s.active());
+}
+
+TEST_CASE("CaptionPressSession 取消路径（捕获被夺）与 None 边界", "[ui][caption]") {
+    CaptionPressSession s;
+    s.begin(CaptionButton::None);                      // 无目标按钮：不开会话
+    CHECK_FALSE(s.active());
+    CHECK(s.complete(CaptionButton::Close) == CaptionButton::None);  // 无会话松开 no-op
+    s.update(CaptionButton::Close);                    // 无会话移动 no-op
+    CHECK_FALSE(s.active());
+
+    s.begin(CaptionButton::Close);
+    s.update(CaptionButton::None);                     // 已拖离（视觉已撤销）
+    s.cancel();                                        // WM_CAPTURECHANGED：取消不执行
+    CHECK_FALSE(s.active());
+    CHECK(s.button() == CaptionButton::None);
+    CHECK(s.visualButton() == CaptionButton::None);
+    CHECK(s.complete(CaptionButton::Close) == CaptionButton::None);  // 取消后松开不再触发
+    s.begin(CaptionButton::Minimize);                  // 取消后可重新开始新会话
+    CHECK(s.active());
+    CHECK(s.button() == CaptionButton::Minimize);
+}
+
+TEST_CASE("CaptionPressSession 与命中函数联动：按钮内/外坐标判定", "[ui][caption]") {
+    // 1000×640 客户区 96dpi：min=[868,912) max=[912,956) close=[956,1000)×[0,40)
+    const TitleBarLayout L = ComputeTitleBarLayout(1000, 96);
+    CaptionPressSession s;
+    s.begin(CaptionButton::Close);
+
+    s.update(CaptionButtonAt(L, {978, 20}));           // 关闭按钮中心：命中原按钮
+    CHECK(s.visualButton() == CaptionButton::Close);
+    s.update(CaptionButtonAt(L, {500, 20}));           // 标题栏中部（Tab 区）：按钮外
+    CHECK(s.visualButton() == CaptionButton::None);
+    s.update(CaptionButtonAt(L, {960, 1}));            // 按钮左上角内：恢复
+    CHECK(s.visualButton() == CaptionButton::Close);
+    s.update(CaptionButtonAt(L, {934, 20}));           // 相邻最大化按钮中心：非原按钮
+    CHECK(s.visualButton() == CaptionButton::None);
+    s.update(CaptionButtonAt(L, {995, 39}));           // 按钮右下角内：恢复
+    CHECK(s.visualButton() == CaptionButton::Close);
+
+    CHECK(s.complete(CaptionButtonAt(L, {978, 20})) == CaptionButton::Close);
+    // 再按下、松开在相邻最大化按钮中心 → 不触发
+    s.begin(CaptionButton::Close);
+    CHECK(s.complete(CaptionButtonAt(L, {934, 20})) == CaptionButton::None);
+}
+
+// ---------------------------------------------------------------------------
 // M2-B：状态栏字段文本（纯函数）
 // ---------------------------------------------------------------------------
 

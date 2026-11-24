@@ -82,6 +82,46 @@ LRESULT ComputeCaptionHitTest(POINT pt, SIZE size, UINT dpi, bool zoomed) {
 }
 
 // ---------------------------------------------------------------------------
+// CaptionPressSession：窗口控制按钮按下会话纯状态机（接口见 titlebar.h）
+// ---------------------------------------------------------------------------
+
+void CaptionPressSession::begin(CaptionButton button) {
+    if (button == CaptionButton::None) return;  // 无目标按钮：不开会话
+    pressed_ = button;
+    armed_ = true;
+}
+
+void CaptionPressSession::update(CaptionButton hit) {
+    if (pressed_ == CaptionButton::None) return;  // 无会话：no-op
+    armed_ = (hit == pressed_);                   // 拖离取消、拖回恢复
+}
+
+CaptionButton CaptionPressSession::complete(CaptionButton hit) {
+    const CaptionButton pressed = pressed_;
+    const bool fire = pressed_ != CaptionButton::None && hit == pressed_;
+    pressed_ = CaptionButton::None;
+    armed_ = false;
+    return fire ? pressed : CaptionButton::None;  // 松开位置不在原按钮上 = 拖离取消
+}
+
+void CaptionPressSession::cancel() {
+    pressed_ = CaptionButton::None;
+    armed_ = false;
+}
+
+bool CaptionPressSession::active() const {
+    return pressed_ != CaptionButton::None;
+}
+
+CaptionButton CaptionPressSession::button() const {
+    return pressed_;
+}
+
+CaptionButton CaptionPressSession::visualButton() const {
+    return (pressed_ != CaptionButton::None && armed_) ? pressed_ : CaptionButton::None;
+}
+
+// ---------------------------------------------------------------------------
 // TitleBar
 // ---------------------------------------------------------------------------
 
@@ -147,6 +187,27 @@ void TitleBar::onLButtonUp() {
     }
 }
 
+void TitleBar::endCaptureSession() {
+    // SetCapture 会令系统取消既有 TrackMouseEvent 跟踪（捕获期间 TME_NONCLIENT
+    // 悬空失效）：复位标志，下次 onNcMouseMove 重新挂载
+    trackingMouse_ = false;
+    if (pressed_ != CaptionButton::None) {
+        pressed_ = CaptionButton::None;
+        invalidateCaption();
+    }
+    // 会话结束未必伴随 WM_NCMOUSEMOVE（光标可能停在按钮上不动），按当前
+    // 物理光标位置重算 hover，防高亮残留或丢失
+    if (!hwnd_) return;
+    POINT p{};
+    if (GetCursorPos(&p) && ScreenToClient(hwnd_, &p)) {
+        const CaptionButton hit = hitButton(p);
+        if (hit != hover_) {
+            hover_ = hit;
+            invalidateCaption();
+        }
+    }
+}
+
 void TitleBar::onDpiChanged() {
     // 字体在下次绘制时按新 DPI 惰性重建（ensureFont 内有 DPI 比对）；
     // 双缓冲尺寸随 paint 矩形自动重建。这里只负责整窗重绘。
@@ -156,6 +217,7 @@ void TitleBar::onDpiChanged() {
 }
 
 void TitleBar::setPressed(CaptionButton button) {
+    if (pressed_ == button) return;  // 值未变时跳过重绘（与 hover_ 更新模式对齐）
     pressed_ = button;
     invalidateCaption();
 }

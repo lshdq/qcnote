@@ -189,7 +189,7 @@ void Toolbar::onLButtonDown(POINT clientPt) {
     pressed_ = hit;
     invalidateButton(static_cast<Button>(hit));
     const Command cmd = kCommands[hit];
-    pressed_ = -1;  // down 即执行（与标题栏按钮同款瞬时反馈语义）
+    pressed_ = -1;  // 工具栏维持 down 即执行（标题栏窗口控制按钮为松开触发，见 ui::CaptionPressSession）
     invalidateButton(static_cast<Button>(hit));
     hideTooltip();  // 点击即收起 tooltip（Windows 惯例；命令可能是模态入口如打开文件）
     if (onCommand) onCommand(cmd);

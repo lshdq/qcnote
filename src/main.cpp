@@ -143,6 +143,11 @@ static_assert(kTimerForwardDrainRetry >= 5,
               "宿主 timer id 须避开 1-4（会话轮询/Tab/工具栏/状态栏已占用）");
 
 ui::TitleBar g_titleBar;
+// 标题栏窗口控制按钮「按下会话」（防点击穿透，方案 A）：按下只记录 + SetCapture，
+// 捕获期间移动/松开以客户区消息形态回到本窗口；松开时仍在原按钮上才执行动作。
+// SetCapture 保证物理松开事件必被本窗口消化——修复旧「down 即执行」在窗口销毁
+// 后 mouse-up 穿透到身后应用的缺陷（状态机见 ui::CaptionPressSession）
+ui::CaptionPressSession g_captionPress;
 ui::MenuHost g_menuHost;            // 菜单弹出层（模态 track；Tab 右键菜单复用）
 ui::MainMenuState g_menuState;      // 弹出前按文档状态刷新
 ui::TabStrip g_tabs;                // Tab 条（数据 = DocumentManager 快照）
@@ -3903,10 +3908,25 @@ void ShowSystemMenu(HWND hwnd, POINT pt) {
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
 }
 
-// 窗口控制按钮统一触发：先记按下视觉，再执行动作（down 即执行，Win11 惯例）
-void TriggerCaptionButton(ui::CaptionButton button) {
-    g_titleBar.setPressed(button);
-    g_titleBar.performAction(button);
+// 窗口控制按钮按下开始（方案 A：标准 caption 按钮语义，松开才执行）：只记录
+// 会话 + 按下视觉 + SetCapture，不执行动作——动作在捕获会话的 WM_LBUTTONUP
+// 中收口。SetCapture 保证移动与最终松开全部投递本窗口（客户区消息形态），
+// 物理松开事件必被本窗口消化，杜绝窗口销毁后 mouse-up 穿透到身后应用。
+void BeginCaptionButtonPress(HWND hwnd, ui::CaptionButton button) {
+    g_captionPress.begin(button);
+    g_titleBar.setPressed(g_captionPress.visualButton());
+    SetCapture(hwnd);
+}
+
+// 菜单按钮触发（维持 down 触发，与窗口控制按钮不同）：TrackPopupMenu 的模态
+// 循环会消化物理松开事件，且按下不销毁窗口，无穿透风险；菜单自动化
+//（verify-linenumbers 等 selftest 以 WM_NCLBUTTONDOWN(HTBORDER) 驱动）依赖此行为。
+void TriggerMenuButton() {
+    g_titleBar.setPressed(ui::CaptionButton::Menu);
+    g_titleBar.performAction(ui::CaptionButton::Menu);
+    // TrackPopupMenu 模态循环消化物理松开，不会走捕获会话的 WM_LBUTTONUP
+    // 复位路径；菜单关闭后（含 ESC）在此显式清除 pressed 残留视觉。
+    g_titleBar.setPressed(ui::CaptionButton::None);
 }
 
 // Win11：隐藏 DWM 自绘的 1px 系统窗口边线（与 E2 自绘边界线避免双线）
@@ -4058,22 +4078,37 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             break;
         case HTCLOSE:
-            TriggerCaptionButton(ui::CaptionButton::Close);
+            // 方案 A：按下只记录会话 + 捕获，不执行（松开才执行，防穿透）
+            BeginCaptionButtonPress(hwnd, ui::CaptionButton::Close);
             return 0;
         case HTMINBUTTON:
-            TriggerCaptionButton(ui::CaptionButton::Minimize);
+            BeginCaptionButtonPress(hwnd, ui::CaptionButton::Minimize);
             return 0;
         case HTMAXBUTTON:
-            TriggerCaptionButton(ui::CaptionButton::MaximizeRestore);
+            BeginCaptionButtonPress(hwnd, ui::CaptionButton::MaximizeRestore);
             return 0;
         case HTBORDER:
-            TriggerCaptionButton(ui::CaptionButton::Menu);
+            TriggerMenuButton();
             return 0;
         default:
             break;
         }
         break;
     case WM_NCLBUTTONUP:
+        if (g_captionPress.active()) {
+            // 防御路径：SetCapture 失败等异常情形下松开以 NC 形态到达——按
+            // 屏幕坐标换算客户区后与捕获路径同款收口（先判定后释放捕获，
+            // 见 WM_LBUTTONUP 会话分支注释）
+            POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ScreenToClient(hwnd, &pt);
+            const ui::CaptionButton fire = g_captionPress.complete(g_titleBar.hitButton(pt));
+            if (GetCapture() == hwnd) ReleaseCapture();
+            g_titleBar.endCaptureSession();
+            if (fire != ui::CaptionButton::None) {
+                g_titleBar.performAction(fire);
+            }
+            return 0;
+        }
         g_titleBar.onLButtonUp();
         break;
     case WM_NCMOUSEMOVE:
@@ -4162,6 +4197,14 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     case WM_MOUSEMOVE: {
         const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (g_captionPress.active()) {
+            // 按下会话捕获期间：移动以客户区消息形态到达（坐标可为负/窗外），
+            // 重新命中测试维持/撤销按下视觉（拖离取消、拖回恢复），跳过
+            // tabs/toolbar 等常规鼠标路由
+            g_captionPress.update(g_titleBar.hitButton(pt));
+            g_titleBar.setPressed(g_captionPress.visualButton());
+            return 0;
+        }
         if (!g_trackingClientMouse) {
             TRACKMOUSEEVENT t{};
             t.cbSize = sizeof(t);
@@ -4198,7 +4241,13 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     case WM_CAPTURECHANGED:
         // 主窗口鼠标捕获被夺走/释放（lParam = 获得捕获的新窗口句柄，无需处理）
-        // → 通知 Tab 条取消拖拽（DEC-002：清状态回原位不回调；非拖拽态 no-op）
+        // → 取消标题栏窗口控制按钮按下会话（弹窗/系统夺走捕获：清按下状态、
+        // 不执行动作；本窗口自己 ReleaseCapture 收口时会话已先结束，此处 no-op）
+        // 与 Tab 条拖拽（DEC-002：清状态回原位不回调；非拖拽态 no-op）
+        if (g_captionPress.active()) {
+            g_captionPress.cancel();
+            g_titleBar.endCaptureSession();
+        }
         g_tabs.onCaptureChanged();
         return 0;
     case WM_LBUTTONDOWN: {
@@ -4225,6 +4274,19 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
     case WM_LBUTTONUP: {
         const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (g_captionPress.active()) {
+            // 按下会话的松开（捕获把物理松开重定向到本窗口，客户区消息形态）：
+            // 先判定后释放捕获——ReleaseCapture 会同步派发 WM_CAPTURECHANGED，
+            // 顺序颠倒会话会被其取消分支清掉导致动作永不执行；仍在原按钮上
+            // 才执行动作（拖离取消语义），随后复位 NC hover 跟踪
+            const ui::CaptionButton fire = g_captionPress.complete(g_titleBar.hitButton(pt));
+            if (GetCapture() == hwnd) ReleaseCapture();
+            g_titleBar.endCaptureSession();
+            if (fire != ui::CaptionButton::None) {
+                g_titleBar.performAction(fire);
+            }
+            return 0;
+        }
         const UINT dpi = ui::WindowDpi(hwnd);
         const int capH = ui::Scale(ui::metrics::CaptionHeight, dpi);
         // 拖拽中（捕获把松手重定向到主窗口，可发生在条外/编辑区上方）或标题栏
