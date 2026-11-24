@@ -845,6 +845,15 @@ public:
     std::wstring displayName() const override { return L"Markdown"; }
     std::vector<std::wstring> nameFilters() const override { return {L"Markdown 文件 (*.md)"}; }
 };
+
+class GroupedFormat : public DocumentFormat {
+public:
+    std::string id() const override { return "grouped"; }
+    std::wstring displayName() const override { return L"分组测试"; }
+    std::vector<std::wstring> nameFilters() const override {
+        return {L"配置文件 (*.ini;*.toml)", L"混合 (*.a;*.b *.c)"};
+    }
+};
 } // namespace
 
 TEST_CASE("DocumentManager 格式注册表", "[core][dm]") {
@@ -854,6 +863,9 @@ TEST_CASE("DocumentManager 格式注册表", "[core][dm]") {
         REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.txt"))->id() == "plaintext");
         REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/noext"))->id() == "plaintext");
         REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.md"))->id() == "plaintext");
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.json"))->id() == "plaintext");
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.yaml"))->id() == "plaintext");
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.lua"))->id() == "plaintext");
     }
     SECTION("注册具体格式后优先于兜底") {
         MarkdownFormat md;
@@ -869,7 +881,19 @@ TEST_CASE("DocumentManager 格式注册表", "[core][dm]") {
         REQUIRE(std::find(filters.begin(), filters.end(), L"文本文件 (*.txt)") != filters.end());
         REQUIRE(std::find(filters.begin(), filters.end(), L"Markdown 文件 (*.md)") != filters.end());
         REQUIRE(std::find(filters.begin(), filters.end(), L"所有文件 (*)") != filters.end());
-        // 去重：数量 = 3（无重复项）
+        // 分组条目存在（结构化/配置/脚本）
+        REQUIRE(std::find(filters.begin(), filters.end(),
+                          L"结构化文档 (*.md;*.json;*.xml)") != filters.end());
+        REQUIRE(std::find(filters.begin(), filters.end(),
+                          L"配置文件 (*.ini;*.toml;*.cfg;*.conf;*.properties;*.yaml;*.yml)") !=
+                filters.end());
+        REQUIRE(std::find(filters.begin(), filters.end(),
+                          L"脚本文件 (*.py;*.js;*.ts;*.ps1;*.bat;*.cmd;*.sh;*.lua)") !=
+                filters.end());
+        // 锁定打开对话框默认项契约：首项必须是"所有文件 (*)"
+        REQUIRE(filters.front() == L"所有文件 (*)");
+        // 去重：数量 = 6（plaintext 5 项 + markdown 1 项，无重复条目）
+        REQUIRE(filters.size() == 6);
         std::vector<std::wstring> unique(filters);
         std::sort(unique.begin(), unique.end());
         REQUIRE(std::unique(unique.begin(), unique.end()) == unique.end());
@@ -880,6 +904,21 @@ TEST_CASE("DocumentManager 格式注册表", "[core][dm]") {
         m.registerFormat(md);
         const auto filters = m.nameFilters();
         REQUIRE(std::count(filters.begin(), filters.end(), L"Markdown 文件 (*.md)") == 1);
+    }
+    SECTION("分组通配符基类解析") {
+        GroupedFormat grouped;
+        m.registerFormat(grouped);
+        // ';' 分隔命中（含大小写不敏感）
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.toml"))->id() == "grouped");
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.INI"))->id() == "grouped");
+        // 混合分隔（';' 与空格）均命中
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.a"))->id() == "grouped");
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.b"))->id() == "grouped");
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.c"))->id() == "grouped");
+        // 未覆盖扩展名与无扩展名 → 兜底
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.txt"))->id() == "plaintext");
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/a.json"))->id() == "plaintext");
+        REQUIRE(m.formatForPath(std::filesystem::path(L"D:/x/noext"))->id() == "plaintext");
     }
 }
 

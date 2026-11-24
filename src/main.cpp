@@ -69,6 +69,7 @@
 
 #include "core/document.h"
 #include "core/documentmanager.h"
+#include "core/format.h"
 #include "core/draftcachemanager.h"
 #include "core/encoding.h"
 #include "core/localstorage.h"
@@ -635,8 +636,8 @@ void ShowErrorDialog(const std::wstring& title, const std::wstring& message) {
     FocusActiveEditor();
 }
 
-// 过滤器：DocumentManager::nameFilters（"文本文件 (*.txt)" / "所有文件 (*)"）
-// → Win32 双 \0 分隔形态；通配 "*" 映射 "*.*"
+// 过滤器：DocumentManager::nameFilters 5 项分组过滤器（所有文件 / 文本 /
+// 结构化文档 / 配置 / 脚本）→ Win32 双 \0 分隔形态；通配 "*" 映射 "*.*"
 std::wstring BuildFileDialogFilter() {
     std::wstring filter;
     for (const std::wstring& f : g_docManager.nameFilters()) {
@@ -667,6 +668,17 @@ std::wstring BuildFileDialogFilter() {
         filter.push_back(L'\0');
     }
     return filter;  // c_str() 终止符补最后一层 \0（双 null 结尾）
+}
+
+// 默认过滤器索引：另存为/重命名默认选中"文本文件 (*.txt)"（与 lpstrDefExt 配套，
+// 保持 txt 默认类型）；找不到时回退首项（Win32 nFilterIndex 为 1 基）
+DWORD DefaultTextFilterIndex() {
+    const auto& filters = g_docManager.nameFilters();
+    for (std::size_t i = 0; i < filters.size(); ++i) {
+        if (filters[i] == core::kTextFileFilter)
+            return static_cast<DWORD>(i + 1);
+    }
+    return 1;
 }
 
 std::vector<std::filesystem::path> ShowOpenFileDialog() {
@@ -718,6 +730,7 @@ std::optional<std::filesystem::path> ShowSaveFileDialog(const core::Document* do
     ofn.lpstrFile = buffer;
     ofn.nMaxFile = 4096;
     ofn.lpstrTitle = L"另存为";
+    ofn.nFilterIndex = DefaultTextFilterIndex();  // 默认选中"文本文件 (*.txt)"，与 lpstrDefExt 配套
     ofn.lpstrDefExt = L"txt";  // 无扩展名时补默认扩展（旧系统对话框行为）
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY |
                 OFN_NOCHANGEDIR | OFN_NOREADONLYRETURN;
@@ -752,6 +765,7 @@ std::optional<std::filesystem::path> ShowRenameFileDialog(const core::Document* 
     ofn.lpstrFile = buffer;
     ofn.nMaxFile = 4096;
     ofn.lpstrTitle = L"重命名";
+    ofn.nFilterIndex = DefaultTextFilterIndex();  // 默认选中"文本文件 (*.txt)"，与另存为保持一致
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
     g_fileDialogOpen = true;
     const BOOL ok = GetSaveFileNameW(&ofn);

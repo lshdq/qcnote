@@ -24,10 +24,14 @@ public:
     virtual std::vector<std::wstring> nameFilters() const = 0;
 
     /// 文件名是否由本格式处理。默认实现：按过滤器括号内 "*.ext" 通配符对
-    /// 扩展名做大小写不敏感匹配（"*" 匹配任意）；无扩展名返回 false
+    /// 扩展名做大小写不敏感匹配（"*" 匹配任意）；通配符列表以空格或 ';'
+    /// 分隔均可（与文件对话框两种解析器语义对齐）；无扩展名返回 false
     /// （由兜底格式接手）。兜底格式可重写为恒真。
     virtual bool matchesFileName(const std::wstring& fileName) const;
 };
+
+/// "文本文件 (*.txt)" 标准条目：另存为/重命名默认过滤器锚点（main.cpp 引用）
+inline constexpr wchar_t kTextFileFilter[] = L"文本文件 (*.txt)";
 
 /// 纯文本格式：默认兜底格式，任何文件都可按纯文本打开（不可移除）
 class PlainTextFormat : public DocumentFormat {

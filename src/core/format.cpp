@@ -32,7 +32,7 @@ bool DocumentFormat::matchesFileName(const std::wstring& fileName) const {
     if (suffix.empty())
         return false; // 无扩展名：具体格式不认，交兜底格式
 
-    // 旧版语义移植：解析每个过滤器括号内的通配符列表
+    // 旧版语义移植：解析每个过滤器括号内的通配符列表（空格或 ';' 分隔均可）
     for (const std::wstring& filter : nameFilters()) {
         const std::size_t open = filter.find_last_of(L'(');
         const std::size_t close = filter.find_last_of(L')');
@@ -41,9 +41,9 @@ bool DocumentFormat::matchesFileName(const std::wstring& fileName) const {
         std::wstring inner = filter.substr(open + 1, close - open - 1);
         std::size_t pos = 0;
         while (pos <= inner.size()) {
-            const std::size_t space = inner.find(L' ', pos);
+            const std::size_t sep = inner.find_first_of(L" ;", pos);
             const std::wstring pattern =
-                inner.substr(pos, space == std::wstring::npos ? std::wstring::npos : space - pos);
+                inner.substr(pos, sep == std::wstring::npos ? std::wstring::npos : sep - pos);
             if (!pattern.empty()) {
                 if (pattern == L"*")
                     return true; // 通配一切
@@ -51,9 +51,9 @@ bool DocumentFormat::matchesFileName(const std::wstring& fileName) const {
                     && equalsCaseInsensitive(pattern.substr(2), suffix))
                     return true;
             }
-            if (space == std::wstring::npos)
+            if (sep == std::wstring::npos)
                 break;
-            pos = space + 1;
+            pos = sep + 1;
         }
     }
     return false;
@@ -68,7 +68,14 @@ std::wstring PlainTextFormat::displayName() const {
 }
 
 std::vector<std::wstring> PlainTextFormat::nameFilters() const {
-    return {L"文本文件 (*.txt)", L"所有文件 (*)"};
+    // 顺序不可变：首项是打开对话框默认项，次项是另存为/重命名默认项（txt）
+    return {
+        L"所有文件 (*)",
+        kTextFileFilter,
+        L"结构化文档 (*.md;*.json;*.xml)",
+        L"配置文件 (*.ini;*.toml;*.cfg;*.conf;*.properties;*.yaml;*.yml)",
+        L"脚本文件 (*.py;*.js;*.ts;*.ps1;*.bat;*.cmd;*.sh;*.lua)",
+    };
 }
 
 bool PlainTextFormat::matchesFileName(const std::wstring& fileName) const {
