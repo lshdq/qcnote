@@ -326,12 +326,26 @@ void DocumentManager::closeDocument(Document* doc) {
 
 std::expected<void, StorageError> DocumentManager::reloadWithEncoding(Document* doc,
                                                                       TextEncoding encoding) {
+    // 委托 reloadInternal（语义与既有实现完全一致：换行重探测/不置脏/光标钳制）
+    return reloadInternal(doc, encoding, L"文档尚未保存到磁盘，无法按编码重新加载");
+}
+
+std::expected<void, StorageError> DocumentManager::reloadFromDisk(Document* doc) {
+    // 外部改动自动重载（DEC-003）：编码自动识别（forced = nullopt——存储层
+    // BOM → 严格 UTF-8 校验 → GBK 识别链，与 openPath 默认语义一致）
+    return reloadInternal(doc, std::nullopt, L"文档尚未保存到磁盘，无法重新加载");
+}
+
+// reloadWithEncoding / reloadFromDisk 共用实现（forced = nullopt 即自动识别）：
+// 语义见头文件两者注释（换行重探测/不置脏/光标钳制/事件传播——applyLoadedState 链）
+std::expected<void, StorageError> DocumentManager::reloadInternal(
+    Document* doc, std::optional<TextEncoding> forced, const wchar_t* invalidUrlMessage) {
     if (!doc)
         return std::unexpected(StorageError{StorageErrorKind::InvalidUrl, L"文档对象无效"});
     const std::filesystem::path& url = doc->url();
     if (url.empty()) {
         return std::unexpected(StorageError{
-            StorageErrorKind::InvalidUrl, L"文档尚未保存到磁盘，无法按编码重新加载"});
+            StorageErrorKind::InvalidUrl, invalidUrlMessage});
     }
 
     DocumentStorage* storage = storageForUrl(url);
@@ -340,7 +354,7 @@ std::expected<void, StorageError> DocumentManager::reloadWithEncoding(Document* 
                                             L"不支持的存储类型：" + url.wstring()});
     }
 
-    auto loaded = storage->read(url, encoding);
+    auto loaded = storage->read(url, forced);
     if (!loaded) {
         // 读取失败：保留原文档内容（不产生半更新状态）
         return std::unexpected(loaded.error());

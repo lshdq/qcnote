@@ -154,6 +154,14 @@ public:
     /// InvalidUrl 错误；读取失败保留原文档内容并返回错误
     std::expected<void, StorageError> reloadWithEncoding(Document* doc, TextEncoding encoding);
 
+    /// 外部改动自动重载（外部文件改动检测需求，DEC-003：文件已被第三方重写，
+    /// 原编码假设可能失效——重载走自动识别 BOM → 严格 UTF-8 校验 → GBK，识别
+    /// 错误可经既有「按编码重载」菜单纠正）。其余语义与 reloadWithEncoding 完全
+    /// 一致（换行重探测/编码与 BOM 刷新/不置脏/光标钳制/事件传播——
+    /// applyLoadedState 链）；未命名文档返回 InvalidUrl 错误；读取失败保留原文
+    /// 档内容并返回错误（调用方决策降级）
+    std::expected<void, StorageError> reloadFromDisk(Document* doc);
+
     /// 按指定编码立即保存（编码转换，一步完成：设编码 + 保存）。
     /// UTF-8 目标 BOM 取文档历史值（hasBom）；GBK 目标忽略 BOM。
     /// 成功清脏；未命名文档保留已设编码并返回 InvalidUrl（UI 转另存为，另存为
@@ -182,6 +190,12 @@ public:
     MulticastEvent<Document*> documentMetadataChanged; ///< 某文档元数据变化（url/显示名/编码/换行/BOM/光标）
 
 private:
+    /// reloadWithEncoding / reloadFromDisk 共用实现（forced = nullopt 即自动
+    /// 识别编码）：语义见两者注释（换行重探测/不置脏/光标钳制/事件传播）
+    std::expected<void, StorageError> reloadInternal(Document* doc,
+                                                     std::optional<TextEncoding> forced,
+                                                     const wchar_t* invalidUrlMessage);
+
     Document* appendDocument(std::unique_ptr<Document> doc);
     void wireDocumentCallbacks(Document* doc);
     bool displayNameInUse(const std::wstring& name) const;

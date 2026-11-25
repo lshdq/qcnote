@@ -220,6 +220,7 @@ add_library(qcnote_core STATIC
     src/core/sessionmanager.cpp
     src/core/draftcachemanager.cpp
     src/core/numbering.cpp
+    src/core/externalchangemonitor.cpp
 )
 # PUBLIC 传播到 qcnote 应用与测试目标（沿用应用层统一编译口径）
 target_compile_options(qcnote_core PUBLIC /std:c++latest /utf-8)
@@ -247,10 +248,13 @@ add_test(NAME smoke COMMAND test_smoke)
 
 # M2-A U1 单测：编码识别/编解码（TC-U01~U07）、换行归一与 BOM 写回（TC-U08/U09）、
 # 原子写、文档生命周期/遮蔽重载/编码转换/回调。直接链接 qcnote_core。
+# 外部文件改动检测单测：TC-001..TC-012（stat 初筛/两级校验/删除与恢复/
+# 基线刷新/决策抑制），全 mock 注入不碰真实磁盘，直接链接 qcnote_core。
 add_executable(test_core
     tests/test_core_encoding.cpp
     tests/test_core_storage.cpp
     tests/test_core_document.cpp
+    tests/test_core_externalchange.cpp
 )
 # _CRT_SECURE_NO_WARNINGS：getenv（测试临时目录环境变量）；CATCH_CONFIG_WCHAR：wstring 断言输出
 target_compile_definitions(test_core PRIVATE _CRT_SECURE_NO_WARNINGS CATCH_CONFIG_WCHAR)

@@ -20,6 +20,14 @@
 //       窗口）、命令行位置参数绝对化（D2）、首启「添加右键菜单」提示（D3，
 //       旧版询问语义非自动注册）；测试钩子：--no-shell-prompt 与
 //       --selftest-shell-register/unregister/query=<suffix>（临时键名注入）。
+// 外部文件改动检测（core/externalchangemonitor + main.cpp 接线，2026-11）：
+//       仅活动文档受检——timer 7 轮询（默认 1000ms）+ 切换标签/窗口激活立即
+//       触发；stat 初筛 + 内容哈希两级校验。干净文档静默自动重载（编码自动
+//       识别），脏文档三选决策框（重新加载/保留修改/另存为…），删除一次性
+//       提示；基线快照刷新 = 写路径事件订阅 + 显式刷新双保险（DEC-005）。
+//       测试钩子：--watch-interval-ms=<n>（轮询间隔注入）与
+//       --selftest-filewatch[=<结果文件>]（WM_APP+12 阶段推进，生产 poll tick
+//       驱动等待）。
 //
 // 模块职责划分：
 //   ui/theme    —— 语义主题 token + DPI 换算
@@ -46,7 +54,7 @@
 // 快捷键天然屏蔽。
 //
 // M3 接入：查找替换对话框（Ctrl+F/H 实装）；M4 接入：关闭三选确认/草稿/会话；
-// M5：单实例/shell；M6：深色主题。
+// M5：单实例/shell；M6：深色主题；外部文件改动检测（timer 7 轮询 + 决策编排）。
 
 #include <windows.h>
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM
@@ -58,17 +66,20 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Scintilla.h"  // Scintilla_RegisterClasses：静态链接时替代 DLL 自注册
 
 #include "core/document.h"
 #include "core/documentmanager.h"
+#include "core/externalchangemonitor.h"
 #include "core/format.h"
 #include "core/draftcachemanager.h"
 #include "core/encoding.h"
@@ -131,16 +142,24 @@ constexpr UINT kMsgNumberingSelftestStage = WM_APP + 10;
 // 「延迟一拍」触发：入队晚于 WM_DPICHANGED 的 sent-message 链，执行时
 // Scintilla 子窗口已按新 DPI 重测字体（WM_DPICHANGED_AFTERPARENT））
 constexpr UINT kMsgRefreshLineNumbers = WM_APP + 11;
+// 外部文件改动检测自测阶段推进（--selftest-filewatch；+12 在 MenuHost/对话框
+// WM_APP..+9 测试透传段与 +10/+11 已占编号之外顺延，与既有自测模式互斥不并发）
+constexpr UINT kMsgFileWatchSelftestStage = WM_APP + 12;
 
 // 主窗口宿主 timer id 分配（tabs.cpp / tabs.h / toolbar.h / statusbar.h 同源约定，
 // 单窗口内必须互斥，否则 WM_TIMER 互相误路由）：
 //   1 = 会话防抖轮询 / 2 = Tab tooltip / 3 = 工具栏 tooltip / 4 = 状态栏
 //   tooltip / 5 = 转发队列消化重试 / 6 = Tab 拖拽让位动画（kDragAnimTimerId）
+//   7 = 外部文件改动检测轮询（kTimerFileWatch）
 constexpr UINT_PTR kTimerSessionFlush = 1;
 // M5 转发队列消化重试定时器（模态对话框打开期间推迟消化，防重入叠加）
 constexpr UINT_PTR kTimerForwardDrainRetry = 5;
 static_assert(kTimerForwardDrainRetry >= 5,
               "宿主 timer id 须避开 1-4（会话轮询/Tab/工具栏/状态栏已占用）");
+// 外部文件改动检测轮询定时器（间隔 g_watchIntervalMs，默认 1000ms；DEC-001）：
+// 每 tick 对活动文档跑一轮检测（PollActiveDocumentNow）；切换标签/窗口激活的
+// 立即检测不经此定时器。恢复期/模态期间 tick 内跳过检测（防重入）
+constexpr UINT_PTR kTimerFileWatch = 7;
 
 ui::TitleBar g_titleBar;
 // 标题栏窗口控制按钮「按下会话」（防点击穿透，方案 A）：按下只记录 + SetCapture，
@@ -202,6 +221,19 @@ enum class ShellHookOp { None, Register, Unregister, Query };
 ShellHookOp g_shellHookOp = ShellHookOp::None;  // --selftest-shell-* 测试钩子
 std::wstring g_shellHookSuffix;                 // 注入的临时键名后缀（TC-I11）
 
+// —— 外部文件改动检测（需求-外部文件改动检测）生产状态 ——
+// 检测器生产注入（stat 三分采样 + LocalStorage 归一化内容哈希比对，实现见
+// 「外部文件改动检测编排」段）：poll 由 timer 7 / 切换标签 / 窗口激活的
+// PollActiveDocumentNow 驱动（DEC-001 单线程事件驱动，无竞态）
+std::optional<core::FileStatSample> StatFileForWatch(const std::filesystem::path& path);
+bool DiskContentMatchesBaseline(const std::filesystem::path& path, const core::Document& doc);
+core::ExternalChangeMonitor g_fileWatch(&StatFileForWatch, &DiskContentMatchesBaseline);
+int g_watchIntervalMs = 1000;  // 轮询间隔（--watch-interval-ms=<n> 测试钩子注入短值）
+// 基线刷新 url 比对表（uid → 上次刷新时 url）：OnDocumentMetadataChanged 高频
+// 触发（光标每次移动都发 metadata 事件），无条件刷新会在打字期间逐键重置快照
+// 吸收外部改动——按 url 变化才刷新（DEC-010）
+std::unordered_map<std::string, std::filesystem::path> g_fileWatchLastUrl;
+
 // —— M1-2 菜单自动化验证（--selftest-menu=<结果文件>）状态 ——
 bool g_selftestMenu = false;
 std::wstring g_selftestOut;
@@ -253,15 +285,22 @@ bool g_selftestNumbering = false;
 std::wstring g_selftestNumberingOut;
 int g_numberingStage = 0;
 
+// —— 外部文件改动检测自动化验证（--selftest-filewatch=<结果文件>）状态 ——
+// 断言采样集合/阶段推进机制见「外部文件改动检测自动化验证」段（DEC-011）
+bool g_selftestFileWatch = false;
+std::wstring g_selftestFileWatchOut;
+int g_fileWatchStage = 0;
+
 // ---------------------------------------------------------------------------
 // 状态查询/刷新（事件驱动）
 // ---------------------------------------------------------------------------
 
-// 持久化总开关：自测模式（menu/tabs/doc/search）完全跳过会话/草稿读写——
-// 保持既有自测语义不被真实用户目录数据破坏，也不向真实用户目录写入
+// 持久化总开关：自测模式（menu/tabs/doc/search/theme/numbering/filewatch）
+// 完全跳过会话/草稿读写——保持既有自测语义不被真实用户目录数据破坏，也不向
+// 真实用户目录写入
 bool SelftestModeActive() {
     return g_selftestMenu || g_selftestTabs || g_selftestDoc || g_selftestSearch ||
-           g_selftestTheme || g_selftestNumbering;
+           g_selftestTheme || g_selftestNumbering || g_selftestFileWatch;
 }
 bool PersistenceActive() {
     return !SelftestModeActive();
@@ -468,10 +507,20 @@ void OnDocumentsChanged() {
     // M4 会话：文档集合（数量/顺序）变化 → 防抖记忆
     TriggerSessionSave();
 }
+// 外部文件改动检测一轮编排（定义见「外部文件改动检测编排」段）：切换标签后
+// 立即检测活动文档一次（需求 3：非活动文档不做后台监测，切回时立即检测）
+void PollActiveDocumentNow();
+
 void OnActiveDocumentChanged() {
     RefreshAllAfterActiveChanged();
     // M4 会话：活动标签变化 → 防抖记忆
     TriggerSessionSave();
+    // 外部文件改动检测：切换标签立即检测一次（不等下一轮 tick；恢复期跳过
+    // ——启动恢复的文档逐个打开不触发检测，恢复完成后由首个 poll 兜底建快照；
+    // 模态期间活动切换不可达，UiLocked 为防御性判定）
+    if (!g_restoring && !UiLocked()) {
+        PollActiveDocumentNow();
+    }
 }
 void OnDocumentModifiedChanged(core::Document* doc) {
     const int idx = IndexOfDocument(doc);
@@ -480,6 +529,12 @@ void OnDocumentModifiedChanged(core::Document* doc) {
     // M4 草稿：脏→干净翻转（保存/另存为/编码重载路径）→ 删条目（DEC-003）
     if (PersistenceActive() && !g_restoring && !doc->modified()) {
         g_drafts->onModifiedCleared(doc);
+    }
+    // 外部文件改动检测：脏→干净翻转（保存/另存为/编码重载/外部重载路径）→
+    // 刷新基线快照（防自触发，DEC-005 事件订阅分支）。filewatch 不属于持久化，
+    // 不加 PersistenceActive 条件；恢复期跳过（首个 poll 兜底建快照）
+    if (!g_restoring && !doc->modified() && !doc->url().empty()) {
+        g_fileWatch.refreshBaseline(*doc);
     }
 }
 void OnDocumentContentChanged(core::Document* doc) {
@@ -512,6 +567,18 @@ void OnDocumentMetadataChanged(core::Document* doc) {
     RefreshMenuState();
     // 光标/显示名等元数据变化 → 会话记忆更新（500ms 防抖）
     TriggerSessionSave();
+    // 外部文件改动检测：url 变化（另存为/重命名）→ 刷新基线快照（DEC-005 事件
+    // 订阅分支 + poll 自动重建兜底）。metadata 事件不含 url 旧值，按 uid 记录
+    // 上次刷新 url 比对——光标位置等高频 metadata 事件不触发（无条件刷新会在
+    // 打字期间逐键重置快照吸收外部改动，DEC-010）。filewatch 独立于持久化，
+    // 不加 PersistenceActive 条件；恢复期跳过
+    if (!g_restoring && !doc->url().empty()) {
+        std::filesystem::path& last = g_fileWatchLastUrl[doc->uid()];
+        if (last != doc->url()) {
+            last = doc->url();
+            g_fileWatch.refreshBaseline(*doc);
+        }
+    }
 }
 
 void FocusActiveEditor() {
@@ -906,6 +973,136 @@ void DoSaveWithEncoding(core::TextEncoding encoding) {
         return;
     }
     ShowErrorDialog(L"保存失败", SaveTargetLabel(doc) + L"\n" + r.error().message);
+}
+
+// ---------------------------------------------------------------------------
+// 外部文件改动检测编排（需求-外部文件改动检测）：core::ExternalChangeMonitor
+// 纯逻辑检测器 + 本层生产注入（stat/内容查询）、轮询定时器、立即触发点与
+// 判定结果决策管线（干净自动重载 / 脏三选框 / 删除一次性提示）
+// ---------------------------------------------------------------------------
+
+/// stat 查询生产注入：std::filesystem 三分——not_found → 确认不存在（MSVC
+/// 实测：不存在时 status 返回 file_type::not_found **且** ec 同步置
+/// ERROR_FILE_NOT_FOUND/ERROR_PATH_NOT_FOUND——not_found 是「文件确认不在」
+/// 的明确信号而非查询失败，三分判定必须先看 type 再看 ec，DEC-009）；其余
+/// ec 错误（权限/网络抖动，type 多为 none）→ nullopt 本轮跳过不误报删除；
+/// 存在但非常规文件（目录等）→ 按不存在处理（检测只关心常规文件）；常规
+/// 文件 → mtime+size 采样。mtime 经 clock_cast 换算 epoch 毫秒（file_clock 的
+/// Windows 纪元 1601 与 Unix 纪元由标准库换算，毫秒精度——stat 版本只做
+/// 相对比较，绝对值精度无判定影响）
+std::optional<core::FileStatSample> StatFileForWatch(const std::filesystem::path& path) {
+    std::error_code ec;
+    const std::filesystem::file_status st = std::filesystem::status(path, ec);
+    if (st.type() == std::filesystem::file_type::not_found) {
+        return core::FileStatSample{false, 0, 0};  // 确认不存在（真实删除/移动）
+    }
+    if (ec) {
+        return std::nullopt;  // 查询失败：本轮跳过，快照/判定状态不变
+    }
+    if (st.type() != std::filesystem::file_type::regular) {
+        return core::FileStatSample{false, 0, 0};  // 目录等非常规文件：按不存在
+    }
+    std::error_code timeEc, sizeEc;
+    const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(path, timeEc);
+    if (timeEc) return std::nullopt;
+    const auto size = std::filesystem::file_size(path, sizeEc);
+    if (sizeEc) return std::nullopt;
+    const auto sysTime = std::chrono::clock_cast<std::chrono::system_clock>(mtime);
+    const long long mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  sysTime.time_since_epoch())
+                                  .count();
+    return core::FileStatSample{true, mtimeMs, static_cast<long long>(size)};
+}
+
+/// 内容判定生产注入：storageForUrl 分发（file:// → LocalStorage）→ read 自动
+/// 识别（BOM → 严格 UTF-8 校验 → GBK）得归一化内容（UTF-8/LF/无 BOM，与内存
+/// 形态直接可比）→ SHA-256 与 baselineHash 比较。读失败按「内容不符」方向返回
+/// false（误报走用户决策，比静默吸收外部修改安全——需求防覆盖目标）
+bool DiskContentMatchesBaseline(const std::filesystem::path& path, const core::Document& doc) {
+    if (core::DocumentStorage* storage = g_docManager.storageForUrl(path)) {
+        if (auto loaded = storage->read(path, std::nullopt)) {
+            return core::sha256Hex(loaded->content) == doc.baselineHash();
+        }
+    }
+    return false;
+}
+
+/// 一轮检测编排（timer 7 tick / 切换标签 / 窗口激活共用入口）：只传活动文档
+///（TC-106/108：非活动文档不做后台监测），按判定走管线——
+///   Restored：静默（检测器已自清删除态，无需 UI 动作）；
+///   Deleted：一次性提示（检测器删除态保证同一次删除只产出一条），文档保持
+///            打开，保存时重建（LocalStorage 原子写路径）；
+///   Modified：干净 → 静默自动重载（reloadFromDisk 自动识别编码，DEC-003）；
+///             脏 → 三选框（重新加载=1 默认 / 保留修改=2=Esc / 另存为…=3）。
+/// showModal 期间模态循环泵消息：timer 7 的 WM_TIMER 会重入到达，但 UiLocked
+/// 守卫跳过（天然防重入，需求「模态期间跳过本轮检测」）
+void PollActiveDocumentNow() {
+    core::Document* doc = g_docManager.activeDocument();
+    if (!doc || doc->url().empty()) return;
+    for (const core::Finding& f : g_fileWatch.poll({doc})) {
+        switch (f.verdict) {
+        case core::Verdict::Restored:
+            break;  // 静默：内容==基线（检测器已清除删除提示态）
+        case core::Verdict::Deleted: {
+            ShowErrorDialog(
+                L"文件已被删除或移动",
+                doc->url().wstring() + L"\n\n文档将保持打开，保存时会重新创建该文件。");
+            break;
+        }
+        case core::Verdict::Modified: {
+            if (!doc->modified()) {
+                // 干净 → 静默自动重载（DEC-003 自动识别编码；事件管线刷新
+                // Tab/标题/状态栏/编辑器/光标钳制——applyLoadedState 传播链）
+                const auto r = g_docManager.reloadFromDisk(doc);
+                if (r) {
+                    g_fileWatch.refreshBaseline(*doc);  // 显式刷新（双保险之一）
+                } else {
+                    // 重载失败（写入中间态/被锁等低频边界）：静默降级（DEC-008）
+                    // ——不弹框不打断；快照已推进到新 stat，同版本不重试，下次
+                    // stat 变化重新走管线；OutputDebugStringW 留诊断线索
+                    std::wstring diag = L"[qcnote] filewatch auto-reload failed: ";
+                    diag += doc->url().wstring();
+                    diag += L" ";
+                    diag += r.error().message;
+                    diag += L"\n";
+                    OutputDebugStringW(diag.c_str());
+                }
+                break;
+            }
+            // 脏 → 三选框（重载将丢弃未保存修改；另存为先保住自己的修改）
+            ui::DialogSpec spec;
+            spec.title = L"文件已被外部修改";
+            spec.message = doc->url().wstring() +
+                           L" 已在磁盘上被其他程序修改。\n重新加载将丢弃未保存的修改。";
+            spec.buttons.push_back({L"重新加载", 1, true});
+            spec.buttons.push_back({L"保留修改", 2, false});
+            spec.buttons.push_back({L"另存为…", 3, false});
+            spec.escId = 2;  // Esc = 保留现状（等价「保留修改」）
+            switch (g_dialogHost.showModal(g_mainWindow, spec)) {
+            case 1: {  // 重新加载（丢弃未保存修改，走与干净自动重载同机制）
+                const auto r = g_docManager.reloadFromDisk(doc);
+                if (r) {
+                    g_fileWatch.refreshBaseline(*doc);
+                } else {
+                    ShowErrorDialog(L"重新加载失败",
+                                    doc->url().wstring() + L"\n" + r.error().message);
+                }
+                break;
+            }
+            case 2:  // 保留修改：同 stat 版本不再重复弹（DEC-004 抑制）
+                g_fileWatch.acknowledge(*doc);
+                break;
+            case 3:  // 另存为…：先记录决策（新版本再变重新决策），再走既有另存为
+                g_fileWatch.acknowledge(*doc);
+                DoSaveAsDocument(doc);
+                break;
+            default:
+                break;
+            }
+            break;
+        }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1411,7 +1608,8 @@ void RunMenuSelftestStage() {
     }
 }
 
-// 解析 --selftest-menu / --selftest-tabs / --selftest-doc（[=<结果文件>]；互斥，menu 优先）
+// 解析 --selftest-menu / --selftest-tabs / --selftest-doc / --selftest-filewatch
+// （[=<结果文件>]；互斥，首个命中生效）
 void ParseSelftestArg(PWSTR cmdLine) {
     struct Mode {
         const wchar_t* name;
@@ -1425,6 +1623,7 @@ void ParseSelftestArg(PWSTR cmdLine) {
         {L"--selftest-search", &g_selftestSearch, &g_selftestSearchOut},
         {L"--selftest-theme", &g_selftestTheme, &g_selftestThemeOut},
         {L"--selftest-numbering", &g_selftestNumbering, &g_selftestNumberingOut},
+        {L"--selftest-filewatch", &g_selftestFileWatch, &g_selftestFileWatchOut},
     };
     for (const Mode& m : modes) {
         const wchar_t* p = wcsstr(cmdLine, m.name);
@@ -1444,6 +1643,16 @@ void ParseSelftestArg(PWSTR cmdLine) {
     if (g_selftestDoc && !g_selftestDocOut.empty()) {
         std::error_code ec;
         g_selftestBaseDir = std::filesystem::path(g_selftestDocOut).parent_path();
+        if (g_selftestBaseDir.empty()) {
+            g_selftestBaseDir = std::filesystem::current_path(ec);
+        }
+    }
+    if (g_selftestFileWatch) {
+        // 临时文件落点（场景文件写在结果文件旁；未携带路径时回退当前目录）
+        std::error_code ec;
+        if (!g_selftestFileWatchOut.empty()) {
+            g_selftestBaseDir = std::filesystem::path(g_selftestFileWatchOut).parent_path();
+        }
         if (g_selftestBaseDir.empty()) {
             g_selftestBaseDir = std::filesystem::current_path(ec);
         }
@@ -2279,6 +2488,416 @@ void RunDocSelftestStage() {
         ok = ok && br.right > br.left;  // 欢迎页按钮可见区域有效
         g_stDocCloseAll = ok;
         WriteDocSelftestResult();
+        PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 外部文件改动检测自动化验证（--selftest-filewatch[=<结果文件>]，覆盖
+// TC-101..108；--watch-interval-ms=50 注入短轮询间隔）
+//
+// 驱动方式（DEC-011）：生产 timer 7 每 tick 先跑 PollActiveDocumentNow（完整
+// 生产管线），随后推进阶段等待计数——磁盘改动与断言之间保证确定轮数的生产
+// poll 发生（posted 消息优先于 WM_TIMER 生成，故阶段消息在计数到 0 的 tick 内
+// 投递，而非改动后立刻投递）。模态对话框经 g_dialogHost.onOpened 注入键盘
+// （Enter=默认按钮=「重新加载」/「确定」，Esc=escId=「保留修改」）——真实
+// 模态路径；「另存为…」（TC-104）经等价路径模拟（系统文件对话框不可自动化，
+// 与 --selftest-doc 的 saveAs 阶段同约定：直调 acknowledge + g_docManager.saveAs
+// + markSaved——与生产 choice-3 分支组合的同一组函数）。
+// ---------------------------------------------------------------------------
+
+// 断言采样集合（TC 编号对应测试用例文档）
+bool g_stFwSetup = false;             // 前置：临时文件创建 + openPath 打开
+bool g_stFwAutoReload = false;        // TC-101：干净文档外部修改静默自动重载
+bool g_stFwOwnSave = false;           // TC-107：自己保存不触发提示
+bool g_stFwDirtyReload = false;       // TC-102：脏文档弹三选框，选「重新加载」
+bool g_stFwKeepModified = false;      // TC-103：选「保留修改」内容/脏保持
+bool g_stFwKeepNoRepeat = false;      // TC-103：同 stat 版本多轮不重复弹
+bool g_stFwKeepReappear = false;      // TC-103：文件再变三选框再现（DEC-004）
+bool g_stFwSaveAs = false;            // TC-104：另存为等价路径（url 更新/干净/无提示残留）
+bool g_stFwDeleteOnce = false;        // TC-105：删除提示恰一次 + 保存重建后不再提示
+bool g_stFwInactiveDoc = false;       // TC-106：非活动文档不被检测
+bool g_stFwSwitchImmediate = false;   // TC-108：切换标签立即检测（不等 tick）
+bool g_stFwActivateImmediate = false; // TC-108：窗口激活立即检测（不等 tick）
+int g_fwDialogCount = 0;   // 对话框出现次数（onOpened 采样；断言「无弹框」）
+UINT g_fwAutoKey = VK_RETURN;  // 自动应答键（未期望对话框兜底关闭防悬挂）
+int g_fileWatchWaitTicks = 0;   // 距下一阶段的生产 poll tick 数（tick 驱动推进）
+std::wstring g_fwDetail;        // 各阶段采样明细（失败定位；写 <结果文件>.detail.txt）
+
+// 自测文件写入（二进制 UTF-8 无 BOM、LF——与 LocalStorage 归一化内容直接可比）
+bool FwWriteFile(const std::filesystem::path& path, const std::string& utf8) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+    f.flush();
+    return f.good();
+}
+
+// 场景内容（tag + 不同长度的填充保证各版本互异且字节数不同——stat 版本变化
+// 不依赖 mtime 分辨率）
+std::string FwContent(const char* tag, int pad) {
+    std::string s = "外部改动检测 ";
+    s += tag;
+    s.push_back(' ');
+    s.append(static_cast<size_t>(pad), '.');
+    s.push_back('\n');
+    return s;
+}
+
+// 自测辅助：光标先落文末再键入（WM_CHAR 在 Scintilla 当前光标处插入——加载
+// 后光标停在 0/上次位置，场景语义 = 追加；SCI_SETSEL 同步设置，随后 CHARADDED
+// 经既有链回写 doc 光标）
+void FwTypeAtEnd(core::Document* doc, const std::wstring& text) {
+    HWND sci = g_editors.windowForTest(doc);
+    if (!sci) return;
+    const LRESULT len = SendMessageW(sci, SCI_GETLENGTH, 0, 0);
+    SendMessageW(sci, SCI_SETSEL, len, len);
+    TypeIntoEditor(doc, text);
+}
+
+/// timer 7 tick 内生产 poll 之后调用（WM_TIMER 分支）：阶段等待计数推进，到 0
+/// 投递下一阶段消息。模态对话框打开期间不消耗等待轮数（UiLocked 同门，DEC-011）
+void FileWatchSelftestTick() {
+    if (!g_selftestFileWatch || !g_mainWindow) return;
+    if (g_fileWatchWaitTicks > 0 && --g_fileWatchWaitTicks == 0) {
+        PostMessageW(g_mainWindow, kMsgFileWatchSelftestStage, 0, 0);
+    }
+}
+
+void WriteFileWatchSelftestResult() {
+    std::error_code ec;
+    std::filesystem::path out(g_selftestFileWatchOut);
+    if (g_selftestFileWatchOut.empty()) {
+        out = std::filesystem::current_path(ec) / "qcnote-filewatch-selftest.txt";
+    }
+    const std::pair<const char*, bool*> named[] = {
+        {"setup: temp file created and opened (snapshot auto-established)",
+         &g_stFwSetup},
+        {"TC-101 clean doc auto-reloads silently on external modify",
+         &g_stFwAutoReload},
+        {"TC-107 own save does not trigger any prompt",
+         &g_stFwOwnSave},
+        {"TC-102 dirty doc shows 3-choice dialog, reload discards edits",
+         &g_stFwDirtyReload},
+        {"TC-103 keep-modified preserves in-memory content and dirty flag",
+         &g_stFwKeepModified},
+        {"TC-103 same stat version does not re-prompt on later polls",
+         &g_stFwKeepNoRepeat},
+        {"TC-103 new disk version re-prompts (decision recorded per stat)",
+         &g_stFwKeepReappear},
+        {"TC-104 save-as equivalent path: url updated, clean, no prompt left",
+         &g_stFwSaveAs},
+        {"TC-105 deletion prompts once; save recreates file, no prompt after",
+         &g_stFwDeleteOnce},
+        {"TC-106 inactive document is not detected (content untouched)",
+         &g_stFwInactiveDoc},
+        {"TC-108 tab switch polls immediately (before next tick)",
+         &g_stFwSwitchImmediate},
+        {"TC-108 window activation polls immediately (before next tick)",
+         &g_stFwActivateImmediate},
+    };
+    bool all = true;
+    std::ofstream f(out, std::ios::trunc);
+    for (const auto& [name, flag] : named) {
+        f << "scenario=" << name << ": " << (*flag ? "PASS" : "FAIL") << "\n";
+        all = all && *flag;
+    }
+    f << "overall: " << (all ? "PASS" : "FAIL") << "\n";
+    f.close();
+    // 诊断明细（自动化失败定位；验证脚本不依赖此文件）
+    std::ofstream detail(std::filesystem::path(out).wstring() + L".detail.txt",
+                         std::ios::trunc);
+    detail << core::wideToUtf8(g_fwDetail);
+    detail.close();
+}
+
+// 阶段机（kMsgFileWatchSelftestStage 逐段推进；每段末置 g_fileWatchWaitTicks，
+// 由生产 poll tick 计数到 0 后投递下一段——磁盘改动与断言之间恒有确定轮数的
+// 完整生产检测发生）
+void RunFileWatchSelftestStage() {
+    if (!g_mainWindow) return;
+    std::error_code ec;
+
+    if (g_fileWatchStage == 0) {
+        g_fileWatchStage = 1;
+        // —— 前置：创建 TC-101 临时文件并打开（openPath → 切换标签立即检测 →
+        //     快照自动建立；TC-108 切换立即检测路径的顺带覆盖）——
+        const auto fileA = g_selftestBaseDir / L"fw-tc101.txt";
+        std::filesystem::remove(fileA, ec);
+        g_stFwSetup = FwWriteFile(fileA, FwContent("A", 4));
+        const auto opened = g_docManager.openPath(fileA);
+        g_stFwSetup = g_stFwSetup && opened.has_value() &&
+                      g_docManager.activeDocument() == *opened;
+        // 对话框采样 + 自动应答挂全程（未期望对话框兜底关闭防悬挂：Enter=
+        // 默认按钮，断言经 g_fwDialogCount 判定失败）
+        g_fwAutoKey = VK_RETURN;
+        g_fwDialogCount = 0;
+        g_dialogHost.onOpened = [] {
+            ++g_fwDialogCount;
+            if (g_fwAutoKey != 0) {
+                if (HWND h = g_dialogHost.dialogWindowForTest()) {
+                    PostMessageW(h, WM_KEYDOWN, g_fwAutoKey, 0);
+                }
+            }
+        };
+        g_fwDetail += L"[stage0] setup=" + std::wstring(g_stFwSetup ? L"1" : L"0") +
+                      L" docs=" + std::to_wstring(g_docManager.documentCount()) + L"\n";
+        g_fileWatchWaitTicks = 2;  // 稳态余量（快照已由 openPath 立即检测建立）
+    } else if (g_fileWatchStage == 1) {
+        g_fileWatchStage = 2;
+        // —— TC-101：外部改写为 B（不同字节数保 stat 版本变化）——
+        core::Document* doc = g_docManager.activeDocument();
+        bool ok = doc != nullptr && doc->url() == (g_selftestBaseDir / L"fw-tc101.txt");
+        if (ok) {
+            ok = doc->content() == FwContent("A", 4) && !doc->modified();
+            FwWriteFile(doc->url(), FwContent("B", 40));
+        }
+        g_fwDetail += L"[stage1] tc101 overwrite ok=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        g_fileWatchWaitTicks = 4;  // 4 轮 poll：首轮检测 + 自动重载同步完成
+    } else if (g_fileWatchStage == 2) {
+        g_fileWatchStage = 3;
+        // —— 断言 TC-101：静默自动重载（内容/编辑器/标题/状态栏），无对话框 ——
+        core::Document* doc = g_docManager.activeDocument();
+        wchar_t title[256] = {};
+        GetWindowTextW(g_mainWindow, title, 256);
+        bool ok = doc != nullptr && doc->content() == FwContent("B", 40) &&
+                  !doc->modified() && EditorTextOf(doc) == FwContent("B", 40) &&
+                  g_fwDialogCount == 0 && wcsstr(title, L"*") == nullptr;
+        ok = ok && g_statusBar.data().hasDoc &&
+             g_statusBar.data().totalChars ==
+                 static_cast<long long>(core::utf8CharCount(FwContent("B", 40)));
+        g_stFwAutoReload = ok;
+        g_fwDetail += L"[stage2] tc101 autoReload=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— TC-107 前置：编辑置脏 → 自己保存（真实 DoSave 路径）——
+        if (doc) {
+            FwTypeAtEnd(doc, L"用户编辑");
+            DoSave();
+        }
+        g_fileWatchWaitTicks = 4;  // 保存后多轮 poll：基线已刷新（事件 + 显式双保险）
+    } else if (g_fileWatchStage == 3) {
+        g_fileWatchStage = 4;
+        // —— 断言 TC-107：自己保存不触发提示；磁盘已写回内存内容 ——
+        core::Document* doc = g_docManager.activeDocument();
+        const std::string saved = FwContent("B", 40) + core::wideToUtf8(L"用户编辑");
+        bool ok = doc != nullptr && !doc->modified() && g_fwDialogCount == 0 &&
+                  doc->content() == saved && ReadFileBytes(doc->url()) == saved;
+        g_stFwOwnSave = ok;
+        g_fwDetail += L"[stage3] tc107 ownSave=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— 清场 + TC-102 前置：打开新文件 C ——
+        if (doc) g_docManager.closeDocument(doc);  // 干净文档直接关（无对话框）
+        const auto fileC = g_selftestBaseDir / L"fw-tc102.txt";
+        std::filesystem::remove(fileC, ec);
+        FwWriteFile(fileC, FwContent("C", 6));
+        const auto openedC = g_docManager.openPath(fileC);  // [[nodiscard]]：捕获结果
+        if (!openedC.has_value() || *openedC == nullptr) {
+            g_fwDetail += L"[stage3] openPath(fileC) failed\n";
+        }
+        g_fileWatchWaitTicks = 2;
+    } else if (g_fileWatchStage == 4) {
+        g_fileWatchStage = 5;
+        // —— TC-102：编辑置脏 → 外部改写 D → 等三选框出现（Enter=重新加载）——
+        core::Document* doc = g_docManager.activeDocument();
+        bool ok = doc != nullptr && doc->url() == (g_selftestBaseDir / L"fw-tc102.txt") &&
+                  doc->content() == FwContent("C", 6) && !doc->modified();
+        if (ok) {
+            FwTypeAtEnd(doc, L"用户编辑");
+            FwWriteFile(doc->url(), FwContent("D", 44));
+        }
+        g_fwAutoKey = VK_RETURN;  // 三选框默认按钮 = 重新加载
+        g_fwDetail += L"[stage4] tc102 setup ok=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        g_fileWatchWaitTicks = 4;  // 首轮 poll 弹框 + 模态内自动应答 + 重载同步完成
+    } else if (g_fileWatchStage == 5) {
+        g_fileWatchStage = 6;
+        // —— 断言 TC-102：重载丢弃编辑、干净、编辑器同步、对话框恰一次 ——
+        core::Document* doc = g_docManager.activeDocument();
+        bool ok = doc != nullptr && doc->content() == FwContent("D", 44) &&
+                  !doc->modified() && EditorTextOf(doc) == FwContent("D", 44) &&
+                  g_fwDialogCount == 1;
+        g_stFwDirtyReload = ok;
+        g_fwDetail += L"[stage5] tc102 dirtyReload=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— TC-103 前置：再置脏 → 外部改写 E → Esc=保留修改 ——
+        if (ok) {
+            FwTypeAtEnd(doc, L"再编辑");
+            FwWriteFile(doc->url(), FwContent("E", 8));
+        }
+        g_fwAutoKey = VK_ESCAPE;  // escId=2 = 保留修改
+        g_fileWatchWaitTicks = 4;
+    } else if (g_fileWatchStage == 6) {
+        g_fileWatchStage = 7;
+        // —— 断言 TC-103（保留修改）：内存内容/脏保持；对话框第二次出现 ——
+        core::Document* doc = g_docManager.activeDocument();
+        const std::string kept = FwContent("D", 44) + core::wideToUtf8(L"再编辑");
+        bool ok = doc != nullptr && doc->content() == kept && doc->modified() &&
+                  g_fwDialogCount == 2;
+        g_stFwKeepModified = ok;
+        g_fwDetail += L"[stage6] tc103 keep=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— 同 stat 版本多轮 poll：不重复弹（DEC-004 抑制）——
+        g_fileWatchWaitTicks = 5;
+    } else if (g_fileWatchStage == 7) {
+        g_fileWatchStage = 8;
+        // —— 断言 TC-103（不重复弹）——
+        const bool ok = (g_fwDialogCount == 2);
+        g_stFwKeepNoRepeat = ok;
+        g_fwDetail += L"[stage7] tc103 noRepeat=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— 文件再变 F（新 stat 版本）→ 三选框再现，Esc=再次保留 ——
+        core::Document* doc = g_docManager.activeDocument();
+        if (doc) {
+            FwWriteFile(doc->url(), FwContent("F", 48));
+        }
+        g_fwAutoKey = VK_ESCAPE;
+        g_fileWatchWaitTicks = 4;
+    } else if (g_fileWatchStage == 8) {
+        g_fileWatchStage = 9;
+        // —— 断言 TC-103（再现）：文件再变重新进入决策（第三次对话框）——
+        core::Document* doc = g_docManager.activeDocument();
+        const std::string kept = FwContent("D", 44) + core::wideToUtf8(L"再编辑");
+        const bool ok = doc != nullptr && g_fwDialogCount == 3 && doc->content() == kept &&
+                        doc->modified();
+        g_stFwKeepReappear = ok;
+        g_fwDetail += L"[stage8] tc103 reappear=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— TC-104（等价路径）：三选框「另存为…」= acknowledge + saveAs +
+        //     markSaved（系统文件对话框不可自动化；生产 choice-3 分支组合的
+        //     同一组函数，直接注入目标路径，DEC-011）——
+        if (doc) {
+            const auto fileAs = g_selftestBaseDir / L"fw-tc104-另存为.txt";
+            std::filesystem::remove(fileAs, ec);
+            g_fileWatch.acknowledge(*doc);
+            const core::SaveAsResult sr = g_docManager.saveAs(doc, fileAs);
+            if (sr.written) g_editors.markSaved(doc);
+        }
+        g_fileWatchWaitTicks = 4;  // 新 url 快照（metadata url 变化 + 干净翻转双保险）
+    } else if (g_fileWatchStage == 9) {
+        g_fileWatchStage = 10;
+        // —— 断言 TC-104：url 更新、干净、磁盘内容即内存内容、无提示残留 ——
+        core::Document* doc = g_docManager.activeDocument();
+        const std::string saved = FwContent("D", 44) + core::wideToUtf8(L"再编辑");
+        const auto fileAs = g_selftestBaseDir / L"fw-tc104-另存为.txt";
+        bool ok = doc != nullptr && doc->url() == fileAs && !doc->modified() &&
+                  doc->content() == saved && ReadFileBytes(fileAs) == saved &&
+                  g_fwDialogCount == 3;
+        g_stFwSaveAs = ok;
+        g_fwDetail += L"[stage9] tc104 saveAs=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— TC-105 前置：置脏 → 删除磁盘文件（删除提示=单按钮框，Enter=确定）——
+        if (doc) {
+            FwTypeAtEnd(doc, L"删除前编辑");
+        }
+        g_fwAutoKey = VK_RETURN;
+        if (doc) {
+            const bool removed = std::filesystem::remove(doc->url(), ec);
+            g_fwDetail += L"[stage9] remove=" + std::wstring(removed ? L"1" : L"0") +
+                          L" ec=" + std::to_wstring(ec.value()) +
+                          L" url=" + doc->url().wstring() +
+                          L" snapshots=" + std::to_wstring(static_cast<int>(g_fileWatch.snapshotCount())) +
+                          L"\n";
+        }
+        g_fileWatchWaitTicks = 4;
+    } else if (g_fileWatchStage == 10) {
+        g_fileWatchStage = 11;
+        // —— 断言 TC-105（提示恰一次）：文档仍打开、内容未变、对话框第四次 ——
+        core::Document* doc = g_docManager.activeDocument();
+        const std::string kept = FwContent("D", 44) + core::wideToUtf8(L"再编辑") +
+                                 core::wideToUtf8(L"删除前编辑");
+        bool ok = doc != nullptr && g_fwDialogCount == 4 && doc->content() == kept &&
+                  doc->modified() && g_docManager.documentCount() == 1;
+        g_fwDetail += L"[stage10] tc105 deleteNotice=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        g_fileWatchWaitTicks = 5;  // 多轮 poll：删除态不再重复提示
+    } else if (g_fileWatchStage == 11) {
+        g_fileWatchStage = 12;
+        // —— 断言 TC-105（不重复提示）+ 保存重建（DoSave 真实路径）——
+        core::Document* doc = g_docManager.activeDocument();
+        bool ok = (g_fwDialogCount == 4);
+        g_fwDetail += L"[stage11] tc105 noRepeat=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        if (doc) {
+            DoSave();  // 文件重建（LocalStorage 原子写；modified 翻转刷新基线）
+        }
+        g_fileWatchWaitTicks = 4;  // 保存后多轮 poll：不再提示
+    } else if (g_fileWatchStage == 12) {
+        g_fileWatchStage = 13;
+        // —— 断言 TC-105（保存重建后不再提示）——
+        core::Document* doc = g_docManager.activeDocument();
+        const std::string saved = FwContent("D", 44) + core::wideToUtf8(L"再编辑") +
+                                  core::wideToUtf8(L"删除前编辑");
+        bool ok = doc != nullptr && g_fwDialogCount == 4 && !doc->modified() &&
+                  std::filesystem::exists(doc->url(), ec) &&
+                  ReadFileBytes(doc->url()) == saved;
+        g_stFwDeleteOnce = ok;
+        g_fwDetail += L"[stage12] tc105 rebuild=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— 清场 + TC-106 前置：两个文件 A1（活动）/B1 ——
+        if (doc) g_docManager.closeDocument(doc);
+        const auto fileA1 = g_selftestBaseDir / L"fw-tc106-a.txt";
+        const auto fileB1 = g_selftestBaseDir / L"fw-tc106-b.txt";
+        std::filesystem::remove(fileA1, ec);
+        std::filesystem::remove(fileB1, ec);
+        FwWriteFile(fileA1, FwContent("A1", 10));
+        FwWriteFile(fileB1, FwContent("B1", 12));
+        const auto openedA1 = g_docManager.openPath(fileA1);  // [[nodiscard]]：捕获结果
+        if (!openedA1.has_value() || *openedA1 == nullptr) {
+            g_fwDetail += L"[stage12] openPath(fileA1) failed\n";
+        }
+        core::Document* docB = g_docManager.openPath(fileB1).value_or(nullptr);
+        if (docB) g_docManager.setActiveDocument(g_docManager.documentForPath(fileA1));
+        // 非活动文档 B1 外部改写：多轮 poll 只查活动文档 A1（TC-106）
+        if (docB) {
+            FwWriteFile(docB->url(), FwContent("B2", 52));
+        }
+        g_fileWatchWaitTicks = 6;
+    } else if (g_fileWatchStage == 13) {
+        g_fileWatchStage = 14;
+        // —— 断言 TC-106：B1 内容未被重载、无任何提示 ——
+        const auto fileB1 = g_selftestBaseDir / L"fw-tc106-b.txt";
+        core::Document* docB = g_docManager.documentForPath(fileB1);
+        core::Document* docA = g_docManager.activeDocument();
+        bool ok = docB != nullptr && docA != nullptr &&
+                  docB->content() == FwContent("B1", 12) &&
+                  g_docManager.activeDocument() == docA && g_fwDialogCount == 4;
+        g_stFwInactiveDoc = ok;
+        g_fwDetail += L"[stage13] tc106 inactive=" + std::wstring(ok ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— TC-108（切换标签立即检测）：激活 B1 → 同步立即检测 → 干净 →
+        //     静默自动重载（断言在切换返回后立即采样，未等 tick）——
+        if (docB) {
+            g_docManager.setActiveDocument(docB);
+            ok = docB->content() == FwContent("B2", 52) && !docB->modified() &&
+                 EditorTextOf(docB) == FwContent("B2", 52) && g_fwDialogCount == 4;
+        } else {
+            ok = false;
+        }
+        g_stFwSwitchImmediate = ok;
+        g_fwDetail += L"[stage13] tc108 switchImmediate=" + std::wstring(ok ? L"1" : L"0") +
+                      L" content=" + core::utf8ToWide(docB ? docB->content() : std::string()) +
+                      L"\n";
+        // —— TC-108（窗口激活）前置：B1 再改一次（新 stat 版本）——
+        if (docB) {
+            FwWriteFile(docB->url(), FwContent("B3", 56));
+        }
+        // 模拟窗口失活→激活（SendMessage 直驱 = 真实 WM_ACTIVATE 处理路径；
+        // 先发 WA_INACTIVE 置非活动态，保证「非激活→激活」翻转成立）
+        SendMessageW(g_mainWindow, WM_ACTIVATE, MAKEWPARAM(WA_INACTIVE, 0), 0);
+        SendMessageW(g_mainWindow, WM_ACTIVATE, MAKEWPARAM(WA_ACTIVE, 0), 0);
+        // —— 断言 TC-108（激活立即检测）：同步重载完成（未等 tick）——
+        bool okA = docB != nullptr && docB->content() == FwContent("B3", 56) &&
+                   !docB->modified() && g_fwDialogCount == 4;
+        g_stFwActivateImmediate = okA;
+        g_fwDetail += L"[stage13] tc108 activateImmediate=" + std::wstring(okA ? L"1" : L"0") +
+                      L" dialogs=" + std::to_wstring(g_fwDialogCount) + L"\n";
+        // —— 收尾：清场 + 写结果 + 退出 ——
+        for (core::Document* d : g_docManager.documents()) {
+            g_docManager.closeDocument(d);  // 均干净：直接关（无对话框）
+        }
+        g_dialogHost.onOpened = nullptr;
+        WriteFileWatchSelftestResult();
         PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
     }
 }
@@ -4015,13 +4634,23 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             [](core::Document* doc) { OnDocumentContentChanged(doc); });
         g_docManager.documentMetadataChanged.subscribe(
             [](core::Document* doc) { OnDocumentMetadataChanged(doc); });
-        // 文档关闭（移除后、销毁前）：草稿「不保存」放弃清理 + 会话记忆
+        // 文档关闭（移除后、销毁前）：草稿「不保存」放弃清理 + 会话记忆 +
+        // 外部改动检测快照清理（uid 遗留不泄漏，TC-011；与草稿清理同位置同
+        // 前提——uid 仍可安全读；filewatch 独立于持久化，无条件执行）
         g_docManager.documentClosed.subscribe([](core::Document* doc) {
             if (PersistenceActive() && !g_restoring) g_drafts->onDocumentClosed(doc);
+            g_fileWatch.forget(doc->uid());
+            g_fileWatchLastUrl.erase(doc->uid());
             TriggerSessionSave();
         });
         // —— M4 防抖驱动定时器（200ms tick；会话 500ms / 草稿 1000ms 到期轮询）——
         SetTimer(hwnd, kTimerSessionFlush, 200, nullptr);
+        // —— 外部文件改动检测轮询（timer 7；间隔 g_watchIntervalMs，默认 1000ms；
+        //     仅正常模式与 filewatch 自测模式启动——其他自测模式不启动，防干扰
+        //     既有自测语义；filewatch 模式需要本定时器驱动检测与阶段推进）——
+        if (!SelftestModeActive() || g_selftestFileWatch) {
+            SetTimer(hwnd, kTimerFileWatch, static_cast<UINT>(g_watchIntervalMs), nullptr);
+        }
         // —— 初始布局 ——
         g_editors.layout(EditorContentRect(hwnd));
         RefreshStatusBar();
@@ -4045,8 +4674,15 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     case WM_NCACTIVATE:
         return DefWindowProcW(hwnd, msg, wParam, static_cast<LPARAM>(-1));
-    case WM_ACTIVATE:
+    case WM_ACTIVATE: {
+        // 外部文件改动检测：非激活→激活翻转时立即检测一次（需求 3：不等下一
+        // 轮 tick；恢复期/模态期间跳过——模态对话框打开中 WM_ACTIVATE 仍可能
+        // 因 z 序切换到达）
+        const bool wasActive = g_windowActive;
         g_windowActive = LOWORD(wParam) != WA_INACTIVE;
+        if (g_windowActive && !wasActive && !g_restoring && !UiLocked()) {
+            PollActiveDocumentNow();
+        }
         // C3 失焦即写：草稿立即落盘（把强杀丢失窗口从「最后 1 秒防抖」压缩到
         // 「失焦前 1 秒」）；挂起中的会话一并冲刷
         if (LOWORD(wParam) == WA_INACTIVE && PersistenceActive() && !g_restoring) {
@@ -4069,6 +4705,7 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         InvalidateRect(hwnd, nullptr, FALSE);  // E2 边界线换色
         break;
+    }
     case WM_NCLBUTTONDOWN:
         switch (static_cast<int>(wParam)) {
         case HTCAPTION:
@@ -4144,6 +4781,11 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     case kMsgNumberingSelftestStage:
         RunNumberingSelftestStage();
+        return 0;
+    case kMsgFileWatchSelftestStage:
+        // 外部文件改动检测自测阶段推进（--selftest-filewatch；阶段等待由
+        // timer 7 tick 计数驱动，见 RunFileWatchSelftestStage 段注释）
+        RunFileWatchSelftestStage();
         return 0;
     case kMsgSelftestDump:
         // --selftest-dump 采样钩子（e2e 跨进程断言辅助；同步处理后文件即就绪）
@@ -4348,6 +4990,14 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_drafts->flushDue(now);
             if (g_sessionDebounce.flushDue(now)) PersistSessionNow();
         }
+        // 外部文件改动检测轮询（timer 7）：恢复期/模态期间跳过检测（模态循环
+        // 泵消息时 WM_TIMER 照常到达，UiLocked 防重入；showModal 内部的三选框
+        // 重入即此场景）；filewatch 自测等待计数随生产 poll 同门推进——对话框
+        // 打开期间不消耗等待轮数
+        if (wParam == kTimerFileWatch && !g_restoring && !UiLocked()) {
+            PollActiveDocumentNow();
+            if (g_selftestFileWatch) FileWatchSelftestTick();
+        }
         return 0;
     case WM_KILLFOCUS:
         g_tabs.onWindowKillFocus();
@@ -4501,6 +5151,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
                     // 并把窗口停泊到离屏坐标——弹出菜单/对话框以主窗口为锚，
                     // 停泊保证它们也渲染在屏幕外，自动化全程零可见元素
                     g_headless = true;
+                } else if (arg.rfind(L"--watch-interval-ms=", 0) == 0) {
+                    // 外部文件改动检测轮询间隔（测试钩子；默认 1000ms）：正值
+                    // 直接采用（filewatch 自测需要短值如 50 加速推进），≤0/
+                    // 非法/超界回退默认（解析失败 _wtoi 返回 0 → 回退）
+                    constexpr wchar_t kWatchPrefix[] = L"--watch-interval-ms=";
+                    const int parsed = _wtoi(arg.c_str() + wcslen(kWatchPrefix));
+                    if (parsed >= 1 && parsed <= 60000) {
+                        g_watchIntervalMs = parsed;
+                    }
                 } else if (arg == L"--noactivate") {
                     // 测试钩子：SW_SHOWNOACTIVATE 显示（不抢前台焦点；metrics 用）
                     g_noActivate = true;
@@ -4666,9 +5325,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
     }
 
     // 启动位置参数打开（D2；恢复完成后叠加打开——旧版 openPendingUrls 时序；
-    // 事件接线已在 WM_CREATE 完成）
+    // 事件接线已在 WM_CREATE 完成）。filewatch 自测自建场景文件，不消费位置参数
     if (!g_initialPaths.empty() && !g_selftestMenu && !g_selftestTabs &&
-        !g_selftestSearch && !g_selftestTheme && !g_selftestNumbering) {
+        !g_selftestSearch && !g_selftestTheme && !g_selftestNumbering &&
+        !g_selftestFileWatch) {
         DoOpenPaths(g_initialPaths);
     }
 
@@ -4705,6 +5365,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
         PostMessageW(hwnd, kMsgThemeSelftestStage, 0, 0);
     } else if (g_selftestNumbering) {
         PostMessageW(hwnd, kMsgNumberingSelftestStage, 0, 0);
+    } else if (g_selftestFileWatch) {
+        PostMessageW(hwnd, kMsgFileWatchSelftestStage, 0, 0);
     }
 
     MSG msg{};
