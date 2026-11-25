@@ -5,6 +5,7 @@
 #include <windowsx.h>   // GET_X_LPARAM/GET_Y_LPARAM（WM_NCHITTEST 屏幕坐标分解）
 
 #include <algorithm>
+#include <map>
 
 #include "Scintilla.h"
 #include "editor/multicursorcontroller.h"  // kVirtualSpaceOptions（C-1 共享常量）
@@ -439,6 +440,11 @@ void EditorHost::setLineNumbers(bool on) {
     }
 }
 
+// 回车自动缩进全局开关：仅落标志（SCN_CHARADDED 处理时读取，详见头文件）
+void EditorHost::setAutoIndent(bool on) {
+    autoIndent_ = on;
+}
+
 // DPI 变化后重算全部实例行号边宽度（跨屏拖动场景；详见头文件接口注释）。
 // updateLineNumberWidth 内 SCI_TEXTWIDTH 会 RefreshStyleData 按新字体重测。
 void EditorHost::refreshLineNumberWidths() {
@@ -475,6 +481,116 @@ HWND EditorHost::activeWindow() const {
 HWND EditorHost::windowForTest(const core::Document* doc) const {
     const Entry* e = find(doc);
     return e ? e->hwnd : nullptr;
+}
+
+// 回车自动缩进（需求-回车自动缩进；DEC-001 方案 B / DEC-004 方案 A）：
+// SCN_CHARADDED('\n') 后为每个光标所在新行行首插入上一行前导空白（原样
+// 字节复制，不做缩进规范化），光标与选区推进到缩进末尾。要点：
+//  - 多光标：Scintilla NewLine 在全部 "\n" 插入完成后才逐个发 SCN_CHARADDED
+//    （Editor.cxx NewLine「Perform notifications after all the changes」）——
+//    重放通知到达时光标已在缩进末尾，凭「光标前行首前缀已含完整 ws」幂等
+//    跳过，防止重复叠加；
+//  - 按行号降序逐行插入：大行号先插，小行号的行首与选区位置不被偏移，
+//    每次 SCI_POSITIONFROMLINE 取到的即当前真实行首；
+//  - SCI_INSERTTEXT 内部无条件 SetEmptySelection 塌缩多选区——插入前先
+//    收集全部选区端点，插入后按平移量重建（SCI_SETSELECTION 清附加 +
+//    SCI_ADDSELECTION 逐个追加 + 恢复原主选区索引；两消息 wParam=caret、
+//    lParam=anchor，见 Editor.cxx SetSelection/AddSelection 分支）；单光标
+//    由 SCI_INSERTTEXT 自动平移（caret 在插入点右侧）天然正确，无需重建；
+//  - 撤销（DEC-002 方案 A）：多光标（选区数 > 1）用 BEGIN/ENDUNDOACTION
+//    RAII 包裹为一步；单光标不包事务——Enter 的 "\n" 与本插入为两个紧邻
+//    同类型顶层插入，Scintilla undo coalesce 自动合并为一步（一次 Ctrl+Z
+//    整体回退，TC-010 实测验证）；
+//  - 插入经 SCI_INSERTTEXT → SCN_MODIFIED 现有增量回写链路自动同步
+//    Document（applying_ 防回灌照常生效），不绕过。
+void EditorHost::applyEnterIndent(HWND sci) {
+    const auto send = [sci](UINT msg, WPARAM w = 0, LPARAM l = 0) {
+        return SendMessageW(sci, msg, w, l);
+    };
+    // 1) 收集全部选区端点与主选区索引（Enter 后均为空选区；防御性保留
+    //    anchor/caret 独立端点——非空选区同样按位置平移）
+    const int sels = static_cast<int>(send(SCI_GETSELECTIONS));
+    if (sels < 1) return;
+    const LRESULT mainSel = send(SCI_GETMAINSELECTION);
+    std::vector<std::pair<LRESULT, LRESULT>> carets;  // (caret, anchor)
+    carets.reserve(static_cast<size_t>(sels));
+    for (int i = 0; i < sels; ++i) {
+        carets.emplace_back(
+            send(SCI_GETSELECTIONNCARET, static_cast<WPARAM>(i)),
+            send(SCI_GETSELECTIONNANCHOR, static_cast<WPARAM>(i)));
+    }
+    // 2) 逐光标计算所在行与上一行前导空白，构造 line → ws 插入表（同行
+    //    多光标天然去重）
+    std::map<LRESULT, std::string> inserts;
+    for (const auto& [caret, anchor] : carets) {
+        const LRESULT line =
+            send(SCI_LINEFROMPOSITION, static_cast<WPARAM>(caret));
+        if (line <= 0) continue;  // 首行（或异常 0）：无上一行，不缩进
+        const LRESULT lineStart =
+            send(SCI_POSITIONFROMLINE, static_cast<WPARAM>(line));
+        if (lineStart < 0 || caret < lineStart || anchor < lineStart) continue;
+        // 上一行文本：SCI_GETLINE 两次调用（先取长度再取内容，wParam=行号）；
+        // 返回内容含尾部 '\n'（除末行），leadingWhitespace 对 '\n' 自然终止
+        const LRESULT len = send(SCI_GETLINE, static_cast<WPARAM>(line - 1), 0);
+        std::string prev(static_cast<size_t>(std::max<LRESULT>(len, 0)), '\0');
+        if (len > 0) {
+            send(SCI_GETLINE, static_cast<WPARAM>(line - 1),
+                 reinterpret_cast<LPARAM>(prev.data()));
+        }
+        const std::string_view ws = core::leadingWhitespace(prev);
+        if (ws.empty()) continue;  // 上一行无前导空白：该行无需处理
+        // 幂等（重放的 SCN_CHARADDED）：光标行首前缀已含完整 ws → 已补过
+        if (caret - lineStart >= static_cast<LRESULT>(ws.size())) {
+            std::string prefix(static_cast<size_t>(ws.size()) + 1, '\0');
+            Sci_TextRangeFull tr{};
+            tr.chrg.cpMin = static_cast<Sci_Position>(lineStart);
+            tr.chrg.cpMax =
+                static_cast<Sci_Position>(lineStart + static_cast<LRESULT>(ws.size()));
+            tr.lpstrText = prefix.data();
+            send(SCI_GETTEXTRANGEFULL, 0, reinterpret_cast<LPARAM>(&tr));
+            if (ws == std::string_view(prefix.data(), ws.size())) continue;
+        }
+        inserts.emplace(line, std::string(ws));
+    }
+    if (inserts.empty()) return;
+    // 3) 撤销事务（DEC-002）：多光标整体一步（RAII 异常安全防御；SendMessage
+    //    本身不抛）；单光标依赖 coalesce 不包
+    struct ScopedUndoAction {
+        HWND hwnd;
+        bool active;
+        ~ScopedUndoAction() {
+            if (active) SendMessageW(hwnd, SCI_ENDUNDOACTION, 0, 0);
+        }
+    } undoGuard{sci, sels > 1};
+    if (undoGuard.active) send(SCI_BEGINUNDOACTION, 0, 0);
+    // 4) 按行号降序逐行插入到行首（lParam=NUL 结尾字符串、wParam=插入位置
+    //    ——Editor.cxx InsertText 分支按 strlen 取长度），同步平移收集的
+    //    选区端点（位置 >= lineStart 的全部右移 wsLen）
+    for (auto it = inserts.rbegin(); it != inserts.rend(); ++it) {
+        const LRESULT lineStart =
+            send(SCI_POSITIONFROMLINE, static_cast<WPARAM>(it->first));
+        const std::string& ws = it->second;
+        send(SCI_INSERTTEXT, static_cast<WPARAM>(lineStart),
+             reinterpret_cast<LPARAM>(ws.c_str()));
+        const LRESULT wsLen = static_cast<LRESULT>(ws.size());
+        for (auto& [caret, anchor] : carets) {
+            if (caret >= lineStart) caret += wsLen;
+            if (anchor >= lineStart) anchor += wsLen;
+        }
+    }
+    // 5) 重建/推进选区：SCI_INSERTTEXT 内部按「caret > 插入点」才自动平移
+    //    ——Enter 后光标恰在新行行首（== 插入点），不满足判定，单光标同样
+    //    需显式推进；多光标则因 SCI_INSERTTEXT 已塌缩选区必须整体重建
+    //    （SETSELECTION 清附加 + ADDSELECTION 追加 + 恢复原主选区索引）
+    send(SCI_SETSELECTION, static_cast<WPARAM>(carets[0].first),
+         static_cast<LPARAM>(carets[0].second));
+    for (int i = 1; i < sels; ++i) {
+        send(SCI_ADDSELECTION, static_cast<WPARAM>(carets[static_cast<size_t>(i)].first),
+             static_cast<LPARAM>(carets[static_cast<size_t>(i)].second));
+    }
+    if (mainSel >= 0 && mainSel < sels && sels > 1) {
+        send(SCI_SETMAINSELECTION, static_cast<WPARAM>(mainSel), 0);
+    }
 }
 
 bool EditorHost::handleNotify(const NMHDR* hdr) {
@@ -524,6 +640,14 @@ bool EditorHost::handleNotify(const NMHDR* hdr) {
         // Changed → RefreshStatusBar/RefreshWindowTitle）：键入必推进光标 →
         // 恰好一次状态栏采样；不再直连 onCursorChanged（每次通知双采样的根因，
         // F3b）。选区拖拽每帧 SCN_UPDATEUI 经同一条链，未变即零采样
+        // 回车自动缩进（DEC-001 方案 B）：键入 '\n'（eolMode 固定 SC_EOL_LF，
+        // Enter 必产 '\n'；DEC-003 判定口径）且非程序化装载时，为新行补上一
+        // 行前导空白。须在下方光标回写之前执行——随后采样的光标即缩进末尾；
+        // 粘贴/装载/查找替换不经 SCN_CHARADDED，天然不触发
+        const auto* snChar = reinterpret_cast<const SCNotification*>(hdr);
+        if (e->doc && autoIndent_ && snChar->ch == L'\n' && !e->loading) {
+            applyEnterIndent(e->hwnd);
+        }
         if (e->doc) {
             const int pos = static_cast<int>(
                 SendMessageW(e->hwnd, SCI_GETCURRENTPOS, 0, 0));

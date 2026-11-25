@@ -108,6 +108,10 @@ public:
     bool wordWrap() const { return wordWrap_; }
     void setLineNumbers(bool on);  // 全局（同款语义：所有文档共享；默认显示）
     bool lineNumbers() const { return lineNumbers_; }
+    // 回车自动缩进全局开关（默认开启，会话驱动）：仅落标志，SCN_CHARADDED
+    //（'\n'）处理时读取判定——无 Scintilla 消息需要重发，开关即生效
+    void setAutoIndent(bool on);
+    bool autoIndent() const { return autoIndent_; }
     // DPI 变化后重算全部实例行号边宽度：跨屏拖动时 Scintilla 子窗口经
     // WM_DPICHANGED_AFTERPARENT 按新 DPI 重测字体，但 zoom 不变、不发
     // SCN_ZOOM，行号宽（SCI_TEXTWIDTH 固定像素）不会自愈——主窗口
@@ -164,6 +168,10 @@ private:
     void updateLineNumberWidth(HWND sci) const;
     // 主题相关配色（configure 与 retheme 共用；字体/策略等与主题无关的项不重设）
     static void applyThemeColors(HWND sci);
+    // 回车自动缩进（SCN_CHARADDED '\n' 后调用）：为每个光标所在新行行首插入
+    // 上一行前导空白并推进选区；幂等（Scintilla NewLine 对多光标在全部插入
+    // 完成后逐个发 SCN_CHARADDED，重放通知时各行已补齐即跳过）
+    void applyEnterIndent(HWND sci);
     void loadFromDocument(Entry& e);
 
     HWND parent_ = nullptr;
@@ -172,6 +180,7 @@ private:
     core::Document* applying_ = nullptr;  // 编辑器回写进行中（防回灌标志）
     bool wordWrap_ = false;
     bool lineNumbers_ = true;  // 行号显示全局开关（默认显示；宽度随行数自适应）
+    bool autoIndent_ = true;   // 回车自动缩进全局开关（默认开启；键入路径读取）
     RECT contentRect_{};
 };
 

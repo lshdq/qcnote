@@ -18,6 +18,7 @@ struct MainMenuState {
     bool darkTheme = false;  // 视图▸深色主题 勾选态（实现 M6 接，E5）
     bool wordWrap = false;   // 视图▸自动换行 勾选态（实现 M2 接，B2）
     bool lineNumbers = true;  // 视图▸显示行号 勾选态（默认显示，会话驱动）
+    bool autoIndent = true;   // 视图▸自动缩进 勾选态（默认开启，会话驱动）
     bool multiCursorActive = false;  // 编辑▸插入编号 使能条件之一（活动编辑器
                                      // 选区数 ≥ 2 的多光标态；组装层在弹出前
                                      // 刷新，列模式填充编号）

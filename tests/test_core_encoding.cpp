@@ -247,6 +247,23 @@ TEST_CASE("补充：换行归一与探测（textutil）", "[core][text]") {
 }
 
 // ===========================================================================
+// 回车自动缩进：行首前导空白提取（TC-001；原样字节，Tab/空格混合不经规范化）
+// ===========================================================================
+TEST_CASE("回车自动缩进：前导空白提取（leadingWhitespace）", "[core][text]") {
+    using namespace std::string_view_literals;
+    REQUIRE(leadingWhitespace("  ab") == "  "sv);    // 空格前导
+    REQUIRE(leadingWhitespace("\t\tab") == "\t\t"sv);  // Tab 前导
+    REQUIRE(leadingWhitespace(" \t x") == " \t "sv);   // Tab/空格混合原样字节
+    REQUIRE(leadingWhitespace("") == ""sv);            // 空串
+    REQUIRE(leadingWhitespace("   ") == "   "sv);      // 纯空白整段
+    REQUIRE(leadingWhitespace("abc") == ""sv);         // 无前导空白
+    // 带尾部换行的行文本（SCI_GETLINE 返回形态）：'\n' 不是空白自然终止
+    REQUIRE(leadingWhitespace(" \t x\n") == " \t "sv);
+    REQUIRE(leadingWhitespace("\n") == ""sv);
+    REQUIRE(leadingWhitespace("中文") == ""sv);        // 非空白多字节字符终止
+}
+
+// ===========================================================================
 // 补充：UTF-8 字符换算（状态栏/光标换算基础）
 // ===========================================================================
 TEST_CASE("补充：UTF-8 字符计数与字节偏移换算", "[core][text]") {

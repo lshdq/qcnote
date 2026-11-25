@@ -49,4 +49,10 @@ std::size_t utf8ByteOffsetToCharIndex(std::string_view text, std::size_t byteOff
 /// 草稿基线哈希用（检测磁盘是否被外部修改）；失败返回空串（理论不应发生）
 std::string sha256Hex(std::string_view data);
 
+/// 行首前导空白提取：返回 line 开头连续 ' ' 与 '\t' 组成的前缀（原样字节，
+/// 到第一个非空白字符或行尾为止）。回车自动缩进的核心纯函数——新行原样
+/// 复制上一行前导空白（不做缩进级别规范化）；行内容可能带尾部 '\n'（来自
+/// SCI_GETLINE），'\n' 不是空白自然终止，无需特判。
+std::string_view leadingWhitespace(std::string_view line);
+
 } // namespace core

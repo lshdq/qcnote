@@ -142,11 +142,13 @@ bool SessionManager::persistNow(const std::filesystem::path& iniPath, const Sess
         ini.setValue(kWindowSection, "maximized", data.window->maximized ? "true" : "false");
     }
 
-    // [editor]：全局设置（自动换行/显示行号/深色主题）；前向兼容旧格式键位
+    // [editor]：全局设置（自动换行/显示行号/自动缩进/深色主题）；前向兼容旧格式键位
     if (data.wordWrap)
         ini.setValue(kEditorSection, "wordWrap", *data.wordWrap ? "true" : "false");
     if (data.lineNumbers)
         ini.setValue(kEditorSection, "lineNumbers", *data.lineNumbers ? "true" : "false");
+    if (data.autoIndent)
+        ini.setValue(kEditorSection, "autoIndent", *data.autoIndent ? "true" : "false");
     // darkTheme 一律写（显式 false 记录「用户切回浅色」，阻却旧会话残留 true）
     if (data.darkTheme)
         ini.setValue(kEditorSection, "darkTheme", *data.darkTheme ? "true" : "false");
@@ -233,6 +235,8 @@ SessionData SessionManager::parseSession(const std::filesystem::path& iniPath, F
         data.wordWrap = parseBool(*raw);
     if (auto raw = ini->value(kEditorSection, "lineNumbers"))
         data.lineNumbers = parseBool(*raw);
+    if (auto raw = ini->value(kEditorSection, "autoIndent"))
+        data.autoIndent = parseBool(*raw);
     if (auto raw = ini->value(kEditorSection, "darkTheme"))
         data.darkTheme = parseBool(*raw);
 

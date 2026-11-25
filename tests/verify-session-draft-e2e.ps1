@@ -23,6 +23,14 @@ param(
 #       强杀（会话记 uid@1 + activeUid；草稿续写落盘）；
 #     phase3：重启断言顺序 [A, 未命名1(带内容), B] 与激活=未命名1 还原
 #       （DEC-001/002 按位插入 + activeUid 三级优先一级）。
+#   TC-I08 autoIndent 会话持久化（需求「回车自动缩进」TC-012 进程级链路）：
+#     A 预设 [editor] autoIndent=false 会话 → 启动恢复 → 正常退出 →
+#       断言重写后 ini autoIndent=false（恢复 + 落盘双向保持：恢复侧失效
+#       则退出写出 true、落盘侧失效则键消失，任一断言即失败）；
+#     B 预置旧会话（无 autoIndent 键）→ 启动前向兼容默认开启 → 退出 →
+#       断言重写后 ini autoIndent=true。
+#     运行时开关切换与回车行为联动由 doc selftest 阶段 11（TC-008）覆盖；
+#     序列化/解析语义由 session 单元测试（TC-U18/U19）覆盖。
 #
 # 测试隔离：--userdir=<path>（exe 测试钩子，重定向用户根目录）——每场景独立
 #   用户目录，不触碰 %LOCALAPPDATA%\qcnote 与 exe 旁便携落点。
@@ -536,6 +544,51 @@ try {
          $d.activeIndex -eq 1) `
         ("docs={0} active={1} midContent='{2}'" -f $d.documents.Count, $d.activeIndex, $d.documents[1].content)
     Stop-AppForce $p3
+
+    # ================================================================
+    Write-Host "`n=== TC-I08 autoIndent 会话持久化（恢复+落盘 / 前向兼容默认开）==="
+    # ================================================================
+    # 覆盖测试用例「回车自动缩进」TC-012 的真实进程链路：预设会话 ini →
+    # 启动（parseSession 恢复 → g_autoIndent/g_editors）→ 正常退出
+    # （PersistSessionNow 全量重写 ini）→ 断言重写后的 [editor] autoIndent
+    # 值。ini 文件证据闭环等价覆盖双向接线：
+    #   - 恢复侧失效（g_autoIndent 保持默认 true）→ 退出写出 true → 断言失败
+    #   - 落盘侧失效（data.autoIndent 缺失不写键）→ 键消失 → 断言失败
+    $u08 = Join-Path $TempRoot 'i08-user'
+    New-Item -ItemType Directory -Force -Path $u08 | Out-Null
+    $ini08 = Join-Path $u08 'qcnote.ini'
+
+    # 场景 A：已关闭态会话（autoIndent=false）→ 启动恢复 → 退出保持 false
+    [System.IO.File]::WriteAllText($ini08,
+        "[editor]`r`nwordWrap=false`r`nlineNumbers=true`r`nautoIndent=false`r`ndarkTheme=false`r`n" +
+        "[documents]`r`nsize=0`r`n", $utf8NoBom)
+    $p1 = Start-App $u08 $script:DumpPath
+    $main1 = Wait-MainWindow $p1
+    $d = Get-DumpJson $main1
+    Assert-Cond 'I08/A 启动正常（预设 autoIndent=false 会话）' ($null -ne $d) 'dump readable'
+    $normalExit = Exit-AppNormal $p1
+    Assert-Cond 'I08/A 正常退出（热退出免提示）退出码 0' $normalExit
+    $ini = Get-IniMap $ini08
+    $ed08 = $ini['editor']
+    Assert-Cond 'I08/A 重写后 ini [editor] autoIndent=false（恢复+落盘双向保持）' `
+        ($ed08 -and $ed08['autoIndent'] -eq 'false') `
+        ("autoIndent={0}" -f $(if ($ed08) { $ed08['autoIndent'] } else { '?' }))
+
+    # 场景 B：旧会话（无 autoIndent 键）→ 前向兼容默认开启 → 退出写出 true
+    [System.IO.File]::WriteAllText($ini08,
+        "[editor]`r`nwordWrap=false`r`nlineNumbers=true`r`ndarkTheme=false`r`n" +
+        "[documents]`r`nsize=0`r`n", $utf8NoBom)
+    $p2 = Start-App $u08 $script:DumpPath
+    $main2 = Wait-MainWindow $p2
+    $d = Get-DumpJson $main2
+    Assert-Cond 'I08/B 启动正常（旧会话无 autoIndent 键）' ($null -ne $d) 'dump readable'
+    $normalExit = Exit-AppNormal $p2
+    Assert-Cond 'I08/B 正常退出（热退出免提示）退出码 0' $normalExit
+    $ini = Get-IniMap $ini08
+    $ed08 = $ini['editor']
+    Assert-Cond 'I08/B 重写后 ini [editor] autoIndent=true（旧会话无键默认开启）' `
+        ($ed08 -and $ed08['autoIndent'] -eq 'true') `
+        ("autoIndent={0}" -f $(if ($ed08) { $ed08['autoIndent'] } else { '?' }))
 }
 finally {
     foreach ($p in $script:Procs) {

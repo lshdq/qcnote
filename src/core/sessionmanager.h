@@ -66,6 +66,7 @@ struct SessionData {
     std::optional<WindowGeometry> window;           ///< 五键齐全才有值
     std::optional<bool> wordWrap;                   ///< [editor] 全局设置（前向兼容）
     std::optional<bool> lineNumbers;                ///< [editor] 显示行号（默认显示）
+    std::optional<bool> autoIndent;                 ///< [editor] 自动缩进（默认开）
     std::optional<bool> darkTheme;                  ///< [editor] 深色主题（E5，M6）
 
     bool operator==(const SessionData&) const = default;

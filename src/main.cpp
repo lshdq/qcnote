@@ -193,6 +193,7 @@ bool g_trackingClientMouse = false;  // 客户区 TrackMouseEvent（TME_LEAVE）
 bool g_fileDialogOpen = false;       // 文件对话框打开中（uiLocked 语义 + WM_CLOSE 拒绝）
 bool g_wordWrap = false;             // 自动换行全局开关（旧版全局语义，B2）
 bool g_lineNumbers = true;           // 显示行号全局开关（默认显示，会话持久化）
+bool g_autoIndent = true;            // 回车自动缩进全局开关（默认开启，会话持久化）
 
 // 启动位置参数（D2：待打开文件路径，可多个）
 std::vector<std::filesystem::path> g_initialPaths;
@@ -328,7 +329,7 @@ std::filesystem::path ExePathOf() {
 // 会话持久化（构建 = 文档快照 + 本层维护的窗口几何/全局设置）
 // ---------------------------------------------------------------------------
 
-/// 立即落盘当前会话（文档 + normal 几何 + 最大化标志 + wordWrap/lineNumbers/darkTheme）
+/// 立即落盘当前会话（文档 + normal 几何 + 最大化标志 + wordWrap/lineNumbers/autoIndent/darkTheme）
 void PersistSessionNow() {
     if (!PersistenceActive()) return;
     core::SessionData data = core::SessionManager::buildSessionData(g_docManager);
@@ -336,6 +337,7 @@ void PersistSessionNow() {
     data.window->maximized = g_lastMaximized;
     data.wordWrap = g_wordWrap;
     data.lineNumbers = g_lineNumbers;
+    data.autoIndent = g_autoIndent;
     data.darkTheme = ui::IsDarkTheme();
     core::SessionManager::persistNow(g_paths.iniPath, data);
 }
@@ -393,6 +395,7 @@ void RefreshMenuState() {
     g_menuState.darkTheme = ui::IsDarkTheme();
     g_menuState.wordWrap = g_wordWrap;
     g_menuState.lineNumbers = g_lineNumbers;
+    g_menuState.autoIndent = g_autoIndent;
     // 编辑▸插入编号使能条件之一：活动编辑器选区数 ≥ 2（多光标态）；无文档
     //（欢迎页）为 false。弹出前 RefreshMenuState 全量刷新（OpenMainMenu 唯一
     // 生产调用点，勾选/置灰实时），多光标增删后无需额外事件驱动
@@ -1312,6 +1315,14 @@ void RouteCommand(ui::Command cmd) {
         g_editors.setLineNumbers(g_lineNumbers);  // 全局（所有文档共享）
         RefreshMenuState();
         break;
+    case ui::Command::ToggleAutoIndent:
+        // 自动缩进（回车复制上一行前导空白）：全局语义同 lineNumbers；
+        // 菜单唯一入口（无工具栏/快捷键）；不即时触发会话落盘——退出时
+        // PersistSessionNow 统一写
+        g_autoIndent = !g_autoIndent;
+        g_editors.setAutoIndent(g_autoIndent);  // 全局（所有文档共享）
+        RefreshMenuState();
+        break;
     case ui::Command::Quit:
         // C4 热退出：无模态对话框直接退出免提示（WM_CLOSE 内 flush 草稿+会话）
         if (g_mainWindow) PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
@@ -2027,6 +2038,16 @@ bool g_stDocDialog = false, g_stDocIme = false, g_stDocWrap = false, g_stDocClos
 bool g_stDocToolbar = false, g_stDocErrorDlg = false;
 bool g_stDocTitleShort = false;  // F1：标题同值短路（未变 0 次 / 变化恰 1 次）
 bool g_stDocDragReorder = false;  // 拖拽重排后活动标签仍指向被拖文档（生产管线）
+// —— 回车自动缩进（--selftest-doc 阶段 11；TC-002..010）——
+bool g_stDocAiAlign = false;    // TC-002/003/006：行尾/缩进末尾回车对齐 + 光标位置 + 混合缩进原样复制
+bool g_stDocAiFirst = false;    // TC-004：首行回车不缩进
+bool g_stDocAiEmpty = false;    // TC-005：空行无空白不插入 / 纯空白行照常复制
+bool g_stDocAiMulti = false;    // TC-007：多光标各自对齐 + 选区数不变
+bool g_stDocAiToggle = false;   // TC-008：开关关闭行为不变（RouteCommand 分发验证）
+bool g_stDocAiUndo = false;     // TC-010：单光标一次 Ctrl+Z 整体回退（coalesce）
+bool g_stDocAiUndoReplace = false;  // DEC-005 固化：选区替换 Enter 一次 UNDO 整体回退（实测边界）
+bool g_stDocAiUndoMulti = false;    // DEC-005 固化：多光标 Enter+缩进一次 UNDO 整体回退、选区数保持
+bool g_stDocAiPaste = false;    // TC-009：粘贴含换行文本不追加缩进
 std::wstring g_docDetail;  // 各阶段采样明细（失败定位；写 <结果文件>.detail.txt）
 
 // 辅助：读编辑器全文（UTF-8）
@@ -2056,6 +2077,12 @@ std::string ReadFileBytes(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
+// 测试内存剪贴板（经 MultiCursorHost 注入；系统剪贴板在本机被环境级
+// ERROR_ACCESS_DENIED 拒绝——见 M3-B 报告「问题与决策」；注入只影响
+// 测试进程内多光标控制器的剪贴板存取，分发/拼接判定逻辑与真实路径相同。
+// doc selftest 阶段 11（回车自动缩进 TC-009 粘贴不触发）复用）
+std::string g_testClipboard;
+
 void WriteDocSelftestResult() {
     std::error_code ec;
     std::filesystem::path out(g_selftestDocOut);
@@ -2079,6 +2106,15 @@ void WriteDocSelftestResult() {
         {"drag reorder keeps active tab on dragged document (production pipeline)", &g_stDocDragReorder},
         {"close all documents shows welcome page and returns focus", &g_stDocCloseAll},
         {"title short-circuit: unchanged skips SetWindowTextW, change sets once", &g_stDocTitleShort},
+        {"auto-indent: enter copies prev-line leading ws, caret at indent end (mixed tabs)", &g_stDocAiAlign},
+        {"auto-indent: enter on first line inserts nothing", &g_stDocAiFirst},
+        {"auto-indent: empty prev line no ws, whitespace-only prev line copies ws", &g_stDocAiEmpty},
+        {"auto-indent: multi-caret each aligns own line, selection count kept", &g_stDocAiMulti},
+        {"auto-indent: toggle off via command keeps plain newline behavior", &g_stDocAiToggle},
+        {"auto-indent: single ctrl+z reverts newline+indent in one step", &g_stDocAiUndo},
+        {"auto-indent: selection-replace enter fully reverts in one undo, selection restored (DEC-005)", &g_stDocAiUndoReplace},
+        {"auto-indent: multi-caret enter+indent fully reverts in one undo, selection count kept (DEC-005)", &g_stDocAiUndoMulti},
+        {"auto-indent: paste with newlines appends no indent", &g_stDocAiPaste},
     };
     bool all = true;
     std::ofstream f(out, std::ios::trunc);
@@ -2472,6 +2508,180 @@ void RunDocSelftestStage() {
         PostMessageW(g_mainWindow, kMsgDocSelftestStage, 0, 0);
     } else if (g_docStage == 11) {
         g_docStage = 12;
+        // —— 回车自动缩进（需求-回车自动缩进；经真实 WM_KEYDOWN VK_RETURN
+        //    驱动——与 B4 列选 Enter 同一路径：子类化放行 → 原生 SCI_NEWLINE →
+        //    SCN_CHARADDED 补缩进。活动文档 + setContent 设场景（程序化回灌
+        //    编辑器，粘贴/装载路径不触发自动缩进），断言 doc->content() 与
+        //    SCI_GETCURRENTPOS/选区）——
+        core::Document* doc = g_docManager.activeDocument();
+        HWND s = g_editors.activeWindow();
+        if (!doc || !s) {
+            // 前置失败：跳过驱动（防空指针），落 FAIL 并推进
+            g_docDetail += L"[stage11] precondition failed: no active doc/editor\n";
+            PostMessageW(g_mainWindow, kMsgDocSelftestStage, 0, 0);
+            return;
+        }
+        const auto enter = [&] { SendMessageW(s, WM_KEYDOWN, VK_RETURN, 0); };
+        const auto curPos = [&] {
+            return static_cast<int>(SendMessageW(s, SCI_GETCURRENTPOS, 0, 0));
+        };
+        // —— TC-002：单光标行尾回车对齐（"  ab" → "  ab\n  "，光标 7）——
+        doc->setContent("  ab");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 4, 4);
+        enter();
+        bool alignOk = doc->content() == "  ab\n  " && curPos() == 7;
+        // —— TC-003：缩进末尾断行（"\t\txy" 光标 x 前 → "\t\t\n\t\txy"，光标 5）——
+        doc->setContent("\t\txy");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 2, 2);
+        enter();
+        alignOk = alignOk && doc->content() == "\t\t\n\t\txy" && curPos() == 5;
+        // —— TC-006：Tab/空格混合前导原样字节复制（不经 tabWidth 规范化）——
+        doc->setContent(" \t ab");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 5, 5);
+        enter();
+        alignOk = alignOk && doc->content() == " \t ab\n \t " && curPos() == 9;
+        g_stDocAiAlign = alignOk;
+        g_docDetail += L"[stage11-ai] align content=" + core::utf8ToWide(doc->content()) +
+                       L" pos=" + std::to_wstring(curPos()) + L"\n";
+        // —— TC-004：首行回车无上一行，不插入缩进（"ab\nc"，光标 3 = 新行行首）——
+        doc->setContent("abc");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 2, 2);
+        enter();
+        g_stDocAiFirst = doc->content() == "ab\nc" && curPos() == 3;
+        g_docDetail += L"[stage11-first] content=" + core::utf8ToWide(doc->content()) +
+                       L" pos=" + std::to_wstring(curPos()) + L"\n";
+        // —— TC-005：上一行空行（无空白）不插入；纯空白行照常复制 ——
+        doc->setContent("  a\n\n");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 4, 4);  // L1 空行行首
+        enter();
+        bool emptyOk = doc->content() == "  a\n\n\n" && curPos() == 5;
+        doc->setContent("  a\n    ");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 8, 8);  // L1 纯空白行行尾
+        enter();
+        emptyOk = emptyOk && doc->content() == "  a\n    \n    " && curPos() == 13;
+        g_stDocAiEmpty = emptyOk;
+        g_docDetail += L"[stage11-empty] content=" + core::utf8ToWide(doc->content()) +
+                       L" pos=" + std::to_wstring(curPos()) + L" ok=" +
+                       std::wstring(emptyOk ? L"true" : L"false") + L"\n";
+        // —— TC-007：多光标各自对齐 + 选区数保持（两光标 L0/L2 行尾）——
+        doc->setContent("  a\nb\n  c");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 3, 3);
+        SendMessageW(s, SCI_ADDSELECTION, 9, 9);
+        enter();
+        const int selCount = static_cast<int>(SendMessageW(s, SCI_GETSELECTIONS, 0, 0));
+        g_stDocAiMulti =
+            selCount == 2 && doc->content() == "  a\n  \nb\n  c\n  " &&
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONNCARET, 0, 0)) == 6 &&
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONNCARET, 1, 0)) == 15;
+        g_docDetail += L"[stage11-multi] sels=" + std::to_wstring(selCount) +
+                       L" content=" + core::utf8ToWide(doc->content()) + L"\n";
+        // —— TC-010：单光标一次 Ctrl+Z 整体回退（Scintilla undo coalesce：
+        //    Enter 的 "\n" 与补缩进插入为紧邻同类型顶层插入自动合并）——
+        doc->setContent("  ab");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 4, 4);
+        enter();
+        const std::string afterEnter = doc->content();
+        SendMessageW(s, SCI_UNDO, 0, 0);
+        g_stDocAiUndo = afterEnter == "  ab\n  " && doc->content() == "  ab";
+        g_docDetail += L"[stage11-undo] after=" + core::utf8ToWide(afterEnter) +
+                       L" undid=" + core::utf8ToWide(doc->content()) + L"\n";
+        // —— DEC-005 相关回归（应改-1）：选区替换 Enter 的 undo 边界固化 ——
+        //    实测（Scintilla 5.6.9）：NewLine 的 NotifyChar 在 UndoGroup 析构前
+        //    发出（Editor.cxx 通知段先于 ug 作用域结束）→ 补缩进插入落在 undo
+        //    组内部，一次 UNDO 即整体回退（删选区+换行+补缩进），并恢复被替换
+        //    文本与选区。断言按实测固化：1 步整体回退 + 1 步后 CANUNDO=0。
+        doc->setContent("  ab");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 2, 4);  // 选中 "ab"
+        enter();
+        const std::string replaceAfterEnter = doc->content();
+        SendMessageW(s, SCI_UNDO, 0, 0);
+        const std::string replaceUndo1 = doc->content();
+        const int replaceCanUndo1 =
+            static_cast<int>(SendMessageW(s, SCI_CANUNDO, 0, 0));
+        const int replaceSelStart =
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONSTART, 0, 0));
+        const int replaceSelEnd =
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONEND, 0, 0));
+        SendMessageW(s, SCI_UNDO, 0, 0);  // 边界：已无可撤销步，须为无操作
+        g_stDocAiUndoReplace =
+            replaceAfterEnter == "  \n  " && replaceUndo1 == "  ab" &&
+            replaceCanUndo1 == 0 && doc->content() == "  ab" &&
+            replaceSelStart == 2 && replaceSelEnd == 4;
+        g_docDetail += L"[stage11-ai-undo-replace] after=" + core::utf8ToWide(replaceAfterEnter) +
+                       L" undo1=" + core::utf8ToWide(replaceUndo1) +
+                       L" canUndo1=" + std::to_wstring(replaceCanUndo1) +
+                       L" sel=" + std::to_wstring(replaceSelStart) + L"," +
+                       std::to_wstring(replaceSelEnd) + L"\n";
+        // —— DEC-005 相关回归（应改-2）：多光标 Enter+缩进的整体 UNDO 固化 ——
+        //    同上：补缩进 BEGIN/ENDUNDOACTION 嵌套在 NewLine 的 UndoGroup 内，
+        //    一次 UNDO 整体回退（多光标换行+全部补缩进），选区数保持 2，
+        //    内容回到 Enter 前态。按实测固化：1 步整体回退 + 选区数保持。
+        doc->setContent("  a\nb\n  c");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 3, 3);
+        SendMessageW(s, SCI_ADDSELECTION, 9, 9);
+        enter();
+        const std::string multiAfterEnter = doc->content();
+        const int multiSelsAfter =
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONS, 0, 0));
+        SendMessageW(s, SCI_UNDO, 0, 0);
+        const std::string multiUndo1 = doc->content();
+        const int multiSelsUndo1 =
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONS, 0, 0));
+        const int multiCanUndo1 =
+            static_cast<int>(SendMessageW(s, SCI_CANUNDO, 0, 0));
+        SendMessageW(s, SCI_UNDO, 0, 0);  // 边界：已无可撤销步，须为无操作
+        g_stDocAiUndoMulti =
+            multiAfterEnter == "  a\n  \nb\n  c\n  " && multiSelsAfter == 2 &&
+            multiUndo1 == "  a\nb\n  c" && multiSelsUndo1 == 2 &&
+            multiCanUndo1 == 0 && doc->content() == "  a\nb\n  c" &&
+            static_cast<int>(SendMessageW(s, SCI_GETSELECTIONS, 0, 0)) == 2;
+        g_docDetail += L"[stage11-ai-undo-multi] after=" + core::utf8ToWide(multiAfterEnter) +
+                       L" undo1=" + core::utf8ToWide(multiUndo1) +
+                       L" sels=" + std::to_wstring(multiSelsAfter) + L"/" +
+                       std::to_wstring(multiSelsUndo1) +
+                       L" canUndo1=" + std::to_wstring(multiCanUndo1) + L"\n";
+        // —— TC-009：粘贴含换行文本不追加缩进（B5 分发路径 + 内存剪贴板
+        //    注入——机制前提：粘贴经 InsertString 直插，不经 SCN_CHARADDED）——
+        doc->setContent("  a");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 3, 3);
+        g_testClipboard = "x\ny";
+        g_multiCursor.setClipboardAccessForTest(
+            [](HWND) { return g_testClipboard; },
+            [](HWND, const std::string& v) { g_testClipboard = v; return true; });
+        g_multiCursor.testPaste(s);
+        g_multiCursor.setClipboardAccessForTest(nullptr, nullptr);
+        g_stDocAiPaste = doc->content() == "  ax\ny";
+        g_docDetail += L"[stage11-paste] content=" + core::utf8ToWide(doc->content()) + L"\n";
+        // —— TC-008：开关关闭行为与改动前完全一致（经 RouteCommand 菜单
+        //    命令路径分发验证；收场恢复开启态供后续）——
+        RouteCommand(ui::Command::ToggleAutoIndent);
+        bool toggleOk = !g_autoIndent && !g_editors.autoIndent() &&
+                        g_menuState.autoIndent == false;
+        doc->setContent("  ab");
+        s = g_editors.activeWindow();
+        SendMessageW(s, SCI_SETSEL, 4, 4);
+        enter();
+        toggleOk = toggleOk && doc->content() == "  ab\n" && curPos() == 5;
+        RouteCommand(ui::Command::ToggleAutoIndent);  // 恢复开启（会话默认）
+        toggleOk = toggleOk && g_autoIndent && g_editors.autoIndent();
+        g_stDocAiToggle = toggleOk;
+        g_docDetail += L"[stage11-toggle] off content=" + core::utf8ToWide(doc->content()) +
+                       L" pos=" + std::to_wstring(curPos()) + L" ok=" +
+                       std::wstring(toggleOk ? L"true" : L"false") + L"\n";
+        PostMessageW(g_mainWindow, kMsgDocSelftestStage, 0, 0);
+    } else if (g_docStage == 12) {
+        g_docStage = 13;
         // —— 全部关闭 → 欢迎页 + 焦点回主窗口 ——
         const auto docs = g_docManager.documents();
         for (core::Document* d : docs) {
@@ -2938,11 +3148,6 @@ void SearchSelftestClick(HWND dialog, const RECT& r) {
     SendMessageW(dialog, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(c.x, c.y));
     SendMessageW(dialog, WM_LBUTTONUP, 0, MAKELPARAM(c.x, c.y));
 }
-
-// 测试内存剪贴板（经 MultiCursorHost 注入；系统剪贴板在本机被环境级
-// ERROR_ACCESS_DENIED 拒绝——见 M3-B 报告「问题与决策」；注入只影响
-// 测试进程内多光标控制器的剪贴板存取，分发/拼接判定逻辑与真实路径相同）
-std::string g_testClipboard;
 
 // 查找框输入模式（EM_SETSEL 全选 + 逐字符 WM_CHAR——EN_CHANGE 可靠触发）
 void SearchSelftestTypePattern(HWND edit, const wchar_t* text) {
@@ -4232,6 +4437,12 @@ void RestoreAtStartup(HWND hwnd) {
         g_lineNumbers = *session.lineNumbers;
     }
     g_editors.setLineNumbers(g_lineNumbers);  // 此时无实例：仅落标志，后续 configure 继承
+
+    // —— [editor] autoIndent（回车自动缩进；无记录保持默认开启）——
+    if (session.autoIndent) {
+        g_autoIndent = *session.autoIndent;
+    }
+    g_editors.setAutoIndent(g_autoIndent);  // 仅落标志：SCN_CHARADDED 处理时读取
 
     // —— 1) 文档按序打开 + 光标恢复 ——
     core::Document* lastSuccess = nullptr;

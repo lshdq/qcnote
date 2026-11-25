@@ -150,4 +150,10 @@ std::string sha256Hex(std::string_view data) {
     return hex;
 }
 
+std::string_view leadingWhitespace(std::string_view line) {
+    // 前导空白 = 行首连续空格/Tab（原样字节；'\n' 等非空白字符自然终止）
+    const std::size_t end = line.find_first_not_of(" \t");
+    return line.substr(0, end == std::string_view::npos ? line.size() : end);
+}
+
 } // namespace core
