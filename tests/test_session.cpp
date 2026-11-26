@@ -1419,3 +1419,155 @@ TEST_CASE("语法着色：applySessionLanguage 恢复接线便捷函数", "[sess
         REQUIRE(*doc->manualLanguage() == "python");
     }
 }
+
+// ===========================================================================
+// 文档列表面板（需求-文档列表面板）任务 A：core 会话持久化扩展。
+// 覆盖功能测试用例文档 TC-005「会话持久化与恢复」的 core 数据侧——[editor]
+// 新键 docListVisible / docListWidth 的往返、前向兼容、容错与既有键共存；
+// UI 恢复侧钳制与 e2e 往返由后续任务覆盖（TC-004/005/012 的 UI 部分）。
+// ===========================================================================
+
+TEST_CASE("文档列表：会话 docList 键读写往返与共存", "[session][doclist]") {
+    testutil::TempDir tmp(L"doclist");
+    const std::filesystem::path ini = tmp.file(L"qcnote.ini");
+
+    SECTION("TC-005 往返：显隐 false + 宽度 260 落盘恢复同值") {
+        SessionData data;
+        data.docListVisible = false;
+        data.docListWidth = 260;
+        REQUIRE(SessionManager::persistNow(ini, data));
+        {
+            // 文件级断言：键值形态与同节既有键一致（小写字面量/十进制整数）
+            auto raw = IniFile::read(ini);
+            REQUIRE(raw.has_value());
+            REQUIRE(raw->value("editor", "docListVisible") == "false");
+            REQUIRE(raw->value("editor", "docListWidth") == "260");
+        }
+        const SessionData parsed = SessionManager::parseSession(ini);
+        REQUIRE(parsed.docListVisible == false);
+        REQUIRE(parsed.docListWidth == 260);
+        REQUIRE(parsed == data); // 全字段往返（含两新键零损失）
+    }
+
+    SECTION("TC-005 往返：显隐 true 与宽度 0（0 为合法非负宽，本层不钳）") {
+        SessionData data;
+        data.docListVisible = true;
+        data.docListWidth = 0;
+        REQUIRE(SessionManager::persistNow(ini, data));
+        {
+            auto raw = IniFile::read(ini);
+            REQUIRE(raw.has_value());
+            REQUIRE(raw->value("editor", "docListVisible") == "true");
+            REQUIRE(raw->value("editor", "docListWidth") == "0");
+        }
+        const SessionData parsed = SessionManager::parseSession(ini);
+        REQUIRE(parsed == data);
+    }
+
+    SECTION("TC-005 共存：新键与既有 [editor] 键同文件读写互不影响") {
+        SessionData data;
+        data.wordWrap = true;
+        data.lineNumbers = false;
+        data.autoIndent = false;
+        data.darkTheme = true;
+        data.docListVisible = true;
+        data.docListWidth = 200;
+        REQUIRE(SessionManager::persistNow(ini, data));
+        const SessionData parsed = SessionManager::parseSession(ini);
+        REQUIRE(parsed == data); // 新旧键同批往返零损失
+        REQUIRE(parsed.wordWrap == true);
+        REQUIRE(parsed.lineNumbers == false);
+        REQUIRE(parsed.autoIndent == false);
+        REQUIRE(parsed.darkTheme == true);
+        REQUIRE(parsed.docListVisible == true);
+        REQUIRE(parsed.docListWidth == 200);
+
+        // 未设置新键的会话不落新键：旧版读侧按未知键忽略（写侧前向兼容）
+        SessionData legacyOnly;
+        legacyOnly.wordWrap = false;
+        REQUIRE(SessionManager::persistNow(ini, legacyOnly));
+        {
+            auto raw = IniFile::read(ini);
+            REQUIRE(raw.has_value());
+            REQUIRE(raw->value("editor", "wordWrap") == "false");
+            REQUIRE(raw->value("editor", "docListVisible") == std::nullopt);
+            REQUIRE(raw->value("editor", "docListWidth") == std::nullopt);
+        }
+    }
+}
+
+TEST_CASE("文档列表：会话 docList 键前向兼容与容错", "[session][doclist]") {
+    testutil::TempDir tmp(L"doclist-legacy");
+    const std::filesystem::path ini = tmp.file(L"qcnote.ini");
+
+    SECTION("TC-005 前向兼容：旧 ini 无新键，两字段 nullopt 回退默认") {
+        // 旧版（含 Qt 时代资产）形态：[editor] 节只有既有键
+        testutil::writeBytes(ini,
+            "[editor]\r\n"
+            "wordWrap=true\r\n"
+            "lineNumbers=false\r\n");
+        const SessionData parsed = SessionManager::parseSession(ini);
+        REQUIRE(parsed.docListVisible == std::nullopt);
+        REQUIRE(parsed.docListWidth == std::nullopt);
+        REQUIRE(parsed.wordWrap == true);   // 既有键照常解析
+        REQUIRE(parsed.lineNumbers == false);
+    }
+
+    SECTION("TC-005 容错：宽度负值/非数字/超 int 值域 → nullopt") {
+        testutil::writeBytes(tmp.file(L"w-neg.ini"),
+            "[editor]\r\n"
+            "docListWidth=-5\r\n");
+        REQUIRE(SessionManager::parseSession(tmp.file(L"w-neg.ini")).docListWidth
+                == std::nullopt);
+
+        testutil::writeBytes(tmp.file(L"w-abc.ini"),
+            "[editor]\r\n"
+            "docListWidth=abc\r\n");
+        REQUIRE(SessionManager::parseSession(tmp.file(L"w-abc.ini")).docListWidth
+                == std::nullopt);
+
+        // 超 int 值域（long long 可表示但 int 不能）：按非法丢弃，不截断换算
+        testutil::writeBytes(tmp.file(L"w-huge.ini"),
+            "[editor]\r\n"
+            "docListWidth=9999999999\r\n");
+        REQUIRE(SessionManager::parseSession(tmp.file(L"w-huge.ini")).docListWidth
+                == std::nullopt);
+    }
+
+    SECTION("TC-005 容错：显隐非法串 → nullopt（字面 true/false 之外一律回退默认）") {
+        testutil::writeBytes(tmp.file(L"v-bad.ini"),
+            "[editor]\r\n"
+            "docListVisible=yes\r\n");
+        REQUIRE(SessionManager::parseSession(tmp.file(L"v-bad.ini")).docListVisible
+                == std::nullopt);
+
+        // 与 wordWrap 的 QVariant 宽容语义（"1" 视为 true）不同：写侧只产
+        // true/false，"1" 只可能来自手改坏值，误判 true 会意外显示面板
+        testutil::writeBytes(tmp.file(L"v-one.ini"),
+            "[editor]\r\n"
+            "docListVisible=1\r\n");
+        REQUIRE(SessionManager::parseSession(tmp.file(L"v-one.ini")).docListVisible
+                == std::nullopt);
+    }
+
+    SECTION("容错补充：坏新键不阻断同节既有键；字面值大小写不敏感") {
+        testutil::writeBytes(tmp.file(L"mixed.ini"),
+            "[editor]\r\n"
+            "docListWidth=abc\r\n"
+            "docListVisible=maybe\r\n"
+            "wordWrap=false\r\n");
+        const SessionData mixed = SessionManager::parseSession(tmp.file(L"mixed.ini"));
+        REQUIRE(mixed.docListWidth == std::nullopt);
+        REQUIRE(mixed.docListVisible == std::nullopt);
+        REQUIRE(mixed.wordWrap == false); // 既有键不受坏新键影响
+
+        // 合法字面值大小写不敏感（与既有键值匹配风格一致）
+        testutil::writeBytes(tmp.file(L"case.ini"),
+            "[editor]\r\n"
+            "docListVisible=True\r\n"
+            "docListWidth=180\r\n");
+        const SessionData cased = SessionManager::parseSession(tmp.file(L"case.ini"));
+        REQUIRE(cased.docListVisible == true);
+        REQUIRE(cased.docListWidth == 180);
+    }
+}

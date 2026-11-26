@@ -209,6 +209,7 @@ add_executable(qcnote WIN32
     src/ui/theme.cpp
     src/ui/titlebar.cpp
     src/ui/tabs.cpp
+    src/ui/doclist.cpp
     src/ui/welcome.cpp
     src/ui/menu.cpp
     src/ui/mainmenu.cpp
@@ -364,6 +365,20 @@ target_compile_definitions(test_tabs PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x
 target_include_directories(test_tabs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(test_tabs PRIVATE Catch2::Catch2WithMain gdi32 user32 dwmapi comctl32)
 add_test(NAME tabs COMMAND test_tabs)
+
+# 文档列表面板单测（任务 B）：ComputeDocListGeometry/命中/钳制/无障碍名称纯
+# 函数 + DocListPanel 组件状态机（布局切片与宽度钳制/激活滚入/同值短路/
+# 滚轮消费/滚动条箭头-轨道-滑块/分隔条拖拽实时-Esc-提交-捕获丢失-失焦收口）。
+# doclist.cpp 复用 tabs.cpp 的 BuildTabContextMenu（右键命令集，含 titlebar 传递
+# 依赖）与 menu.cpp 的 MenuHost（单测不弹菜单——纯函数与数据接口为主，对齐
+# test_tabs 同款手法）；tooltip 路径仅在 attach 后可达，单测无窗口。
+add_executable(test_doclist tests/test_doclist.cpp src/ui/doclist.cpp src/ui/tabs.cpp
+                               src/ui/menu.cpp src/ui/theme.cpp src/ui/titlebar.cpp)
+target_compile_options(test_doclist PRIVATE /std:c++latest /utf-8)
+target_compile_definitions(test_doclist PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+target_include_directories(test_doclist PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(test_doclist PRIVATE Catch2::Catch2WithMain gdi32 user32 dwmapi comctl32)
+add_test(NAME doclist COMMAND test_doclist)
 
 # M3-A U2/U4 单测：查找引擎（TC-U10~U17：纯文本/正则/无效模式/零长度跳过/
 # >10000 截断/替换展开/全部替换/环绕导航）与多光标纯逻辑（TC-U27/U28 纯化

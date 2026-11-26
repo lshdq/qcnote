@@ -35,6 +35,8 @@ enum class Command : int {
     ToggleWordWrap,   // 自动换行（勾选态）
     ToggleLineNumbers,  // 显示行号（勾选态，菜单唯一入口，无快捷键）
     ToggleAutoIndent,   // 自动缩进（勾选态，回车复制上一行前导空白；菜单唯一入口）
+    ToggleDocList,      // 文档列表（勾选态，左侧文档列表面板显隐；菜单唯一入口，
+                        // 无快捷键；显隐与宽度随会话持久化）
 
     // —— Tab 右键菜单（A3，M1 第三阶段接入；命令 id 先行定义供菜单与
     //     单测共享，快捷键无绑定）——
@@ -101,6 +103,7 @@ inline const wchar_t* CommandName(Command c) {
     case Command::ToggleWordWrap: return L"ToggleWordWrap";
     case Command::ToggleLineNumbers: return L"ToggleLineNumbers";
     case Command::ToggleAutoIndent: return L"ToggleAutoIndent";
+    case Command::ToggleDocList: return L"ToggleDocList";
     case Command::CloseCurrentTab: return L"CloseCurrentTab";
     case Command::CloseTabsToRight: return L"CloseTabsToRight";
     case Command::CloseTabsToLeft: return L"CloseTabsToLeft";

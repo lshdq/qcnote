@@ -42,6 +42,10 @@ void WelcomePage::setChromeInsets(int toolbarHeightLogical, int statusBarHeightL
     statusInset_ = statusBarHeightLogical;
 }
 
+void WelcomePage::setLeftInset(int docListWidthLogical) {
+    leftInset_ = std::max(0, docListWidthLogical);
+}
+
 // ---------------------------------------------------------------------------
 // 字体与测量
 // ---------------------------------------------------------------------------
@@ -104,8 +108,9 @@ WelcomePage::Layout WelcomePage::computeLayout(RECT const& clientRect) const {
     ensureFontsAndMetrics();
     const UINT dpi = fontDpi_;
     const int capH = Scale(metrics::CaptionHeight, dpi);
-    // 内容区 = 客户区 − 标题栏 − 工具栏/状态栏占位（M2-B chrome insets）
-    out.content = {clientRect.left,
+    // 内容区 = 客户区 − 标题栏 − 工具栏/状态栏占位（M2-B chrome insets）−
+    // 文档列表面板左占位（面板可见时右移；填充范围不含面板，居中在面板右侧）
+    out.content = {clientRect.left + Scale(leftInset_, dpi),
                    clientRect.top + capH + Scale(toolbarInset_, dpi),
                    clientRect.right,
                    clientRect.bottom - Scale(statusInset_, dpi)};

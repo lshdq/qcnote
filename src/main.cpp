@@ -28,6 +28,14 @@
 //       测试钩子：--watch-interval-ms=<n>（轮询间隔注入）与
 //       --selftest-filewatch[=<结果文件>]（WM_APP+12 阶段推进，生产 poll tick
 //       驱动等待）。
+// 文档列表面板（ui/doclist + main.cpp 组装接线，任务 C）：左侧常驻列表显示
+//       全部打开文档（数据与 Tab 条同源同批），点击切换、右键复用 Tab 命令集、
+//       分隔条拖拽调宽（Esc/捕获丢失/失焦收口）、溢出自绘滚动条、tooltip
+//       （宿主 timer 8）。布局统一走 UpdateContentLayout（完整内容区 → 面板左
+//       切片 → 编辑区收缩 → 欢迎页左内缩）；显隐/宽度随会话持久化（[editor]
+//       docListVisible/docListWidth，逻辑像素跨 DPI 稳定）。测试钩子：
+//       --selftest-doclist[=<结果文件>]（WM_APP+13 阶段推进）与 kMsgSelftestCommand
+//       7=ToggleDocList + --selftest-dump docList 采样段（持久化 e2e 用）。
 //
 // 模块职责划分：
 //   ui/theme    —— 语义主题 token + DPI 换算
@@ -95,6 +103,7 @@
 #include "platform/singleinstance.h"
 #include "ui/commands.h"
 #include "ui/dialog.h"
+#include "ui/doclist.h"
 #include "ui/mainmenu.h"
 #include "ui/menu.h"
 #include "ui/numberingdialog.h"
@@ -146,12 +155,16 @@ constexpr UINT kMsgRefreshLineNumbers = WM_APP + 11;
 // 外部文件改动检测自测阶段推进（--selftest-filewatch；+12 在 MenuHost/对话框
 // WM_APP..+9 测试透传段与 +10/+11 已占编号之外顺延，与既有自测模式互斥不并发）
 constexpr UINT kMsgFileWatchSelftestStage = WM_APP + 12;
+// 文档列表面板自测阶段推进（--selftest-doclist；+13 在 +10/+11/+12 已占编号
+// 之外顺延，与既有自测模式互斥不并发；MenuHost 只透传 +0..+9，不受影响）
+constexpr UINT kMsgDocListSelftestStage = WM_APP + 13;
 
-// 主窗口宿主 timer id 分配（tabs.cpp / tabs.h / toolbar.h / statusbar.h 同源约定，
-// 单窗口内必须互斥，否则 WM_TIMER 互相误路由）：
+// 主窗口宿主 timer id 分配（tabs.cpp / tabs.h / toolbar.h / statusbar.h /
+// doclist.h 同源约定，单窗口内必须互斥，否则 WM_TIMER 互相误路由）：
 //   1 = 会话防抖轮询 / 2 = Tab tooltip / 3 = 工具栏 tooltip / 4 = 状态栏
 //   tooltip / 5 = 转发队列消化重试 / 6 = Tab 拖拽让位动画（kDragAnimTimerId）
 //   7 = 外部文件改动检测轮询（kTimerFileWatch）
+//   8 = 文档列表面板 tooltip（kDocListTooltipTimerId）
 constexpr UINT_PTR kTimerSessionFlush = 1;
 // M5 转发队列消化重试定时器（模态对话框打开期间推迟消化，防重入叠加）
 constexpr UINT_PTR kTimerForwardDrainRetry = 5;
@@ -171,6 +184,8 @@ ui::CaptionPressSession g_captionPress;
 ui::MenuHost g_menuHost;            // 菜单弹出层（模态 track；Tab 右键菜单复用）
 ui::MainMenuState g_menuState;      // 弹出前按文档状态刷新
 ui::TabStrip g_tabs;                // Tab 条（数据 = DocumentManager 快照）
+ui::DocListPanel g_docList;         // 文档列表面板（左侧常驻列表；数据与 Tab 条
+                                    // 同源同批刷新，鼠标消息由本层按区域转发）
 ui::WelcomePage g_welcome;          // 欢迎页（无文档时显示，A5）
 ui::Toolbar g_toolbar;              // 工具栏（E3）
 ui::StatusBar g_statusBar;          // 状态栏（E3）
@@ -293,16 +308,23 @@ bool g_selftestFileWatch = false;
 std::wstring g_selftestFileWatchOut;
 int g_fileWatchStage = 0;
 
+// —— 文档列表面板自动化验证（--selftest-doclist=<结果文件>）状态 ——
+// 断言采样集合/阶段推进机制见「文档列表面板自动化验证」段
+bool g_selftestDocList = false;
+std::wstring g_selftestDocListOut;
+int g_docListStage = 0;
+
 // ---------------------------------------------------------------------------
 // 状态查询/刷新（事件驱动）
 // ---------------------------------------------------------------------------
 
-// 持久化总开关：自测模式（menu/tabs/doc/search/theme/numbering/filewatch）
+// 持久化总开关：自测模式（menu/tabs/doc/search/theme/numbering/filewatch/doclist）
 // 完全跳过会话/草稿读写——保持既有自测语义不被真实用户目录数据破坏，也不向
 // 真实用户目录写入
 bool SelftestModeActive() {
     return g_selftestMenu || g_selftestTabs || g_selftestDoc || g_selftestSearch ||
-           g_selftestTheme || g_selftestNumbering || g_selftestFileWatch;
+           g_selftestTheme || g_selftestNumbering || g_selftestFileWatch ||
+           g_selftestDocList;
 }
 bool PersistenceActive() {
     return !SelftestModeActive();
@@ -330,7 +352,8 @@ std::filesystem::path ExePathOf() {
 // 会话持久化（构建 = 文档快照 + 本层维护的窗口几何/全局设置）
 // ---------------------------------------------------------------------------
 
-/// 立即落盘当前会话（文档 + normal 几何 + 最大化标志 + wordWrap/lineNumbers/autoIndent/darkTheme）
+/// 立即落盘当前会话（文档 + normal 几何 + 最大化标志 + wordWrap/lineNumbers/
+/// autoIndent/darkTheme/docListVisible/docListWidth）
 void PersistSessionNow() {
     if (!PersistenceActive()) return;
     core::SessionData data = core::SessionManager::buildSessionData(g_docManager);
@@ -340,6 +363,9 @@ void PersistSessionNow() {
     data.lineNumbers = g_lineNumbers;
     data.autoIndent = g_autoIndent;
     data.darkTheme = ui::IsDarkTheme();
+    // 文档列表面板：显隐 + 宽度（逻辑像素，96 DPI 基准——跨 DPI 稳定）
+    data.docListVisible = g_docList.visible();
+    data.docListWidth = g_docList.widthLogical();
     core::SessionManager::persistNow(g_paths.iniPath, data);
 }
 
@@ -397,6 +423,7 @@ void RefreshMenuState() {
     g_menuState.wordWrap = g_wordWrap;
     g_menuState.lineNumbers = g_lineNumbers;
     g_menuState.autoIndent = g_autoIndent;
+    g_menuState.docListVisible = g_docList.visible();  // 视图▸文档列表 勾选态
     // 语言（代码着色 T3）：生效语言 id（语言项勾选 = 当前生效语言，自动识别
     // 结果同样显示勾选——TC-006）+ 是否手动指定（「自动」/「纯文本」勾选判定）；
     // 勾选态用身份判定 effectiveLanguage（不受 16MB 阈值影响，与着色装配分离）
@@ -433,10 +460,11 @@ void ApplyThemeToWindowTree() {
     ui::ApplyDarkExplorerThemeClass(g_mainWindow, ui::IsDarkTheme());
     // 2) Scintilla 全部实例重配色 + 滚动条视觉样式类（retheme 内含重绘）
     g_editors.retheme();
-    // 3) 系统 tooltip 控件换肤（Tab 条/工具栏/状态栏各自持有实例）
+    // 3) 系统 tooltip 控件换肤（Tab 条/工具栏/状态栏/文档列表面板各自持有实例）
     g_tabs.onThemeChanged();
     g_toolbar.onThemeChanged();
     g_statusBar.onThemeChanged();
+    g_docList.onThemeChanged();
     // 4) 整窗重绘：客户区全量（自绘控件全部经 CurrentPalette 取新值）+ 非客户
     //    区（FRAMECHANGED 触发 NC 重算）+ 同步更新（缩小中间态窗口）
     SetWindowPos(g_mainWindow, nullptr, 0, 0, 0, 0,
@@ -493,6 +521,18 @@ void RefreshTabsFromManager() {
     g_tabs.setItems(std::move(items));
 }
 
+// 文档列表面板数据 = 与 Tab 条同源同批的管理器快照（displayName + modified +
+// hasPath + 完整路径——path 供 tooltip 显示）
+void RefreshDocListFromManager() {
+    std::vector<ui::DocListItem> items;
+    items.reserve(g_docManager.documents().size());
+    for (core::Document* doc : g_docManager.documents()) {
+        items.push_back({doc->displayName(), doc->modified(), !doc->url().empty(),
+                         doc->url().wstring()});
+    }
+    g_docList.setItems(std::move(items));
+}
+
 // 编辑器实例集合与管理器对齐（新增建实例、消失销毁；幂等）
 void SyncEditorSet() {
     g_editors.syncToDocuments(g_docManager.documents());
@@ -501,12 +541,14 @@ void SyncEditorSet() {
 void RefreshAllAfterDocumentsChanged() {
     SyncEditorSet();
     RefreshTabsFromManager();
+    RefreshDocListFromManager();  // 与 Tab 条同源同批整表刷新
     // 拖拽重排（moveDocument）只发 documentsChanged 不发 activeDocumentChanged
     //（活动文档指针不动）：setItems 保留旧数值 activeIndex_ 会高亮到别的标签，
     // 此处从活动文档指针精确映射（与 RefreshAllAfterActiveChanged 同手法，
     // 对打开/关闭/新建等其余路径幂等）
     const int idx = IndexOfDocument(g_docManager.activeDocument());
     if (idx >= 0) g_tabs.setActiveIndex(idx);
+    if (idx >= 0) g_docList.setActiveIndex(idx);
     g_toolbar.setSaveEnabled(g_docManager.activeDocument() != nullptr);
     RefreshWindowTitle();
     RefreshStatusBar();
@@ -519,6 +561,7 @@ void RefreshAllAfterActiveChanged() {
     g_searchCtl.bind(g_docManager.activeDocument(), g_editors.activeWindow());
     const int idx = IndexOfDocument(g_docManager.activeDocument());
     if (idx >= 0) g_tabs.setActiveIndex(idx);  // 程序化激活（不触发回调）
+    if (idx >= 0) g_docList.setActiveIndex(idx);  // 同款程序化激活（滚入可视区）
     g_toolbar.setSaveEnabled(g_docManager.activeDocument() != nullptr);
     RefreshWindowTitle();
     RefreshStatusBar();
@@ -535,6 +578,10 @@ void OnDocumentsChanged() {
 // 立即检测活动文档一次（需求 3：非活动文档不做后台监测，切回时立即检测）
 void PollActiveDocumentNow();
 
+// 统一内容区布局（定义见「布局」段，RouteCommand/宽度回调在其后使用）：
+// 完整内容区 → 文档列表面板左切片 → 编辑区收缩 → 欢迎页左内缩
+void UpdateContentLayout(HWND hwnd);
+
 void OnActiveDocumentChanged() {
     RefreshAllAfterActiveChanged();
     // M4 会话：活动标签变化 → 防抖记忆
@@ -549,6 +596,7 @@ void OnActiveDocumentChanged() {
 void OnDocumentModifiedChanged(core::Document* doc) {
     const int idx = IndexOfDocument(doc);
     if (idx >= 0) g_tabs.setModified(idx, doc->modified());
+    if (idx >= 0) g_docList.setModified(idx, doc->modified());  // ● 标记同源
     if (doc == g_docManager.activeDocument()) RefreshWindowTitle();
     // M4 草稿：脏→干净翻转（保存/另存为/编码重载路径）→ 删条目（DEC-003）
     if (PersistenceActive() && !g_restoring && !doc->modified()) {
@@ -582,6 +630,12 @@ void OnDocumentContentChanged(core::Document* doc) {
 void OnDocumentMetadataChanged(core::Document* doc) {
     const int idx = IndexOfDocument(doc);
     if (idx >= 0) g_tabs.setDisplayName(idx, doc->displayName());
+    // 文档列表面板：显示名 + 路径翻转（未命名→另存为/重命名）同步——tooltip
+    // 文本与右键菜单「文件重命名…/打开所在文件夹」可用性随 hasPath 联动
+    if (idx >= 0) {
+        g_docList.setDisplayName(idx, doc->displayName());
+        g_docList.setHasPath(idx, !doc->url().empty(), doc->url().wstring());
+    }
     // url/displayName/手动语言变化 → 重算生效语言并重装配编辑器词法器（代码
     // 着色 T3：另存为换扩展名自动重识别、菜单手动切换统一走本接线；光标移动
     // 等高频 metadata 事件经 EditorHost 侧 lastLanguage 短路，零冗余装配）
@@ -1378,6 +1432,16 @@ void RouteCommand(ui::Command cmd) {
         g_editors.setAutoIndent(g_autoIndent);  // 全局（所有文档共享）
         RefreshMenuState();
         break;
+    case ui::Command::ToggleDocList:
+        // 文档列表面板显隐（菜单唯一入口，无快捷键）：翻转 → 统一布局（编辑区/
+        // 欢迎页随面板收缩或铺满）→ 菜单勾选态 → 会话记忆（500ms 防抖；持久化
+        // e2e 由退出前 flush 兜底）→ 整窗重绘（无中间态闪烁）
+        g_docList.setVisible(!g_docList.visible());
+        UpdateContentLayout(g_mainWindow);
+        RefreshMenuState();
+        TriggerSessionSave();
+        if (g_mainWindow) InvalidateRect(g_mainWindow, nullptr, FALSE);
+        break;
     case ui::Command::Quit:
         // C4 热退出：无模态对话框直接退出免提示（WM_CLOSE 内 flush 草稿+会话）
         if (g_mainWindow) PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
@@ -1498,6 +1562,34 @@ RECT EditorContentRect(HWND hwnd) {
                     ui::Scale(ui::toolbar_metrics::Height, dpi);
     const int bottom = client.bottom - ui::Scale(ui::statusbar_metrics::Height, dpi);
     return {client.left, top, client.right, bottom};
+}
+
+// 统一内容区布局（文档列表面板 + 编辑区 + 欢迎页三方几何同源）：
+//   完整内容区（EditorContentRect 的未收缩形态）→ DocListPanel.layout（组件
+//   内部计算面板本体 = 左切片并施加上界钳制，幂等）→ 编辑区 = 内容区右收缩
+//   （面板可见时左界 = panelRect().right）→ 欢迎页左内缩（面板宽逻辑值，内容
+//   在面板右侧居中且填充不覆盖面板本体）。
+//   WM_SIZE / WM_DPICHANGED（随后 WM_SIZE 重入）/ 显隐翻转 / 宽度变化回调
+//   （拖拽实时与提交回退）统一走本函数——几何 DPI 基准唯一权威是 layout 入参
+//   （WM_DPICHANGED 后随之触发的 WM_SIZE 必经此处完成换算）。
+void UpdateContentLayout(HWND hwnd) {
+    if (!hwnd) return;
+    const RECT content = EditorContentRect(hwnd);
+    const UINT dpi = ui::WindowDpi(hwnd);
+    g_docList.layout(content, dpi);
+    RECT editorRect = content;
+    if (g_docList.visible()) {
+        const RECT panel = g_docList.panelRect();
+        if (panel.right > panel.left) editorRect.left = panel.right;
+        // 欢迎页内容右移居中（面板可见时；逻辑宽经 welcome 内部 Scale 同 DPI）
+        g_welcome.setLeftInset(g_docList.widthLogical());
+    } else {
+        g_welcome.setLeftInset(0);
+    }
+    // 先面板后编辑器（SetWindowPos 重排）：面板几何就位后再收缩编辑区，避免
+    // WS_CLIPCHILDREN 下编辑器旧区域与新面板区域互相残留（均经随后 WM_PAINT
+    // 的组装顺序绘制：标题栏→Tab→工具栏→面板→欢迎页→状态栏）
+    g_editors.layout(editorRect);
 }
 
 // ---------------------------------------------------------------------------
@@ -1674,8 +1766,8 @@ void RunMenuSelftestStage() {
     }
 }
 
-// 解析 --selftest-menu / --selftest-tabs / --selftest-doc / --selftest-filewatch
-// （[=<结果文件>]；互斥，首个命中生效）
+// 解析 --selftest-menu / --selftest-tabs / --selftest-doc / --selftest-filewatch /
+// --selftest-doclist（[=<结果文件>]；互斥，首个命中生效）
 void ParseSelftestArg(PWSTR cmdLine) {
     struct Mode {
         const wchar_t* name;
@@ -1685,6 +1777,9 @@ void ParseSelftestArg(PWSTR cmdLine) {
     const Mode modes[] = {
         {L"--selftest-menu", &g_selftestMenu, &g_selftestOut},
         {L"--selftest-tabs", &g_selftestTabs, &g_selftestTabsOut},
+        // 前缀冲突消解：--selftest-doclist 须先于 --selftest-doc 判定（wcsstr
+        // 子串匹配，短前缀会抢先命中长参数——首个命中生效的数组顺序约定）
+        {L"--selftest-doclist", &g_selftestDocList, &g_selftestDocListOut},
         {L"--selftest-doc", &g_selftestDoc, &g_selftestDocOut},
         {L"--selftest-search", &g_selftestSearch, &g_selftestSearchOut},
         {L"--selftest-theme", &g_selftestTheme, &g_selftestThemeOut},
@@ -1718,6 +1813,16 @@ void ParseSelftestArg(PWSTR cmdLine) {
         std::error_code ec;
         if (!g_selftestFileWatchOut.empty()) {
             g_selftestBaseDir = std::filesystem::path(g_selftestFileWatchOut).parent_path();
+        }
+        if (g_selftestBaseDir.empty()) {
+            g_selftestBaseDir = std::filesystem::current_path(ec);
+        }
+    }
+    if (g_selftestDocList) {
+        // 临时文件落点（场景文件写在结果文件旁；未携带路径时回退当前目录）
+        std::error_code ec;
+        if (!g_selftestDocListOut.empty()) {
+            g_selftestBaseDir = std::filesystem::path(g_selftestDocListOut).parent_path();
         }
         if (g_selftestBaseDir.empty()) {
             g_selftestBaseDir = std::filesystem::current_path(ec);
@@ -3168,6 +3273,302 @@ void RunFileWatchSelftestStage() {
 }
 
 // ---------------------------------------------------------------------------
+// 文档列表面板自动化验证（--selftest-doclist=<结果文件>）
+//
+// 覆盖 TC-001（默认隐藏+菜单开关+编辑区收缩）/ TC-002（条目与文档状态同步）/
+// TC-003（点击切换）/ TC-004（分隔条拖拽调宽：提交/Esc 回退/钳制）/ TC-006 部分
+//（溢出滚动+滚入可视区）/ TC-008（空面板+欢迎页联动）。会话持久化往返
+//（TC-005 UI 侧闭环）由 verify-doclist-selftest.ps1 的双 launch e2e 阶段覆盖
+//（非 selftest 模式，走真实会话）。
+// 驱动方式：与 tabs/doc selftest 同款「组件 onLButtonDown/onMouseMove 直驱 +
+// RouteCommand 真实命令路径」合成消息口径（DEC-003：headless 无真实输入流）。
+// ---------------------------------------------------------------------------
+
+// 断言采样集合
+bool g_stDlDefaultHidden = false, g_stDlToggleShow = false, g_stDlItems = false;
+bool g_stDlClickActivate = false, g_stDlDragWidth = false, g_stDlDragEsc = false;
+bool g_stDlDragClamp = false, g_stDlOverflowScroll = false, g_stDlEmptyPanel = false;
+bool g_stDlWelcomeSync = false, g_stDlThemeFlip = false;
+int g_stDocListWidthCb = -1;      // 最近一次 onWidthChanged 参数（生产接线采样）
+int g_stDocListWidthCbCount = 0;  // onWidthChanged 触发计数（生产接线采样）
+std::wstring g_docListDetail;     // 各阶段采样明细（失败定位；写 <结果文件>.detail.txt）
+
+// 辅助：编辑器实例在主窗口客户区中的左界（布局收缩断言采样）
+int EditorClientLeft(HWND sci, HWND main) {
+    if (!sci) return -1;
+    RECT r{};
+    if (!GetWindowRect(sci, &r)) return -1;
+    POINT pt{r.left, r.top};
+    if (!ScreenToClient(main, &pt)) return -1;
+    return pt.x;
+}
+
+void WriteDocListSelftestResult() {
+    std::error_code ec;
+    std::filesystem::path out(g_selftestDocListOut);
+    if (g_selftestDocListOut.empty()) {
+        out = std::filesystem::current_path(ec) / "qcnote-doclist-selftest.txt";
+    }
+    const std::pair<const char*, bool*> named[] = {
+        {"TC-001 default hidden on fresh start (no panel, menu unchecked)",
+         &g_stDlDefaultHidden},
+        {"TC-001 toggle via command shows panel, editor area shrinks right of panel",
+         &g_stDlToggleShow},
+        {"TC-002 items sync with manager (count/active/modified mark/hasPath+path)",
+         &g_stDlItems},
+        {"TC-003 synthetic click on item switches active document (list+tab+title)",
+         &g_stDlClickActivate},
+        {"TC-004 splitter drag resizes width live, commit fires final callback",
+         &g_stDlDragWidth},
+        {"TC-004 escape during drag cancels back to original width (callback fired)",
+         &g_stDlDragEsc},
+        {"TC-004 drag clamps to [MinWidth, contentWidth/3] logical bounds",
+         &g_stDlDragClamp},
+        {"TC-006 overflow wheel scroll + programmatic activate scrolls into view",
+         &g_stDlOverflowScroll},
+        {"TC-008 close-all keeps empty panel visible (no items, no scrollbar)",
+         &g_stDlEmptyPanel},
+        {"TC-008 welcome content shifts right of visible panel, returns on new doc",
+         &g_stDlWelcomeSync},
+        {"TC-009 theme flip repaints panel without crash, visibility unchanged",
+         &g_stDlThemeFlip},
+    };
+    bool all = true;
+    std::ofstream f(out, std::ios::trunc);
+    for (const auto& [name, flag] : named) {
+        f << "scenario=" << name << ": " << (*flag ? "PASS" : "FAIL") << "\n";
+        all = all && *flag;
+    }
+    f << "overall: " << (all ? "PASS" : "FAIL") << "\n";
+    f.close();
+    std::ofstream detail(std::filesystem::path(out).wstring() + L".detail.txt",
+                         std::ios::trunc);
+    detail << core::wideToUtf8(g_docListDetail);
+    detail.close();
+}
+
+// 阶段机（kMsgDocListSelftestStage 逐段推进；每段末 PostMessage 下一段）
+void RunDocListSelftestStage() {
+    if (!g_mainWindow) return;
+    std::error_code ec;
+    const UINT dpi = ui::WindowDpi(g_mainWindow);
+
+    if (g_docListStage == 0) {
+        g_docListStage = 1;
+        // —— TC-001：默认隐藏 + 命令翻转 + 编辑区收缩 ——
+        RouteCommand(ui::Command::NewDocument);  // 建一个文档（编辑器实例可采样）
+        const int sciLeftBefore = EditorClientLeft(g_editors.activeWindow(), g_mainWindow);
+        g_stDlDefaultHidden = !g_docList.visible() && !g_menuState.docListVisible &&
+                              g_docList.panelRect().right <= g_docList.panelRect().left;
+        // 命令路径翻转（与菜单「视图▸文档列表」同一 RouteCommand）
+        RouteCommand(ui::Command::ToggleDocList);
+        const RECT panel = g_docList.panelRect();
+        const RECT content = g_docList.contentRect();
+        const int sciLeftAfter = EditorClientLeft(g_editors.activeWindow(), g_mainWindow);
+        g_stDlToggleShow = g_docList.visible() && g_menuState.docListVisible &&
+                           panel.right > panel.left && panel.left == content.left &&
+                           panel.top == content.top && panel.bottom == content.bottom &&
+                           sciLeftBefore >= 0 && sciLeftAfter == panel.right;
+        g_docListDetail += L"[stage0] hidden=" + std::wstring(g_stDlDefaultHidden ? L"1" : L"0") +
+                           L" show=" + std::wstring(g_stDlToggleShow ? L"1" : L"0") +
+                           L" sciLeft " + std::to_wstring(sciLeftBefore) + L"->" +
+                           std::to_wstring(sciLeftAfter) + L" panelRight=" +
+                           std::to_wstring(panel.right) + L"\n";
+        PostMessageW(g_mainWindow, kMsgDocListSelftestStage, 0, 0);
+    } else if (g_docListStage == 1) {
+        g_docListStage = 2;
+        // —— TC-002：条目与文档状态同步（2 磁盘文件 + 1 未命名置脏）——
+        const auto fileA = g_selftestBaseDir / L"dl-a.txt";
+        const auto fileB = g_selftestBaseDir / L"dl-b.txt";
+        std::filesystem::remove(fileA, ec);
+        std::filesystem::remove(fileB, ec);
+        const bool wrote = FwWriteFile(fileA, "doclist A\n") && FwWriteFile(fileB, "doclist B\n");
+        const auto openedA = g_docManager.openPath(fileA);
+        const auto openedB = g_docManager.openPath(fileB);
+        bool ok = wrote && openedA.has_value() && openedB.has_value();
+        const auto docs = g_docManager.documents();
+        ok = ok && docs.size() == 3 && g_docList.count() == 3 &&
+             g_docList.activeIndex() == 2;  // 末开激活
+        if (ok) {
+            // 未命名（0）：激活后键入置脏 + 无路径；磁盘条目（1/2）：hasPath + 完整路径
+            g_docManager.setActiveDocument(docs[0]);
+            TypeIntoEditor(docs[0], L"改");
+            g_docManager.setActiveDocument(docs[1]);
+            ok = g_docList.item(0).modified && !g_docList.item(0).hasPath &&
+                 g_docList.item(0).displayName == docs[0]->displayName() &&
+                 g_docList.item(1).hasPath && g_docList.item(1).path == fileA.wstring() &&
+                 g_docList.item(1).displayName == L"dl-a.txt" &&
+                 !g_docList.item(1).modified && g_docList.activeIndex() == 1;
+        }
+        g_stDlItems = ok;
+        g_docListDetail += L"[stage1] items=" + std::wstring(g_stDlItems ? L"1" : L"0") +
+                           L" count=" + std::to_wstring(g_docList.count()) +
+                           L" active=" + std::to_wstring(g_docList.activeIndex()) + L"\n";
+        PostMessageW(g_mainWindow, kMsgDocListSelftestStage, 0, 0);
+    } else if (g_docListStage == 2) {
+        g_docListStage = 3;
+        // —— TC-003：合成点击条目 → 活动文档切换（列表/Tab/标题联动）——
+        const auto docs = g_docManager.documents();
+        bool ok = docs.size() == 3 && g_docManager.activeDocument() == docs[1];
+        if (ok) {
+            ui::DocListGeometry geo = g_docList.geometryForTest();
+            const RECT& row = geo.items[2];
+            const POINT pt{(row.left + row.right) / 2, (row.top + row.bottom) / 2};
+            g_stActivatedCb = -1;  // 复用 Tab 激活回调采样（doclist 与 tabs 同处理器）
+            g_docList.onLButtonDown(pt);  // 合成点击（对齐 tabs selftest 直驱口径）
+            wchar_t title[256] = {};
+            GetWindowTextW(g_mainWindow, title, 256);
+            ok = g_docManager.activeDocument() == docs[2] &&
+                 g_docList.activeIndex() == 2 && g_tabs.activeIndex() == 2 &&
+                 g_stActivatedCb == 2 &&
+                 wcsstr(title, docs[2]->displayName().c_str()) != nullptr;
+        }
+        g_stDlClickActivate = ok;
+        g_docListDetail += L"[stage2] click=" + std::wstring(g_stDlClickActivate ? L"1" : L"0") +
+                           L" active=" + std::to_wstring(g_docList.activeIndex()) + L"\n";
+        PostMessageW(g_mainWindow, kMsgDocListSelftestStage, 0, 0);
+    } else if (g_docListStage == 3) {
+        g_docListStage = 4;
+        // —— TC-004：分隔条拖拽（提交/Esc 回退/钳制边界）——
+        const auto splitterPt = [&]() {
+            const RECT panel = g_docList.panelRect();
+            return POINT{panel.right - 2, (panel.top + panel.bottom) / 2};
+        };
+        // 拖拽提交：+60 逻辑（物理 dx = Scale(60)）
+        const int startWidth = g_docList.widthLogical();
+        g_stDocListWidthCb = -1;
+        g_stDocListWidthCbCount = 0;
+        const POINT sp0 = splitterPt();
+        g_docList.onLButtonDown(sp0);
+        bool committed = g_docList.draggingSplitter();
+        g_docList.onMouseMove({sp0.x + ui::Scale(60, dpi), sp0.y});
+        const int draggedWidth = g_docList.widthLogical();
+        const int sciLeft = EditorClientLeft(g_editors.activeWindow(), g_mainWindow);
+        g_docList.onLButtonUp(sp0);  // 松手提交（最终 onWidthChanged）
+        committed = committed && g_docList.widthLogical() > startWidth &&
+                    g_docList.widthLogical() <= startWidth + 61 &&  // 60 逻辑 + 取整余量
+                    draggedWidth == g_docList.widthLogical() &&
+                    g_stDocListWidthCbCount >= 1 &&
+                    g_stDocListWidthCb == g_docList.widthLogical() &&
+                    !g_docList.draggingSplitter() && sciLeft == g_docList.panelRect().right;
+        g_stDlDragWidth = committed;
+
+        // Esc 回退：拖 +30 后取消回原宽（回调上抛回退值）
+        const int escStart = g_docList.widthLogical();
+        g_stDocListWidthCb = -1;
+        const POINT sp1 = splitterPt();
+        g_docList.onLButtonDown(sp1);
+        g_docList.onMouseMove({sp1.x + ui::Scale(30, dpi), sp1.y});
+        const bool escMoved = g_docList.widthLogical() != escStart &&
+                              g_docList.draggingSplitter();
+        const bool escConsumed = g_docList.onKeyDown(VK_ESCAPE);  // 拖拽中消费
+        g_stDlDragEsc = escMoved && escConsumed && !g_docList.draggingSplitter() &&
+                        g_docList.widthLogical() == escStart &&
+                        g_stDocListWidthCb == escStart;
+
+        // 钳制边界：极左 → MinWidth；极右 → 内容区宽/3 上界（layout 记录）
+        const int maxLogical = g_docList.maxWidthLogicalForTest();
+        const POINT sp2 = splitterPt();
+        g_docList.onLButtonDown(sp2);
+        g_docList.onMouseMove({sp2.x - ui::Scale(2000, dpi), sp2.y});
+        const int clampedMin = g_docList.widthLogical();
+        g_docList.onMouseMove({sp2.x + ui::Scale(5000, dpi), sp2.y});
+        const int clampedMax = g_docList.widthLogical();
+        g_docList.onLButtonUp(sp2);
+        g_stDlDragClamp = clampedMin == ui::doclist_metrics::MinWidth &&
+                          clampedMax <= std::max(ui::doclist_metrics::MinWidth, maxLogical) &&
+                          clampedMax >= clampedMin && !g_docList.draggingSplitter();
+        // 收口后回标称宽（后续阶段几何稳定）；程序化设宽不经回调，主动重布局
+        //（编辑区/欢迎页随面板右界同步——与 RestoreAtStartup 同款收口）
+        g_docList.setWidthLogical(ui::doclist_metrics::DefaultWidth);
+        UpdateContentLayout(g_mainWindow);
+        g_docListDetail += L"[stage3] commit=" + std::wstring(g_stDlDragWidth ? L"1" : L"0") +
+                           L" esc=" + std::wstring(g_stDlDragEsc ? L"1" : L"0") +
+                           L" clamp=" + std::wstring(g_stDlDragClamp ? L"1" : L"0") +
+                           L" min=" + std::to_wstring(clampedMin) +
+                           L" max=" + std::to_wstring(clampedMax) +
+                           L" upper=" + std::to_wstring(maxLogical) + L"\n";
+        PostMessageW(g_mainWindow, kMsgDocListSelftestStage, 0, 0);
+    } else if (g_docListStage == 4) {
+        g_docListStage = 5;
+        // —— TC-006：多文档溢出滚动（setItems 直驱造数据；恢复真实数据在后段）——
+        std::vector<ui::DocListItem> many;
+        many.reserve(40);
+        for (int i = 0; i < 40; ++i) {
+            many.push_back({L"条目-" + std::to_wstring(i), false, false, L""});
+        }
+        g_docList.setItems(std::move(many));
+        ui::DocListGeometry geo = g_docList.geometryForTest();
+        bool ok = geo.overflow && g_docList.scrollOffsetForTest() == 0;
+        // 滚轮向下（负 delta = 内容向下滚出 = 偏移增大）；钳制上界
+        g_docList.onMouseWheel(-WHEEL_DELTA);
+        const int scrolled = g_docList.scrollOffsetForTest();
+        // 程序化激活末条目 → 滚入可视区（完整可见）
+        g_docList.setActiveIndex(39);
+        geo = g_docList.geometryForTest();
+        const RECT& last = geo.items[39];
+        ok = ok && scrolled > 0 && scrolled <= geo.maxScroll &&
+             g_docList.scrollOffsetForTest() >= scrolled &&
+             last.top >= geo.panel.top && last.bottom <= geo.panel.bottom;
+        // 滚轮向上回顶（步长 3 行的整数倍钳制回 0）
+        g_docList.onMouseWheel(WHEEL_DELTA * 100);
+        ok = ok && g_docList.scrollOffsetForTest() == 0;
+        g_stDlOverflowScroll = ok;
+        g_docListDetail += L"[stage4] overflow=" + std::wstring(g_stDlOverflowScroll ? L"1" : L"0") +
+                           L" scrolled=" + std::to_wstring(scrolled) +
+                           L" max=" + std::to_wstring(geo.maxScroll) + L"\n";
+        // 恢复真实数据（与文档管理器重新对齐）
+        RefreshDocListFromManager();
+        const int idx = IndexOfDocument(g_docManager.activeDocument());
+        if (idx >= 0) g_docList.setActiveIndex(idx);
+        PostMessageW(g_mainWindow, kMsgDocListSelftestStage, 0, 0);
+    } else if (g_docListStage == 5) {
+        g_docListStage = 6;
+        // —— TC-008：关闭全部 → 空面板照常显示 + 欢迎页内容右移居中 ——
+        for (core::Document* d : g_docManager.documents()) {
+            g_docManager.closeDocument(d);  // 直调 manager（置脏条目也直接关）
+        }
+        ui::DocListGeometry geo = g_docList.geometryForTest();
+        // 空面板：无条目、无滚动条、面板本体照常（Notepad++ 常驻语义）
+        g_stDlEmptyPanel = g_docList.visible() && g_docList.count() == 0 && !geo.overflow &&
+                           geo.items.empty() && g_docList.panelRect().right >
+                                                   g_docList.panelRect().left;
+        // 欢迎页联动：面板可见时欢迎内容在面板右侧（buttonRect 左界 ≥ 面板右界；
+        // 绘制门在 WM_PAINT 的 g_tabs.count()==0 条件，几何本身可随时采样）
+        const RECT btn = g_welcome.buttonRect();
+        const RECT panel = g_docList.panelRect();
+        const bool welcomeShifted = g_tabs.count() == 0 && btn.right > btn.left &&
+                                    btn.left >= panel.right - 1;
+        // 新建文档：面板出现条目、Tab 条非空（欢迎页绘制门关闭、编辑区接管）
+        RouteCommand(ui::Command::NewDocument);
+        g_stDlWelcomeSync = welcomeShifted && g_tabs.count() == 1 &&
+                            g_docList.count() == 1 && g_docList.activeIndex() == 0;
+        g_docListDetail += L"[stage5] empty=" + std::wstring(g_stDlEmptyPanel ? L"1" : L"0") +
+                           L" welcomeSync=" + std::wstring(g_stDlWelcomeSync ? L"1" : L"0") +
+                           L" btnLeft=" + std::to_wstring(btn.left) +
+                           L" panelRight=" + std::to_wstring(panel.right) + L"\n";
+        PostMessageW(g_mainWindow, kMsgDocListSelftestStage, 0, 0);
+    } else if (g_docListStage == 6) {
+        g_docListStage = 7;
+        // —— TC-009：主题翻转重绘不崩溃（真实命令路径；含空面板/有条目两形态）——
+        const bool visibleBefore = g_docList.visible();
+        const bool countBefore = g_docList.count() == 1;
+        RouteCommand(ui::Command::ToggleDarkTheme);
+        UpdateWindow(g_mainWindow);  // 同步重绘（自测模式窗口离屏可见，WM_PAINT 走通）
+        RouteCommand(ui::Command::ToggleDarkTheme);
+        UpdateWindow(g_mainWindow);
+        g_stDlThemeFlip = IsWindow(g_mainWindow) != FALSE &&
+                          g_docList.visible() == visibleBefore &&
+                          (g_docList.count() == 1) == countBefore;
+        g_docListDetail += L"[stage6] themeFlip=" + std::wstring(g_stDlThemeFlip ? L"1" : L"0") +
+                           L"\n";
+        // —— 收尾：写结果 + 退出 ——
+        WriteDocListSelftestResult();
+        PostMessageW(g_mainWindow, WM_CLOSE, 0, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // M3-B 查找替换 + 多光标自动化验证（--selftest-search[=<结果文件>]）
 //
 // 驱动方式：对话框模态循环内经投递 kMsgSearchSelftestStage 逐阶段推进（主
@@ -4516,6 +4917,15 @@ void RestoreAtStartup(HWND hwnd) {
     }
     g_editors.setAutoIndent(g_autoIndent);  // 仅落标志：SCN_CHARADDED 处理时读取
 
+    // —— [editor] docListVisible/docListWidth（文档列表面板；无记录保持默认
+    //    隐藏/200）。先 setVisible/setWidthLogical（未布局时仅钳下限，不会被误
+    //    钳），随后 WM_CREATE 的初始 UpdateContentLayout 与此处几何应用的
+    //    WM_SIZE → UpdateContentLayout 首次 layout 自然施加上界钳制（内容区宽/3
+    //    ——恢复侧上限钳制闭环）；菜单勾选态随 RefreshMenuState 自然同步 ——
+    g_docList.setVisible(session.docListVisible.value_or(false));
+    g_docList.setWidthLogical(
+        session.docListWidth.value_or(ui::doclist_metrics::DefaultWidth));
+
     // —— 1) 文档按序打开 + 光标恢复 + 手动语言恢复 ——
     core::Document* lastSuccess = nullptr;
     for (const auto& entry : session.documents) {
@@ -4554,6 +4964,10 @@ void RestoreAtStartup(HWND hwnd) {
                  SWP_NOZORDER | SWP_NOACTIVATE);
     g_lastNormal = geom;  // WM_MOVE/WM_SIZE 亦会记录（此处显式兜底）
     g_lastMaximized = false;
+    // 会话恢复的 docList 值已就位（上方 [editor] 段），统一重布局一次兜底：
+    // 恢复几何与创建时尺寸相同时 SetWindowPos 不产生 WM_SIZE（尺寸未变），
+    // 面板可见/宽度的最终几何须经本调用落实（编辑区收缩/欢迎页左内缩）
+    UpdateContentLayout(hwnd);
 
     // —— 4) 显示（几何已就位，无跳变；恢复最大化优先于 nCmdShow）——
     // --noactivate：可见但不抢前台焦点（metrics「启动到可见」计时口径保留）；
@@ -4693,6 +5107,21 @@ void WriteSelftestDump() {
     json += "  ],\n  \"activeIndex\": " + std::to_string(activeIndex) + ",\n";
     json += "  \"darkTheme\": " + std::string(ui::IsDarkTheme() ? "true" : "false") +
             ",\n";
+    // 文档列表面板采样（文档列表面板 e2e：TC-005 持久化往返断言 + 分隔条合成
+    // 拖拽的坐标锚点；物理客户区坐标与既有 window/normal 口径一致）
+    {
+        const RECT panel = g_docList.panelRect();
+        json += "  \"docList\": {\"visible\": " +
+                std::string(g_docList.visible() ? "true" : "false") +
+                ", \"width\": " + std::to_string(g_docList.widthLogical()) +
+                ", \"items\": " + std::to_string(g_docList.count()) +
+                ", \"active\": " + std::to_string(g_docList.activeIndex()) +
+                ", \"left\": " + std::to_string(static_cast<int>(panel.left)) +
+                ", \"top\": " + std::to_string(static_cast<int>(panel.top)) +
+                ", \"right\": " + std::to_string(static_cast<int>(panel.right)) +
+                ", \"bottom\": " + std::to_string(static_cast<int>(panel.bottom)) +
+                "},\n";
+    }
     RECT wr{};
     GetWindowRect(g_mainWindow, &wr);
     json += "  \"window\": {\"x\": " + std::to_string(wr.left) +
@@ -4905,6 +5334,21 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_docManager.moveDocument(static_cast<std::size_t>(from),
                                       static_cast<std::size_t>(to));
         };
+        // —— 文档列表面板（与 Tab 条同源数据/同一右键命令路由）——
+        g_docList.attach(hwnd, &g_menuHost);
+        // 激活回调复用 OnTabActivated（manager.activate 幂等，同值点击安全短路）；
+        // 右键命令回调与 Tab 右键完全同语义（语义/确认流程/锚点逻辑复用同一处
+        // 理器；g_stCtx* 自测采样顺带兼容）
+        g_docList.onDocActivated = &OnTabActivated;
+        g_docList.onDocContextCommand = &OnTabContextCommand;
+        // 宽度变化（拖拽实时/提交/Esc 与捕获丢失回退）：统一重布局编辑区/欢迎
+        // 页 + 会话记忆（500ms 防抖；up 提交的最终一次 = 持久化时机）
+        g_docList.onWidthChanged = [](int logicalWidth) {
+            g_stDocListWidthCb = logicalWidth;  // 自测采样
+            ++g_stDocListWidthCbCount;
+            UpdateContentLayout(g_mainWindow);
+            TriggerSessionSave();
+        };
         g_welcome.attach(hwnd);
         g_welcome.setChromeInsets(ui::toolbar_metrics::Height, ui::statusbar_metrics::Height);
         g_welcome.onOpenClicked = [] { RouteCommand(ui::Command::OpenDialog); };
@@ -4957,8 +5401,8 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (!SelftestModeActive() || g_selftestFileWatch) {
             SetTimer(hwnd, kTimerFileWatch, static_cast<UINT>(g_watchIntervalMs), nullptr);
         }
-        // —— 初始布局 ——
-        g_editors.layout(EditorContentRect(hwnd));
+        // —— 初始布局（统一内容区布局：面板（默认隐藏）→ 编辑区 → 欢迎页）——
+        UpdateContentLayout(hwnd);
         RefreshStatusBar();
         // M1 Tab 自测：mock 假 Tab（仅该模式；正常模式数据来自文档系统）
         if (g_selftestTabs) {
@@ -5008,6 +5452,7 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_toolbar.onMouseLeave();
             g_statusBar.onMouseLeave();
             g_welcome.onMouseLeave();
+            g_docList.onMouseLeave();  // 拖拽态组件自不取消（同 Tabs 口径）
         }
         InvalidateRect(hwnd, nullptr, FALSE);  // E2 边界线换色
         break;
@@ -5093,6 +5538,11 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         // timer 7 tick 计数驱动，见 RunFileWatchSelftestStage 段注释）
         RunFileWatchSelftestStage();
         return 0;
+    case kMsgDocListSelftestStage:
+        // 文档列表面板自测阶段推进（--selftest-doclist；每阶段末 PostMessage
+        // 下一段，见 RunDocListSelftestStage 段注释）
+        RunDocListSelftestStage();
+        return 0;
     case kMsgSelftestDump:
         // --selftest-dump 采样钩子（e2e 跨进程断言辅助；同步处理后文件即就绪）
         WriteSelftestDump();
@@ -5106,6 +5556,10 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case 2: CycleTab(+1); break;                                 // = Ctrl+Tab
         case 3: RouteCommand(ui::Command::CloseTab); break;         // = Ctrl+W
         case 4: RouteCommand(ui::Command::ToggleDarkTheme); break;  // = 菜单「深色主题」
+        // 文档列表面板显隐（= 菜单「视图▸文档列表」同一 RouteCommand 路径；
+        // 持久化 e2e 的 TC-005 UI 侧闭环用——headless 无法驱动真实菜单交互，
+        // 经此钩子走等价命令路径；宽度调整经对主窗口合成鼠标消息拖拽分隔条）
+        case 7: RouteCommand(ui::Command::ToggleDocList); break;
         // 代码着色 T3：5=语言▸自动、6=语言▸纯文本（与菜单同一 RouteCommand
         // 路径）；100+i（i=0..20）=语言项 i（core 注册表/菜单顺序，如
         // 100=C、103=Java、106=Python、120=YAML）——headless 无法驱动真实
@@ -5178,6 +5632,12 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         GetClientRect(hwnd, &client);
         const UINT dpi = ui::WindowDpi(hwnd);
         const int capH = ui::Scale(ui::metrics::CaptionHeight, dpi);
+        if (g_docList.draggingSplitter()) {
+            // 面板分隔条拖拽路由优先（对齐 Tab 拖拽写法）：捕获期间持续送坐标
+            //（可到面板外/编辑区上方/窗外），直接驱动调宽，跳过其余常规路由
+            g_docList.onMouseMove(pt);
+            return 0;
+        }
         if (g_tabs.dragging()) {
             // 拖拽路由优先：捕获持续送坐标（光标可到条外/窗外），直接驱动拖拽，
             // 跳过下方 onMouseLeave 分支
@@ -5186,6 +5646,11 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_tabs.onMouseMove(pt);  // Tab 悬停/tooltip
         } else {
             g_tabs.onMouseLeave();
+        }
+        // 面板可见即转发（面板悬停/tooltip/滑块拖拽持续驱动——捕获期间 pt 可在
+        // 面板外，组件 onMouseMove 自判 hover/拖拽状态，拖拽态优先处理）
+        if (g_docList.visible()) {
+            g_docList.onMouseMove(pt);
         }
         g_toolbar.onMouseMove(pt);   // 工具栏按钮悬停/tooltip（命中自判）
         g_statusBar.onMouseMove(pt); // 状态栏路径 tooltip（命中自判）
@@ -5200,17 +5665,20 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_toolbar.onMouseLeave();
         g_statusBar.onMouseLeave();
         g_welcome.onMouseLeave();
+        g_docList.onMouseLeave();  // 清面板悬停/tooltip（拖拽态组件自不取消）
         return 0;
     case WM_CAPTURECHANGED:
         // 主窗口鼠标捕获被夺走/释放（lParam = 获得捕获的新窗口句柄，无需处理）
         // → 取消标题栏窗口控制按钮按下会话（弹窗/系统夺走捕获：清按下状态、
         // 不执行动作；本窗口自己 ReleaseCapture 收口时会话已先结束，此处 no-op）
-        // 与 Tab 条拖拽（DEC-002：清状态回原位不回调；非拖拽态 no-op）
+        // 与 Tab 条拖拽（DEC-002：清状态回原位不回调；非拖拽态 no-op）与文档
+        // 列表面板拖拽（回原宽经 onWidthChanged；非拖拽态 no-op）
         if (g_captionPress.active()) {
             g_captionPress.cancel();
             g_titleBar.endCaptureSession();
         }
         g_tabs.onCaptureChanged();
+        g_docList.onCaptureChanged();
         return 0;
     case WM_LBUTTONDOWN: {
         const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -5226,6 +5694,12 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             capH + ui::Scale(ui::toolbar_metrics::Height, dpi);
         if (pt.y < toolbarBottom) {
             g_toolbar.onLButtonDown(pt);  // 工具栏按钮（命中自判）
+            return 0;
+        }
+        // 文档列表面板：命中面板本体（条目/滚动条/分隔条/空白）即接管，不穿透
+        // 到编辑区/欢迎页（DEC-008：面板区域点击整体归属面板）
+        if (g_docList.visible() && g_docList.hitInteractive(pt)) {
+            g_docList.onLButtonDown(pt);
             return 0;
         }
         if (g_tabs.count() == 0) {
@@ -5249,6 +5723,13 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             return 0;
         }
+        // 文档列表面板松手：无条件转发（捕获期间 up 可落在任意区域——面板外/
+        // 编辑区上方；组件 no-op 安全）。面板交互全部在标题栏之下区域，与
+        // captionPress（上方已收口）和 Tab 松手（拖拽/标题栏内）互不冲突；
+        // 不提前 return——非面板路径的 Tab 收口照常执行
+        if (g_docList.visible()) {
+            g_docList.onLButtonUp(pt);  // 分隔条提交/滑块收口/清按下（no-op 安全）
+        }
         const UINT dpi = ui::WindowDpi(hwnd);
         const int capH = ui::Scale(ui::metrics::CaptionHeight, dpi);
         // 拖拽中（捕获把松手重定向到主窗口，可发生在条外/编辑区上方）或标题栏
@@ -5267,6 +5748,12 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_tabs.onRButtonDown(pt);  // 命中 Tab → 右键菜单（A3，不激活）
             return 0;
         }
+        // 面板右键：命中面板本体（条目行）→ 面板右键菜单（复用 Tab 右键命令集，
+        // 不激活被右键条目）；空白/滚动条区 no-op 消费（不穿透编辑区）
+        if (g_docList.visible() && g_docList.hitInteractive(pt)) {
+            g_docList.onRButtonDown(pt);
+            return 0;
+        }
         break;  // 编辑区右键：Scintilla（popup 已禁用，对齐旧版无右键菜单）
     }
     case WM_MOUSEWHEEL:
@@ -5279,11 +5766,24 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_tabs.onMouseWheel(msg == WM_MOUSEHWHEEL, delta);
             return 0;
         }
+        // 面板区域滚轮：面板内且组件消费（溢出滚动）→ 拦截；不消费（无溢出）
+        // 走原路径（与 Tab 条同款「不消费不吞」约定）
+        if (g_docList.visible()) {
+            const RECT panel = g_docList.panelRect();
+            if (pt.x >= panel.left && pt.x < panel.right && pt.y >= panel.top &&
+                pt.y < panel.bottom && g_docList.onMouseWheel(delta)) {
+                return 0;
+            }
+        }
         break;  // 编辑区滚轮：Scintilla 原生处理
     }
     case WM_KEYDOWN: {
         // 主窗口持有焦点时（无文档/欢迎页）的键盘处理；编辑器焦点时按键直达
         // Scintilla（窗口级快捷键经消息循环拦截）
+        // 面板拖拽中 Esc 取消回原宽（消费即拦截；非拖拽态 no-op 不拦截）
+        if (g_docList.onKeyDown(static_cast<UINT>(wParam))) {
+            return 0;
+        }
         const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
         if (g_tabs.count() > 0) {
             if (g_tabs.onKeyDown(static_cast<UINT>(wParam), shift)) {
@@ -5298,6 +5798,7 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_tabs.onTimer(static_cast<UINT_PTR>(wParam));
         g_toolbar.onTimer(static_cast<UINT_PTR>(wParam));
         g_statusBar.onTimer(static_cast<UINT_PTR>(wParam));
+        g_docList.onTimer(static_cast<UINT_PTR>(wParam));  // tooltip 延迟（id 8，自忽略其他）
         // M5 转发队列消化重试：模态打开期间排队，空闲后重投消化消息
         if (wParam == kTimerForwardDrainRetry) {
             KillTimer(hwnd, kTimerForwardDrainRetry);
@@ -5321,7 +5822,27 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     case WM_KILLFOCUS:
         g_tabs.onWindowKillFocus();
+        g_docList.onWindowKillFocus();  // 拖拽取消收口 + 清悬停/tooltip
         break;
+    case WM_SETCURSOR: {
+        // 分隔条 hover/拖拽：左右调整光标（IDC_SIZEWE）。共享光标句柄 LoadCursor
+        // 一次缓存（进程生命周期有效，无需销毁）；其余走 DefWindowProc（窗口类
+        // 默认箭头）。坐标经 GetCursorPos + ScreenToClient（lParam 只带命中码）
+        if (wParam == reinterpret_cast<WPARAM>(hwnd) && LOWORD(lParam) == HTCLIENT) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            if (g_docList.visible() &&
+                (g_docList.hitSplitter(pt) || g_docList.draggingSplitter())) {
+                static const HCURSOR sizeWe = LoadCursorW(nullptr, IDC_SIZEWE);
+                if (sizeWe) {
+                    SetCursor(sizeWe);
+                    return TRUE;
+                }
+            }
+        }
+        break;
+    }
     case WM_CONTEXTMENU: {
         const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         const bool keyboard = (pt.x == -1 && pt.y == -1);
@@ -5352,6 +5873,9 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                      SWP_NOZORDER | SWP_NOACTIVATE);
         g_titleBar.onDpiChanged();
         g_tabs.onDpiChanged();
+        g_docList.onDpiChanged();  // 仅字体/测量缓存失效；几何由随后 WM_SIZE →
+                                   // UpdateContentLayout（layout 入参为 DPI 唯一
+                                   // 权威）重算
         // Scintilla 经 WM_DPICHANGED_AFTERPARENT 自行重测字体；布局经 WM_SIZE 重排
         // 行号边宽度按新字体重测（PostMessage 延迟一拍：保证子窗口字体已就绪）
         PostMessageW(hwnd, kMsgRefreshLineNumbers, 0, 0);
@@ -5363,7 +5887,9 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     case WM_SIZE:
         g_tabs.onLayoutChanged();
-        g_editors.layout(EditorContentRect(hwnd));
+        // 统一内容区布局（面板/编辑区/欢迎页按新尺寸与 DPI 重排——含
+        // WM_DPICHANGED 后的 WM_SIZE 重入路径）
+        UpdateContentLayout(hwnd);
         // M4 会话：normal 几何仅在非最大化态记录（最大化期间保持上次 Windowed
         // 几何，「还原」回到最大化前尺寸）；最大化标志随状态迁移更新
         if (wParam == SIZE_MAXIMIZED) {
@@ -5416,12 +5942,14 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         HDC dc = BeginPaint(hwnd, &ps);
         RECT client{};
         GetClientRect(hwnd, &client);
-        // 组装顺序：标题栏底色/按钮 → Tab 条 → 工具栏 → 欢迎页（无文档）→
-        // 状态栏 → E2 边界线最后画。编辑区由 Scintilla 子窗口自绘
-        // （WS_CLIPCHILDREN 保证父窗口绘制不覆盖子窗口）
+        // 组装顺序：标题栏底色/按钮 → Tab 条 → 工具栏 → 文档列表面板 → 欢迎页
+        //（无文档；内容区已左内缩，不覆盖面板）→ 状态栏 → E2 边界线最后画。
+        // 编辑区由 Scintilla 子窗口自绘（WS_CLIPCHILDREN 保证父窗口绘制不覆盖
+        // 子窗口）；面板不可见时 paint no-op（欢迎页/编辑区铺满全内容区）
         g_titleBar.paint(dc, client, g_windowActive, IsZoomed(hwnd) != FALSE);
         g_tabs.paint(dc);
         g_toolbar.paint(dc, client);
+        g_docList.paint(dc);
         if (g_tabs.count() == 0) {
             g_welcome.paint(dc, client);
         }
@@ -5435,6 +5963,7 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_toolbar.detach();
         g_statusBar.detach();
         g_tabs.detach();
+        g_docList.detach();
         g_welcome.detach();
         g_titleBar.detach();
         PostQuitMessage(0);
@@ -5645,10 +6174,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
     }
 
     // 启动位置参数打开（D2；恢复完成后叠加打开——旧版 openPendingUrls 时序；
-    // 事件接线已在 WM_CREATE 完成）。filewatch 自测自建场景文件，不消费位置参数
+    // 事件接线已在 WM_CREATE 完成）。filewatch/doclist 自测自建场景文件，
+    // 不消费位置参数
     if (!g_initialPaths.empty() && !g_selftestMenu && !g_selftestTabs &&
         !g_selftestSearch && !g_selftestTheme && !g_selftestNumbering &&
-        !g_selftestFileWatch) {
+        !g_selftestFileWatch && !g_selftestDocList) {
         DoOpenPaths(g_initialPaths);
     }
 
@@ -5687,6 +6217,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
         PostMessageW(hwnd, kMsgNumberingSelftestStage, 0, 0);
     } else if (g_selftestFileWatch) {
         PostMessageW(hwnd, kMsgFileWatchSelftestStage, 0, 0);
+    } else if (g_selftestDocList) {
+        PostMessageW(hwnd, kMsgDocListSelftestStage, 0, 0);
     }
 
     MSG msg{};
@@ -5701,12 +6233,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR cmdLine, int nCmdShow)
         // 拖拽取消失效修复（DEC-004 方案①）：焦点在 Scintilla 编辑器子窗口时，
         // 裸 Esc 经消息循环直达子窗口，主窗口 WM_KEYDOWN 收不到，拖拽无法取消；
         // 故在消息循环层预拦截（与上方快捷键拦截同理，焦点在编辑器时同样生效）。
-        // 仅 g_tabs.dragging() 态独占：非拖拽态裸 Esc 语义完全不变（编辑器内
-        // Esc/取消等既有行为不受影响）。selftest-tabs 为同步直驱，消息循环泵
-        // 消息时不可能处于拖拽态，故无需 selftest 守卫。
-        if (msg.message == WM_KEYDOWN && g_tabs.dragging() &&
-            static_cast<UINT>(msg.wParam) == VK_ESCAPE) {
-            g_tabs.onKeyDown(VK_ESCAPE, false);  // 拖拽态下取消拖拽
+        // 仅拖拽态独占：非拖拽态裸 Esc 语义完全不变（编辑器内 Esc/取消等既有
+        // 行为不受影响）。selftest-tabs 为同步直驱，消息循环泵消息时不可能处于
+        // 拖拽态，故无需 selftest 守卫。文档列表面板分隔条拖拽同款扩展（两种
+        // 拖拽互斥——单捕获唯一持有者，判定顺序仅作防御性回退）
+        if (msg.message == WM_KEYDOWN &&
+            static_cast<UINT>(msg.wParam) == VK_ESCAPE &&
+            (g_tabs.dragging() || g_docList.draggingSplitter())) {
+            if (g_tabs.dragging()) {
+                g_tabs.onKeyDown(VK_ESCAPE, false);  // Tab 拖拽态下取消拖拽
+            } else {
+                g_docList.onKeyDown(VK_ESCAPE);  // 面板分隔条拖拽态下取消回原宽
+            }
             continue;  // 已消费：不产生 WM_CHAR、不分发到任何子窗口
         }
         TranslateMessage(&msg);

@@ -74,6 +74,10 @@ struct SessionData {
     std::optional<bool> lineNumbers;                ///< [editor] 显示行号（默认显示）
     std::optional<bool> autoIndent;                 ///< [editor] 自动缩进（默认开）
     std::optional<bool> darkTheme;                  ///< [editor] 深色主题（E5，M6）
+    std::optional<bool> docListVisible;             ///< [editor] 文档列表面板显隐（默认隐藏）
+    /// [editor] 文档列表面板宽——逻辑像素（96 DPI 基准，跨 DPI 稳定，已批准
+    /// 方案决策）。恢复时由 UI 层钳制 [120, 客户区宽/3]，本层只存取不钳
+    std::optional<int> docListWidth;
 
     bool operator==(const SessionData&) const = default;
 };

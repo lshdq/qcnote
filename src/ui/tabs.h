@@ -95,7 +95,8 @@ constexpr int DragAnimSnapPx = 1;       // 让位动画精确落位阈值（|Δ|
 }  // namespace tab_metrics
 
 // 拖拽让位动画计时器 id（主窗口宿主 id 分配：1 会话轮询 / 2 Tab tooltip / 3 工具栏 /
-// 4 状态栏 / 5 转发重试 / 6 本表——单窗口内互斥，见 main.cpp 分配表）。头文件公开供
+// 4 状态栏 / 5 转发重试 / 6 本表 / 8 文档列表 tooltip（kDocListTooltipTimerId，
+// 见 doclist.h）——单窗口内互斥，见 main.cpp 分配表）。头文件公开供
 // 单测/selftest 合成节拍直驱 onTimer（DEC-004 测试缝的同源约定）。
 constexpr UINT_PTR kDragAnimTimerId = 6;
 

@@ -150,7 +150,8 @@ bool SessionManager::persistNow(const std::filesystem::path& iniPath, const Sess
         ini.setValue(kWindowSection, "maximized", data.window->maximized ? "true" : "false");
     }
 
-    // [editor]：全局设置（自动换行/显示行号/自动缩进/深色主题）；前向兼容旧格式键位
+    // [editor]：全局设置（自动换行/显示行号/自动缩进/深色主题/文档列表面板）；
+    // 前向兼容旧格式键位
     if (data.wordWrap)
         ini.setValue(kEditorSection, "wordWrap", *data.wordWrap ? "true" : "false");
     if (data.lineNumbers)
@@ -160,6 +161,14 @@ bool SessionManager::persistNow(const std::filesystem::path& iniPath, const Sess
     // darkTheme 一律写（显式 false 记录「用户切回浅色」，阻却旧会话残留 true）
     if (data.darkTheme)
         ini.setValue(kEditorSection, "darkTheme", *data.darkTheme ? "true" : "false");
+    // 文档列表面板（需求-文档列表面板）：有值才写（显式 false 记录「用户关闭
+    // 面板」，阻却旧会话残留 true）；宽度按逻辑像素原样落盘，钳制在 UI 恢复
+    // 层。缺失键对旧版本是未知键，读取忽略零影响
+    if (data.docListVisible)
+        ini.setValue(kEditorSection, "docListVisible",
+                     *data.docListVisible ? "true" : "false");
+    if (data.docListWidth)
+        ini.setValue(kEditorSection, "docListWidth", std::to_string(*data.docListWidth));
 
     return IniFile::write(iniPath, ini);
 }
@@ -254,6 +263,21 @@ SessionData SessionManager::parseSession(const std::filesystem::path& iniPath, F
         data.autoIndent = parseBool(*raw);
     if (auto raw = ini->value(kEditorSection, "darkTheme"))
         data.darkTheme = parseBool(*raw);
+    // 文档列表面板：显隐仅认字面 "true"/"false"（大小写不敏感）——与 wordWrap
+    // 的 QVariant 宽容语义不同，非法串丢弃回退默认（nullopt）而非误判 false；
+    // 宽度仅认非负整数且在 int 值域内（负值/非数字/超域 → nullopt，上限钳制
+    // 由 UI 恢复层负责，本层不钳）。坏值一律丢弃不报错（本文件宽容口径）
+    if (auto raw = ini->value(kEditorSection, "docListVisible")) {
+        if (asciiIEquals(*raw, "true"))
+            data.docListVisible = true;
+        else if (asciiIEquals(*raw, "false"))
+            data.docListVisible = false;
+    }
+    if (auto raw = ini->value(kEditorSection, "docListWidth")) {
+        const auto parsed = parseInt(*raw);
+        if (parsed && *parsed >= 0 && *parsed <= std::numeric_limits<int>::max())
+            data.docListWidth = static_cast<int>(*parsed);
+    }
 
     return data;
 }

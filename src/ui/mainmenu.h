@@ -21,6 +21,8 @@ struct MainMenuState {
     bool wordWrap = false;   // 视图▸自动换行 勾选态（实现 M2 接，B2）
     bool lineNumbers = true;  // 视图▸显示行号 勾选态（默认显示，会话驱动）
     bool autoIndent = true;   // 视图▸自动缩进 勾选态（默认开启，会话驱动）
+    bool docListVisible = false;  // 视图▸文档列表 勾选态（默认隐藏，会话驱动；
+                                  // 文档列表面板显隐，菜单唯一入口）
     bool multiCursorActive = false;  // 编辑▸插入编号 使能条件之一（活动编辑器
                                      // 选区数 ≥ 2 的多光标态；组装层在弹出前
                                      // 刷新，列模式填充编号）

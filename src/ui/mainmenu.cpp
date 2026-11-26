@@ -7,7 +7,8 @@
 //   - 语言（整组，代码着色 T3）：有活动文档才可用；21 语言项 +「自动」
 //     「纯文本」勾选态来自 state（生效语言比对/手动模式判定）
 //   - 搜索四项：有活动文档才可用（欢迎页置灰）
-//   - 深色主题/自动换行/显示行号/自动缩进：勾选态（状态源由文档/主题/会话驱动）
+//   - 深色主题/自动换行/显示行号/自动缩进/文档列表：勾选态（状态源由文档/
+//     主题/会话驱动）
 //   - 编辑▸插入编号…：有活动文档且多光标态（选区数 ≥ 2）才可用（列模式
 //     填充编号；无快捷键，DEC-006）
 // 子菜单叶子（UTF-8/GBK）不单独承载 enabled——父级置灰即整组不可达
@@ -97,6 +98,10 @@ MenuModel BuildMainMenu(const MainMenuState& state) {
     m.addItem(view, L"自动换行", {}, Command::ToggleWordWrap).checked = state.wordWrap;
     m.addItem(view, L"显示行号", {}, Command::ToggleLineNumbers).checked = state.lineNumbers;
     m.addItem(view, L"自动缩进", {}, Command::ToggleAutoIndent).checked = state.autoIndent;
+    // 文档列表：左侧文档列表面板显隐（排在「自动缩进」后；无快捷键，菜单唯一
+    // 入口——对齐行号/自动缩进先例；勾选态 = 面板当前可见性）
+    m.addItem(view, L"文档列表", {}, Command::ToggleDocList).checked =
+        state.docListVisible;
 
     // —— 主菜单（顶层：文件▸ / 编辑▸ / 搜索▸ / ── / 视图▸ / ── / 退出）——
     m.addSubmenuEntry(root, L"文件", file);

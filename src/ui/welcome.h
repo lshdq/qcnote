@@ -39,6 +39,11 @@ public:
     // 默认 0（无 chrome，等价 M1 行为）
     void setChromeInsets(int toolbarHeightLogical, int statusBarHeightLogical);
 
+    // 文档列表面板左占位（逻辑宽；面板可见时内容区左界右移 = 面板宽，欢迎内容
+    // 在面板右侧居中且填充底色不覆盖面板本体——面板由 DocListPanel 先于本页
+    // 绘制）。默认 0（面板隐藏/未布局，等价既有行为）
+    void setLeftInset(int docListWidthLogical);
+
     void reset();  // 离开欢迎态（出现文档）时清 hover/焦点
 
     // —— 几何（绘制/命中同一来源）——
@@ -79,6 +84,7 @@ private:
     bool focused_ = false;
     int toolbarInset_ = 0;  // 逻辑高度（工具栏）
     int statusInset_ = 0;   // 逻辑高度（状态栏）
+    int leftInset_ = 0;     // 逻辑宽（文档列表面板左占位；0 = 无面板）
     mutable HFONT titleFont_ = nullptr;
     mutable HFONT bodyFont_ = nullptr;
     mutable UINT fontDpi_ = 0;

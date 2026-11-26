@@ -210,9 +210,10 @@ TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
         }
     }
 
-    // 视图：勾选态（dark/wordWrap 默认不勾；lineNumbers/autoIndent 默认开启即勾选）
+    // 视图：勾选态（dark/wordWrap/docList 默认不勾；lineNumbers/autoIndent
+    // 默认开启即勾选）
     const int view = m.item(0, 4).submenu;
-    REQUIRE(m.itemCount(view) == 4);
+    REQUIRE(m.itemCount(view) == 5);
     CHECK(m.item(view, 0).text == L"深色主题");
     CHECK(m.item(view, 0).command == Command::ToggleDarkTheme);
     CHECK_FALSE(m.item(view, 0).checked);
@@ -225,6 +226,11 @@ TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
     CHECK(m.item(view, 3).text == L"自动缩进");
     CHECK(m.item(view, 3).command == Command::ToggleAutoIndent);
     CHECK(m.item(view, 3).checked);  // MainMenuState.autoIndent 默认 true
+    // 文档列表（文档列表面板）：默认隐藏即不勾选
+    CHECK(m.item(view, 4).text == L"文档列表");
+    CHECK(m.item(view, 4).command == Command::ToggleDocList);
+    CHECK_FALSE(m.item(view, 4).checked);  // MainMenuState.docListVisible 默认 false
+    CHECK(m.item(view, 4).shortcut.empty());  // 菜单唯一入口，无快捷键
 }
 
 TEST_CASE("主菜单状态接线（有文档/GBK/主题开关）", "[menu][mainmenu]") {
@@ -236,6 +242,8 @@ TEST_CASE("主菜单状态接线（有文档/GBK/主题开关）", "[menu][mainm
     s.wordWrap = true;
     s.lineNumbers = false;  // 显示行号关闭态（勾选态随状态源）
     s.autoIndent = false;   // 自动缩进关闭态（勾选态随状态源）
+    s.docListVisible = true;  // 文档列表面板开启态（勾选态随状态源；默认态
+                              // 不勾选由默认态用例覆盖）
     const MenuModel m = BuildMainMenu(s);
 
     CHECK(m.isEnabled(Command::Save));
@@ -260,6 +268,7 @@ TEST_CASE("主菜单状态接线（有文档/GBK/主题开关）", "[menu][mainm
     CHECK(m.isChecked(Command::ToggleWordWrap));
     CHECK_FALSE(m.isChecked(Command::ToggleLineNumbers));
     CHECK_FALSE(m.isChecked(Command::ToggleAutoIndent));
+    CHECK(m.isChecked(Command::ToggleDocList));  // 文档列表开启态勾选
 }
 
 TEST_CASE("主菜单按命令更新的集成路径（弹出前重建 + 命令定位）", "[menu][mainmenu]") {
