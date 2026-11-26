@@ -33,6 +33,11 @@ std::wstring StatusTotalText(const StatusData& d) {
     return L"共 " + std::to_wstring(d.totalChars) + L" 字符";
 }
 
+std::wstring StatusLanguageText(const StatusData& d) {
+    // 代码着色 T3：有文档恒显示（纯文本渲染显示「纯文本」）；无文档隐藏
+    return d.hasDoc ? d.language : L"";
+}
+
 std::wstring StatusEncodingText(const StatusData& d) {
     return d.hasDoc ? d.encoding : L"";
 }
@@ -180,6 +185,7 @@ void StatusBar::measureAndLayout(const RECT& clientRect) const {
         case SegId::Selection: return StatusSelectionText(data_);
         case SegId::CursorCount: return StatusCursorCountText(data_);
         case SegId::Total: return StatusTotalText(data_);
+        case SegId::Language: return StatusLanguageText(data_);
         case SegId::Encoding: return StatusEncodingText(data_);
         case SegId::LineEnd: return StatusLineEndingText(data_);
         case SegId::Path: return data_.path;
@@ -187,8 +193,9 @@ void StatusBar::measureAndLayout(const RECT& clientRect) const {
         }
     };
 
-    // 左组（行/列→总字符）从左排起；右组（编码/换行/路径）从右排起；
-    // 路径段限宽 PathMaxWidth，剩余宽度不足时按段从左向右压缩省略。
+    // 左组（行/列→总字符）从左排起；右组（语言→编码→换行→路径）从右排起
+    //（语言最先入组 = 最靠右段，VS Code 同位）；路径段限宽 PathMaxWidth，
+    // 剩余宽度不足时按段从左向右压缩省略。
     HDC dc = GetDC(hwnd_);
     if (!dc) return;
     const HGDIOBJ oldFont = SelectObject(dc, font_);
@@ -209,6 +216,7 @@ void StatusBar::measureAndLayout(const RECT& clientRect) const {
     addItem(SegId::Selection, left);
     addItem(SegId::CursorCount, left);
     addItem(SegId::Total, left);
+    addItem(SegId::Language, right);
     addItem(SegId::Encoding, right);
     addItem(SegId::LineEnd, right);
     addItem(SegId::Path, right);

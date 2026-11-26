@@ -7,6 +7,7 @@
 #include <limits>
 
 #include "core/inifile.h"
+#include "core/syntax.h"
 
 namespace core {
 
@@ -98,6 +99,9 @@ SessionData SessionManager::buildSessionData(const DocumentManager& manager) {
         } else {
             entry.uid = doc->uid(); // 未命名：仅记 uid（光标随草稿条目恢复）
         }
+        // 手动语言随条目记录（文件与未命名均记，DEC-004：仅手动时写入；
+        // 自动识别结果不落盘——重启后按扩展名重新识别更准确）
+        entry.language = doc->manualLanguage();
         data.documents.push_back(std::move(entry));
     }
     if (const Document* active = manager.activeDocument()) {
@@ -126,6 +130,10 @@ bool SessionManager::persistNow(const std::filesystem::path& iniPath, const Sess
         } else if (!entry.uid.empty()) {
             ini.setValue(kDocumentsSection, prefix + "uid", entry.uid);
         }
+        // 手动语言：仅手动指定时写（DEC-004；"plaintext" 保留值同样落盘）；
+        // 自动模式不写——重启按扩展名重识别（前向兼容：旧版读侧忽略未知键）
+        if (entry.language && !entry.language->empty())
+            ini.setValue(kDocumentsSection, prefix + "language", *entry.language);
         // 两键均空的条目不落盘（构建侧不产生；防御）
     }
     if (data.activeUrl && !data.activeUrl->empty())
@@ -204,6 +212,13 @@ SessionData SessionManager::parseSession(const std::filesystem::path& iniPath, F
         } else {
             entry.uid = *uidRaw; // 未命名占位（旧格式无 uid 的空条目已在上文丢弃）
         }
+        // 手动语言（DEC-004）：读 N\language 键经 isValidLanguageId 校验，
+        // 未知/非法 id 丢弃 → 自动识别（容错语义与 encoding 一致；旧会话
+        // 无键零影响）
+        if (auto raw = ini->value(kDocumentsSection, prefix + "language")) {
+            if (!raw->empty() && isValidLanguageId(*raw))
+                entry.language = *raw;
+        }
         data.documents.push_back(std::move(entry));
     }
 
@@ -241,6 +256,18 @@ SessionData SessionManager::parseSession(const std::filesystem::path& iniPath, F
         data.darkTheme = parseBool(*raw);
 
     return data;
+}
+
+bool SessionManager::applySessionLanguage(Document* doc, const SessionDocumentEntry& entry) {
+    // entry.language 已在 parseSession 经 isValidLanguageId 校验（未知/非法
+    // 丢弃）；本函数不再重复校验——doc 侧 setLanguage 为纯存储，生效语言
+    // 解析与容错统一在 syntax::effectiveLanguage
+    if (!doc || !entry.language)
+        return false;
+    if (doc->manualLanguage() == entry.language)
+        return false; // 已是相同手动语言（幂等；不触发通知）
+    doc->setLanguage(*entry.language);
+    return true;
 }
 
 // ---------------------------------------------------------------------------

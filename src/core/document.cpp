@@ -87,6 +87,27 @@ bool Document::hasBom() const {
     return m_hasBom;
 }
 
+const std::optional<std::string>& Document::manualLanguage() const {
+    return m_manualLanguage;
+}
+
+void Document::setLanguage(std::string_view languageId) {
+    // 纯元数据（与编码元数据同语义）：不参与 modified 判定；同值短路不通知
+    if (m_manualLanguage && *m_manualLanguage == languageId)
+        return;
+    m_manualLanguage = std::string(languageId);
+    if (onMetadataChanged)
+        onMetadataChanged();
+}
+
+void Document::clearLanguage() {
+    if (!m_manualLanguage)
+        return; // 已是自动模式：短路
+    m_manualLanguage.reset();
+    if (onMetadataChanged)
+        onMetadataChanged();
+}
+
 int Document::cursorPosition() const {
     return m_cursorPosition;
 }

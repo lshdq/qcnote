@@ -64,8 +64,8 @@ src/
 ├── platform/           # 平台集成：singleinstance（WM_COPYDATA 参数转发）、
 │                       # shellintegration（资源管理器右键）
 └── icons/              # 应用图标资产
-vendor/                 # vendored 第三方源码：scintilla 5.6.9、wil、catch2 v3.8.1、
-│                       # pcre2 10.45、nlohmann/json v3.12.0（版本与许可见 README）
+vendor/                 # vendored 第三方源码：scintilla 5.6.9、lexilla 5.4.5、wil、
+│                       # catch2 v3.8.1、pcre2 10.45、nlohmann/json v3.12.0（版本与许可见 README）
 tests/                  # 8 套 Catch2 单元测试 + 7 个 verify-*.ps1 selftest/e2e 脚本
 tools/                  # verify-smoke.ps1 / verify-metrics.ps1
 build-win/              # MSVC/Ninja 构建目录（当前产物）

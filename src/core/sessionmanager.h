@@ -2,11 +2,13 @@
 //
 // 职责（纯逻辑、无窗口依赖；计时器/屏幕/文件探测均注入）：
 // - 会话数据构建与持久化：[documents] size=N + N\url / N\cursor / N\encoding
-//   （utf8/gbk）+ 未命名 N\uid（uid 即标签位置记录，DEC-001）+ active（URL）
+//   （utf8/gbk）+ 未命名 N\uid（uid 即标签位置记录，DEC-001）+ N\language
+//   （仅手动指定语言时写，DEC-004）+ active（URL）
 //   或 activeUid（两键互斥，整组重写）+ [window] x/y/width/height/maximized
 //  （[editor] wordWrap/lineNumbers 前向兼容读写）；
 // - 恢复查询：parseSession 容错解析（坏条目丢弃、编号跳号容忍、url 与 uid
 //   均空丢弃、旧格式无 uid 未命名条目跳过【DEC-005】、编码非法回退自动识别、
+//   language 非法丢弃回退自动识别【DEC-004】、
 //   文件存在性预检注入【缺失/目录静默跳过】）；
 // - 窗口几何校验：宽高钳 [800×500, 屏幕可用区]，位置与某屏相交否则 nullopt
 //  （显示器变更回退默认几何）；screens 由调用方注入 vector<RECT>（可 mock）；
@@ -40,6 +42,10 @@ struct SessionDocumentEntry {
     std::string uid;                              ///< 未命名条目主键（与草稿同源）
     int cursor = 0;                               ///< 字节偏移（文件条目）
     std::optional<TextEncoding> encoding;         ///< 缺失/非法 → 打开时自动识别
+    /// 手动指定语言 id（DEC-004：仅手动时写入；"plaintext" 或注册表 id，
+    /// 见 core/syntax.h）。文件与未命名条目均可携带。缺失/非法 → 自动识别
+    ///（旧会话无键零影响）
+    std::optional<std::string> language;
     int position = 0;                             ///< 标签栏绝对位置（0 基，读自编号-1）
 
     bool operator==(const SessionDocumentEntry&) const = default;
@@ -131,6 +137,16 @@ public:
 
     /// 解析会话文件（容错；文件不存在返回空 SessionData）
     static SessionData parseSession(const std::filesystem::path& iniPath, FileProbe probe = nullptr);
+
+    /// 会话恢复应用手动语言（代码着色 T2，T3 在启动恢复流程接线）：
+    /// entry.language 有值 → doc->setLanguage（parseSession 已校验合法性）；
+    /// 无值 no-op（自动识别——url 条目按扩展名、未命名按纯文本）。
+    /// 接线点（main.cpp RestoreAtStartup，T3 范围）：
+    /// - 文件条目：openPath(entry.url, entry.encoding) 成功取得 doc 后调用；
+    /// - 未命名条目：草稿恢复 ApplyDraftRestorePlan 重建 doc 后按 uid 从
+    ///   session.documents 匹配条目调用。
+    /// 返回是否实际变更（供调用方判定是否需要重新装配编辑器着色）
+    static bool applySessionLanguage(Document* doc, const SessionDocumentEntry& entry);
 
     // —— 窗口几何校验（纯函数，screens 可 mock）——
     /// 宽钳 [800, 各屏最大可用宽]、高钳 [500, 各屏最大可用高]（多屏取最大，

@@ -8,8 +8,10 @@
 #include <map>
 
 #include "Scintilla.h"
-#include "editor/multicursorcontroller.h"  // kVirtualSpaceOptions（C-1 共享常量）
+#include "core/syntax.h"
 #include "core/textutil.h"
+#include "editor/lexercatalogue.h"  // CreateLexerByName（代码着色 T3）
+#include "editor/multicursorcontroller.h"  // kVirtualSpaceOptions（C-1 共享常量）
 #include "ui/theme.h"
 #include "ui/titlebar.h"
 
@@ -234,7 +236,8 @@ void EditorHost::updateLineNumberWidth(HWND sci) const {
 
 // 主题相关配色（浅/深两套取值均来自 CurrentPalette；构造期与 retheme 共用）：
 // 默认样式字色/底色、选区实底、光标色、查找高亮 indicator 8/9。STYLECLEARALL
-// 把默认样式传播到全样式槽（本编辑器无词法着色，仅默认样式在用）。
+// 把默认样式传播到全样式槽；有词法器的实例随后由 applyLexerStyleColors 按
+// 语言样式槽映射表重设着色槽（代码着色 T3），纯文本实例仅默认样式在用。
 void EditorHost::applyThemeColors(HWND sci) {
     auto send = [sci](UINT msg, WPARAM w = 0, LPARAM l = 0) {
         return SendMessageW(sci, msg, w, l);
@@ -303,6 +306,17 @@ void EditorHost::retheme() {
     for (Entry& e : entries_) {
         if (!e.hwnd || !IsWindow(e.hwnd)) continue;
         applyThemeColors(e.hwnd);
+        // 有词法的实例：重放样式槽映射色（词法器与关键词不动，只重设颜色）。
+        // applyThemeColors 的 STYLECLEARALL 已把全部槽位重置回默认样式，必须
+        // 在其后重放；颜色变化经 STYLESETFORE 自带 InvalidateStyleRedraw 重绘，
+        // 样式字节无需重算（不 Colourise）。语言重算与装配路径同源
+        //（effectiveLanguageForColoring），主题切换不改变语言
+        if (e.doc) {
+            if (const core::LanguageEntry* lang =
+                    core::effectiveLanguageForColoring(*e.doc)) {
+                applyLexerStyleColors(e.hwnd, *lang);
+            }
+        }
         // 滚动条视觉样式类切换 + 通知系统重取主题 + 强制非客户区重绘
         ui::ApplyDarkExplorerThemeClass(e.hwnd, ui::IsDarkTheme());
         SendMessageW(e.hwnd, WM_SETTINGCHANGE, 0,
@@ -311,6 +325,93 @@ void EditorHost::retheme() {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                          SWP_FRAMECHANGED);
         InvalidateRect(e.hwnd, nullptr, TRUE);
+    }
+}
+
+// —— 语言着色装配（代码着色 T3）——
+// 装配链路（对应 core/syntax.h 分层契约）：effectiveLanguageForColoring →
+// editor::CreateLexerByName(lexerName) → SCI_SETILEXER（LexState::SetInstance
+// 接管实例所有权，旧实例由 unique_ptr 释放）→ 按语言条目 keywords 分组
+// SCI_SETKEYWORDS（空组跳过）→ 按样式槽映射表逐槽 SCI_STYLESETFORE（经
+// ui::SyntaxTokenColor 取当前主题语义色）→ SCI_COLOURISE 全文重着色。
+// SCI_SETILEXER 本身不触发 restyle（Document.cxx SetInstance 仅换指针），
+// SETTEXT 的同步路径也不做词法重算——重着色统一显式补 SCI_COLOURISE(0,-1)
+//（ScintillaBase.cxx Colourise 分支：全词法器实例同步 Lex+Fold 后 Redraw）
+
+void EditorHost::setLanguage(core::Document* doc) {
+    Entry* e = find(doc);
+    if (!e) return;
+    applyLanguage(*e, /*force=*/false);
+}
+
+void EditorHost::applyLanguage(Entry& e, bool force) {
+    if (!e.hwnd || !e.doc) return;
+    const core::LanguageEntry* lang = core::effectiveLanguageForColoring(*e.doc);
+    // 注册表为静态数组（指针稳定），身份比较即语言比较；未变且非装载路径
+    // 直接短路——metadata 事件每次光标移动都触发，实际重装配仅语言翻转时发生
+    const bool changed = (lang != e.lastLanguage);
+    if (lang) {
+        if (changed) {
+            assembleLexer(e.hwnd, *lang);
+            e.lastLanguage = lang;
+        }
+        // force（装载/重载）：文本已整体替换，样式须重算——即使语言未变；
+        // changed：新词法器对既有文本首次着色。两者都全文重着色
+        if (changed || force) {
+            SendMessageW(e.hwnd, SCI_COLOURISE, 0, -1);
+        }
+    } else {
+        if (!changed) return;  // 从未装配词法（新建/纯文本装载）：无残留可清
+        // 卸词法器（SETILEXER 0 → LexState 释放旧实例）+ 恢复默认单色渲染：
+        // applyThemeColors 的 STYLECLEARALL 把全部槽位重置回默认样式（含上一
+        // 语言残留的槽位色；行号/选区/indicator 一并复位，幂等）+ 清除文档级
+        // 残留样式字节（旧词法槽位号，防后续语言复用槽位时错误高亮）。
+        // SCI_CLEARDOCUMENTSTYLE 不自触发重绘（Editor.cxx 仅清样式无 invalidate），
+        // 显式 InvalidateRect
+        SendMessageW(e.hwnd, SCI_SETILEXER, 0, 0);
+        applyThemeColors(e.hwnd);
+        SendMessageW(e.hwnd, SCI_CLEARDOCUMENTSTYLE, 0, 0);
+        e.lastLanguage = nullptr;
+        InvalidateRect(e.hwnd, nullptr, TRUE);
+    }
+}
+
+void EditorHost::assembleLexer(HWND sci, const core::LanguageEntry& lang) {
+    auto send = [sci](UINT msg, WPARAM w = 0, LPARAM l = 0) {
+        return SendMessageW(sci, msg, w, l);
+    };
+    // 先全槽位复位默认单色：清上一语言映射表外的残留槽位色（如 cpp 27 槽
+    // → json 13 槽切换时 14..27 的旧色；STYLECLEARALL 重置后行号/选区/
+    // indicator 经 applyThemeColors 复位，幂等）
+    applyThemeColors(sci);
+    // 词法器实例：注册表 lexerName 白名单内的名字（T2 单测与词法器目录
+    // 一致性已钉）；防御失败（nullptr）时不装配——实例保持纯文本渲染
+    Scintilla::ILexer5* lexer = editor::CreateLexerByName(lang.lexerName);
+    if (!lexer) return;
+    send(SCI_SETILEXER, 0, reinterpret_cast<LPARAM>(lexer));  // 所有权移交 LexState
+    // 关键词分组注入（空组跳过；keywords 为 NUL 结尾字面量可直接传参）
+    for (int i = 0; i < core::kKeywordGroupCount; ++i) {
+        const char* words = lang.keywords[i];
+        if (words && *words) {
+            send(SCI_SETKEYWORDS, static_cast<WPARAM>(i),
+                 reinterpret_cast<LPARAM>(words));
+        }
+    }
+    // 样式槽映射着色（映射表外槽位不设色——上方 STYLECLEARALL 已使其落默认）
+    applyLexerStyleColors(sci, lang);
+}
+
+void EditorHost::applyLexerStyleColors(HWND sci, const core::LanguageEntry& lang) {
+    auto send = [sci](UINT msg, WPARAM w = 0, LPARAM l = 0) {
+        return SendMessageW(sci, msg, w, l);
+    };
+    // 哨兵条目 {-1, None} 终止（slot >= 0 为有效条目）；token → 当前主题语义
+    // 色（0xAARRGGBB → COLORREF 经 ToColorRef）。STYLESETFORE 自带
+    // InvalidateStyleRedraw，retheme 重放路径无需额外失效
+    for (const core::StyleMapEntry* m = lang.styleMap; m->slot >= 0; ++m) {
+        send(SCI_STYLESETFORE, static_cast<WPARAM>(m->slot),
+             static_cast<LPARAM>(
+                 ui::ToColorRef(ui::SyntaxTokenColor(m->token))));
     }
 }
 
@@ -332,6 +433,10 @@ void EditorHost::loadFromDocument(Entry& e) {
     SendMessageW(e.hwnd, SCI_SETSAVEPOINT, 0, 0);  // 装载态 == 基线（干净）
     updateLineNumberWidth(e.hwnd);  // 行数已变：宽度自适应兜底（不依赖通知路径）
     e.loading = false;
+    // 语言着色装配（代码着色 T3）：打开/重载/遮蔽重载/编码重载统一路径。
+    // force=true：SCI_SETTEXT 整体替换文本后样式须重算（有词法时全文
+    // Colourise；纯文本且从未装配则零开销短路）
+    applyLanguage(e, /*force=*/true);
 }
 
 void EditorHost::addDocument(core::Document* doc) {

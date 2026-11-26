@@ -5,6 +5,8 @@
 
 #include <cmath>
 
+#include "core/syntax.h"  // core::SyntaxToken 完整枚举（SyntaxTokenColor 映射用）
+
 namespace ui {
 
 namespace {
@@ -55,6 +57,18 @@ const ThemePalette& LightPalette() {
         0xFF2FA08Cu,  // iconWrapArrow   浅 #2fa08c（折行箭头 teal）
         0x59FFB454u,  // searchMatch（alpha 0x59 橙黄半透明）
         0xFFB37700u,  // searchMatchBorder（与 unsavedMark 同值、独立 token）
+        // —— 语法着色（代码着色 T3；VS Code Light+ 取值）——
+        0xFF008000u,  // syntaxComment       #008000（注释绿）
+        0xFF0000FFu,  // syntaxKeyword       #0000FF（关键字蓝）
+        0xFF0000FFu,  // syntaxPreprocessor  #0000FF（#include 等指令，Light+ 与关键字同蓝）
+        0xFFA31515u,  // syntaxString        #a31515（字符串暖红）
+        0xFF098658u,  // syntaxNumber        #098658（数字绿）
+        0xFF267F99u,  // syntaxType          #267f99（类型青蓝）
+        0xFF795E26u,  // syntaxFunction      #795e26（函数棕黄）
+        0xFF001080u,  // syntaxVariable      #001080（变量/属性深蓝）
+        0xFF0451A5u,  // syntaxKey           #0451a5（JSON 属性名蓝，VS Code 同款）
+        0xFFEE0000u,  // syntaxEscape        #ee0000（转义红）
+        0xFF800000u,  // syntaxTag           #800000（HTML 标签/Markdown 标题褐红）
     };
     return kLight;
 }
@@ -95,6 +109,18 @@ const ThemePalette& DarkPalette() {
         0xFF46B9A2u,  // iconWrapArrow   深 #46b9a2（折行箭头 teal）
         0x4DFFB454u,  // searchMatch（alpha 0x4d 橙黄半透明）
         0xFFFFB454u,  // searchMatchBorder（与 unsavedMark 同值、独立 token）
+        // —— 语法着色（代码着色 T3；VS Code Dark+ 取值）——
+        0xFF6A9955u,  // syntaxComment       #6a9955（注释绿）
+        0xFF569CD6u,  // syntaxKeyword       #569cd6（关键字蓝）
+        0xFFC586C0u,  // syntaxPreprocessor  #c586c0（指令紫蓝，VS Code 同款）
+        0xFFCE9178u,  // syntaxString        #ce9178（字符串沙棕）
+        0xFFB5CEA8u,  // syntaxNumber        #b5cea8（数字浅绿）
+        0xFF4EC9B0u,  // syntaxType          #4ec9b0（类型青）
+        0xFFDCDCAAu,  // syntaxFunction      #dcdcaa（函数芥末黄）
+        0xFF9CDCFEu,  // syntaxVariable      #9cdcfe（变量/属性浅蓝）
+        0xFF9CDCFEu,  // syntaxKey           #9cdcfe（JSON 属性名蓝，VS Code 同款）
+        0xFFD7BA7Du,  // syntaxEscape        #d7ba7d（转义金棕）
+        0xFF569CD6u,  // syntaxTag           #569cd6（HTML 标签/Markdown 标题蓝）
     };
     return kDark;
 }
@@ -110,6 +136,59 @@ void SetTheme(bool dark) {
 
 const ThemePalette& CurrentPalette() {
     return g_darkTheme ? DarkPalette() : LightPalette();
+}
+
+// —— 语法着色（代码着色 T3）——
+// core::SyntaxToken → 当前色板语义色的集中映射（单一可查）。次要 token 按
+// VS Code 语义归并：Operator/Identifier/Value 不另着色（默认文字色），
+// Error 复用语义 error token，Strong 归并关键字色。改动归并关系须同步
+// theme.h 语法色字段组注释
+uint32_t SyntaxTokenColor(core::SyntaxToken token) {
+    const ThemePalette& pal = CurrentPalette();
+    switch (token) {
+    case core::SyntaxToken::Comment:
+    case core::SyntaxToken::CommentDoc:
+        return pal.syntaxComment;
+    case core::SyntaxToken::Keyword:
+    case core::SyntaxToken::Keyword2:
+    case core::SyntaxToken::Label:      // Batch/Lua 标签（关键字族）
+    case core::SyntaxToken::Strong:     // Markdown 粗体（无字体属性通道，色归关键字）
+        return pal.syntaxKeyword;
+    case core::SyntaxToken::Preprocessor:
+        return pal.syntaxPreprocessor;
+    case core::SyntaxToken::String:
+    case core::SyntaxToken::String2:
+    case core::SyntaxToken::Regex:      // 正则字面量（VS Code 与字符串同族暖红）
+        return pal.syntaxString;
+    case core::SyntaxToken::Number:
+        return pal.syntaxNumber;
+    case core::SyntaxToken::Type:
+        return pal.syntaxType;
+    case core::SyntaxToken::Function:
+        return pal.syntaxFunction;
+    case core::SyntaxToken::Variable:
+    case core::SyntaxToken::Attribute:  // HTML/XML 属性名（VS Code 变量同族）
+    case core::SyntaxToken::Em:         // Markdown 斜体
+        return pal.syntaxVariable;
+    case core::SyntaxToken::Key:
+    case core::SyntaxToken::Link:       // Markdown 链接
+        return pal.syntaxKey;
+    case core::SyntaxToken::Escape:
+        return pal.syntaxEscape;
+    case core::SyntaxToken::Tag:
+    case core::SyntaxToken::Section:    // INI/properties [节] 标记
+    case core::SyntaxToken::Header:     // Markdown 标题（全部级别归并）
+        return pal.syntaxTag;
+    // 以下归并既有语义 token（VS Code 同款不另着色）
+    case core::SyntaxToken::Operator:   // 操作符/标点
+    case core::SyntaxToken::Identifier: // 普通标识符
+    case core::SyntaxToken::Value:      // CSS 值/YAML 文本值等
+    case core::SyntaxToken::None:       // 哨兵/无着色（防御：不会被映射表引用）
+        return pal.textPrimary;
+    case core::SyntaxToken::Error:      // 词法错误（未终止字符串等）
+        return pal.error;
+    }
+    return pal.textPrimary;  // switch 全枚举覆盖；不可达防御
 }
 
 uint32_t BlendOver(uint32_t base, uint32_t overlay) {

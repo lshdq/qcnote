@@ -11,6 +11,14 @@
 
 #include <cstdint>
 
+// 前向声明（core/syntax.h 的语义色 token 枚举；底层类型 int 与定义一致）：
+// ui/theme.h 是全 ui 层公共头（titlebar/tabs/toolbar/… 全量包含），不在此引入
+// core 头依赖链（core/document.h → <filesystem> 等）；token→色板映射的 switch
+// 实现于 theme.cpp（该 TU include core/syntax.h 取完整枚举定义）
+namespace core {
+enum class SyntaxToken : int;
+}
+
 namespace ui {
 
 // —— 语义色板（字段与 AppTheme.qml token 一一对应，便于对照维护）——
@@ -55,6 +63,24 @@ struct ThemePalette {
     // 搜索
     uint32_t searchMatch;
     uint32_t searchMatchBorder;
+    // —— 语法着色（代码着色 T3）——
+    // core::SyntaxToken → 本字段组的归并映射集中一处可查：theme.cpp 的
+    // SyntaxTokenColor()（枚举值→字段 + 归并到既有 token 的注释）。
+    // 取值参考 VS Code Light+/Dark+ 语法配色（关键字蓝/紫蓝、字符串暖红、
+    // 注释灰绿、数字绿等），与 contentBackground/textPrimary 和谐。
+    // 未列字段者经映射归并既有 token：Operator/Identifier/Value → textPrimary
+    //（VS Code 同款不另着色）、Error → error、Strong → syntaxKeyword
+    uint32_t syntaxComment;       // 注释（Comment/CommentDoc；灰绿）
+    uint32_t syntaxKeyword;       // 主关键字（Keyword/Keyword2/Label/Strong；蓝/紫蓝）
+    uint32_t syntaxPreprocessor;  // 预处理/指令（Preprocessor；浅色与关键字同蓝、深色紫蓝，VS Code 同款）
+    uint32_t syntaxString;        // 字符串（String/String2/Regex；暖红/沙棕）
+    uint32_t syntaxNumber;        // 数字（Number；绿）
+    uint32_t syntaxType;          // 类型/类名（Type；青蓝）
+    uint32_t syntaxFunction;      // 函数名（Function；棕黄/芥末黄）
+    uint32_t syntaxVariable;      // 变量/属性名（Variable/Attribute/Em；深蓝/浅蓝）
+    uint32_t syntaxKey;           // 键/链接（Key/Link；JSON 属性名蓝，VS Code JSON 同款）
+    uint32_t syntaxEscape;        // 转义序列（Escape；红/金棕）
+    uint32_t syntaxTag;           // 标签/节/标题（Tag/Section/Header；褐红/蓝）
 };
 
 // 浅色色板（M1 默认）：取值照抄 AppTheme.qml 浅色分支。
@@ -76,6 +102,12 @@ void SetTheme(bool dark);
 // overlay 按 alpha 叠加到 base（均 0xAARRGGBB），返回不透明 ARGB。
 // 半透明 token 在纯 GDI 绘制前的预合成通道；四舍五入取整。
 uint32_t BlendOver(uint32_t base, uint32_t overlay);
+
+// —— 语法着色（代码着色 T3）——
+// core::SyntaxToken → 当前色板语义色（0xAARRGGBB 不透明）。editor 装配层
+// 消费：样式槽 → token（core 注册表映射表）→ 本函数取色 → SCI_STYLESETFORE。
+// token→色板字段/既有 token 的归并关系集中在本实现（theme.cpp，单一可查）
+uint32_t SyntaxTokenColor(core::SyntaxToken token);
 
 // 0xAARRGGBB → COLORREF（配合 BlendOver 的不透明输出；alpha 丢弃）
 COLORREF ToColorRef(uint32_t argb);

@@ -3,8 +3,10 @@
 // 字段（旧 QML StatusBar.qml 对等，显隐语义一致）：
 //   行 N，列 M（无文档「行 —，列 —」）｜已选 N 字符（有选区时）｜
 //   [光标 ×N（多光标 >1 时；B4 前占位恒不显示）]｜共 N 字符（有文档时）｜
-//   ……弹性空档……｜编码（UTF-8 / UTF-8 BOM / GBK）｜换行风格（LF/CRLF）｜
-//   文件完整路径（超长 DT_PATH_ELLIPSIS 中部省略，悬停 tooltip 显示完整路径）
+//   ……弹性空档……｜语言（代码着色 T3：如「Python」；纯文本显示「纯文本」；
+//   无文档隐藏——右组最右段，VS Code 同位）｜编码（UTF-8 / UTF-8 BOM / GBK）｜
+//   换行风格（LF/CRLF）｜文件完整路径（超长 DT_PATH_ELLIPSIS 中部省略，
+//   悬停 tooltip 显示完整路径）
 // 字体小号 textSecondary（旧 QML pointSize 9 → 12px@96dpi）。
 // 文本构建为纯函数（BuildStatusTexts，单测覆盖）；布局测量/绘制/tooltip 为组件。
 #pragma once
@@ -41,6 +43,9 @@ struct StatusData {
     int cursorCount = 1;         // >1 显示「光标 ×N」（B4 前恒 1）
     std::wstring encoding;       // "UTF-8" / "UTF-8 BOM" / "GBK"（空 = 隐藏）
     std::wstring lineEnding;     // "LF" / "CRLF"（空 = 隐藏）
+    std::wstring language;       // 语言名（"Python"；纯文本"纯文本"；空 = 隐藏。
+                                  // 代码着色 T3：组装层经 core::effectiveLanguage
+                                  // 取 displayName 或「纯文本」；无文档隐藏）
     std::wstring path;           // 完整路径（空 = 隐藏/无 tooltip）
 
     // 全值类型 defaulted 等值比较（C++20+）：update() 数据未变化时跳过
@@ -53,6 +58,7 @@ std::wstring StatusLineColText(const StatusData& d);      // 恒显示（无文�
 std::wstring StatusSelectionText(const StatusData& d);    // 已选 N 字符（选区>0）
 std::wstring StatusCursorCountText(const StatusData& d);  // 光标 ×N（>1）
 std::wstring StatusTotalText(const StatusData& d);        // 共 N 字符（有文档）
+std::wstring StatusLanguageText(const StatusData& d);     // 语言名（有文档；代码着色 T3）
 std::wstring StatusEncodingText(const StatusData& d);     // 编码（有文档）
 std::wstring StatusLineEndingText(const StatusData& d);   // LF/CRLF（有文档）
 
@@ -98,7 +104,7 @@ public:
     RECT pathRect(const RECT& clientRect) const;  // 路径段矩形（空 = 无路径）
 
 private:
-    enum class SegId { LineCol = 0, Selection, CursorCount, Total, Encoding, LineEnd, Path, Count };
+    enum class SegId { LineCol = 0, Selection, CursorCount, Total, Language, Encoding, LineEnd, Path, Count };
 
     void ensureFont() const;
     void measureAndLayout(const RECT& clientRect) const;  // 惰性段布局

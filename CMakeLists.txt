@@ -62,6 +62,48 @@ target_compile_options(scintilla_lib PRIVATE
 # INTERFACE 使链接 scintilla_lib 的目标自动带上，应用层不必感知。
 target_link_libraries(scintilla_lib INTERFACE gdi32 user32 imm32 ole32 oleaut32 uuid advapi32)
 
+# Lexilla 5.4.5（vendored 精选子集，DEC-007）：Scintilla 官方配套词法器库，静态链入。
+#   vendor/lexilla 布局：include/（Lexilla.h + SciLexer.h——SCE_*/SCLEX_* 常量，
+#     lexers/lexlib 编译必需）、lexlib/ 完整（词法器基础设施）、lexers/ 精选
+#     14 个文件（15 个词法器：xml 与 hypertext 同在 LexHTML.cxx；INI 由
+#     "props" 词法器承载【DEC-008】；上游无 go 独立词法器，Go 由 cpp 词法器
+#     注入 Go 关键词表承载【DEC-009】）。
+#   不含上游 src/Lexilla.cxx：其 CatalogueModules 静态引用全部 ~50 词法器，
+#   与小体积目标冲突且 vendor/ 只读——按名创建 ILexer5 由项目侧
+#   src/editor/lexercatalogue.cpp 复刻（editor 层封装职责）。
+# Lexilla TU 同 Scintilla 以 /std:c++20 混编（上游按 C++17+ 编写、无 BOM UTF-8），
+# 与应用层（/std:c++latest）仅经 ILexer5 纯虚接口衔接，无 STL 类型跨界，无 ODR 问题。
+file(GLOB LEXILLA_LEXLIB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/lexilla/lexlib/*.cxx")
+add_library(lexilla_lib STATIC
+    ${LEXILLA_LEXLIB_SOURCES}
+    vendor/lexilla/lexers/LexCPP.cxx
+    vendor/lexilla/lexers/LexPython.cxx
+    vendor/lexilla/lexers/LexJSON.cxx
+    vendor/lexilla/lexers/LexMarkdown.cxx
+    vendor/lexilla/lexers/LexHTML.cxx
+    vendor/lexilla/lexers/LexCSS.cxx
+    vendor/lexilla/lexers/LexSQL.cxx
+    vendor/lexilla/lexers/LexBash.cxx
+    vendor/lexilla/lexers/LexPowerShell.cxx
+    vendor/lexilla/lexers/LexYAML.cxx
+    vendor/lexilla/lexers/LexLua.cxx
+    vendor/lexilla/lexers/LexRust.cxx
+    vendor/lexilla/lexers/LexBatch.cxx
+    vendor/lexilla/lexers/LexProps.cxx
+    src/editor/lexercatalogue.cpp
+)
+# include：lexilla/include + lexlib PUBLIC——消费者（editor 装配层）包含
+# lexercatalogue.h 时需要 lexlib 头；scintilla/include PUBLIC——lexlib/lexers
+# 依赖 Scintilla.h/ILexer.h（lexlib 无对应拷贝，取自 Scintilla，与 scintilla_lib
+# 的 PUBLIC 同源不冲突；显式声明使本目标依赖意图自包含）。src/ 无需传入：
+# lexercatalogue.cpp 的 #include "lexercatalogue.h" 走引号包含的本目录查找。
+target_include_directories(lexilla_lib
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendor/lexilla/include"
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendor/lexilla/lexlib"
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/vendor/scintilla/include"
+)
+target_compile_options(lexilla_lib PRIVATE /std:c++20 /utf-8)
+
 # Catch2 v3.8.1：vendor 快照缺少上游仓库的 CMake/ 脚本目录（CatchConfigOptions.cmake 等），
 # 其自带 CMakeLists 无法 add_subdirectory；且 vendor/ 禁止修改、不能补文件。
 # 处理：直接从 vendor/catch2/src 源码构建静态库，等价复刻官方 Catch2::Catch2 / Catch2::Catch2WithMain。
@@ -190,8 +232,9 @@ target_compile_definitions(qcnote PRIVATE UNICODE _UNICODE NOMINMAX WINVER=0x0A0
 # shell32：CommandLineToArgvW（D2 启动参数）；qcnote_core：M2-A 纯逻辑核心层；
 # advapi32：M5 shell 集成注册表读写（scintilla_lib INTERFACE 亦传递，显式声明
 # 使 platform 层依赖意图自包含）；
-# gdiplus：F2 工具栏图标 GDI+ 抗锯齿绘制（系统组件，无额外部署负担）
-target_link_libraries(qcnote PRIVATE scintilla_lib wil dwmapi comctl32 comdlg32 shell32 advapi32 qcnote_core gdiplus)
+# gdiplus：F2 工具栏图标 GDI+ 抗锯齿绘制（系统组件，无额外部署负担）；
+# lexilla_lib：代码着色词法器库（静态链入，含 editor 层 lexercatalogue）
+target_link_libraries(qcnote PRIVATE scintilla_lib lexilla_lib wil dwmapi comctl32 comdlg32 shell32 advapi32 qcnote_core gdiplus)
 # manifest 由 qcnote.rc 嵌入（PerMonitorV2 DPI 声明 + Common-Controls 6.0 依赖，
 # DEC-001）；显式关闭链接器/mt 的 manifest 生成，避免默认 manifest 覆盖 rc 嵌入的资源
 target_link_options(qcnote PRIVATE /MANIFEST:NO)
@@ -212,6 +255,7 @@ add_library(qcnote_core STATIC
     src/core/storage.cpp
     src/core/localstorage.cpp
     src/core/format.cpp
+    src/core/syntax.cpp
     src/core/document.cpp
     src/core/documentmanager.cpp
     src/core/searchengine.cpp
@@ -250,10 +294,13 @@ add_test(NAME smoke COMMAND test_smoke)
 # 原子写、文档生命周期/遮蔽重载/编码转换/回调。直接链接 qcnote_core。
 # 外部文件改动检测单测：TC-001..TC-012（stat 初筛/两级校验/删除与恢复/
 # 基线刷新/决策抑制），全 mock 注入不碰真实磁盘，直接链接 qcnote_core。
+# 代码着色 T2 单测（test_core_syntax.cpp）：语言注册表/扩展名识别/样式映射
+# 表完整性/Document 语言元数据/生效语言计算（TC-001/002/014 core 部分）。
 add_executable(test_core
     tests/test_core_encoding.cpp
     tests/test_core_storage.cpp
     tests/test_core_document.cpp
+    tests/test_core_syntax.cpp
     tests/test_core_externalchange.cpp
 )
 # _CRT_SECURE_NO_WARNINGS：getenv（测试临时目录环境变量）；CATCH_CONFIG_WCHAR：wstring 断言输出
@@ -295,11 +342,14 @@ add_test(NAME ui COMMAND test_ui)
 # M1-2 菜单系统单测：MenuModel 数据模型（结构/级联/勾选/enabled/动态条目）、
 # ComputeMenuLayout 布局数学（列预留/DPI 换算/极值夹取/分隔行）、主菜单内容构建。
 # menu.cpp 含弹出层窗口代码（链接需要 user32/gdi32/dwmapi），单测只调用纯逻辑部分。
+# 代码着色 T3：mainmenu.cpp 语言子菜单数据源为 core 注册表（languageAt/
+# languageCount，ui→core 依赖首例），测试断言 21 语言项与注册表对应关系 →
+# 链接 qcnote_core（bcrypt/ole32/shell32 经其 PUBLIC 传递）
 add_executable(test_menu tests/test_menu.cpp src/ui/menu.cpp src/ui/mainmenu.cpp src/ui/theme.cpp)
 target_compile_options(test_menu PRIVATE /std:c++latest /utf-8)
 target_compile_definitions(test_menu PRIVATE UNICODE _UNICODE NOMINMAX)
 target_include_directories(test_menu PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(test_menu PRIVATE Catch2::Catch2WithMain gdi32 user32 dwmapi)
+target_link_libraries(test_menu PRIVATE Catch2::Catch2WithMain gdi32 user32 dwmapi qcnote_core)
 add_test(NAME menu COMMAND test_menu)
 
 # M1-3 Tab 条单测：宽度自适应算法（DistributeTabWidths 全分支 + 向下取整边界）、

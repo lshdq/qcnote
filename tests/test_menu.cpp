@@ -1,8 +1,10 @@
 // M1-2 菜单系统单测：MenuModel 数据模型（结构构建/级联/勾选/enabled 查询/
 // 动态条目）、ComputeMenuLayout 布局数学（列预留/DPI 换算/极值夹取/分隔行）、
-// 主菜单内容构建（E1 结构与状态接线）。全部纯逻辑，不依赖窗口存在。
+// 主菜单内容构建（E1 结构与状态接线；代码着色 T3 语言子菜单结构/勾选态
+// 四象限/置灰/命令与注册表对应）。全部纯逻辑，不依赖窗口存在。
 #include <catch2/catch_test_macros.hpp>
 
+#include "core/syntax.h"  // 代码着色 T3：语言注册表（子菜单结构/命令对应断言）
 #include "ui/commands.h"
 #include "ui/mainmenu.h"
 #include "ui/menu.h"
@@ -118,8 +120,8 @@ TEST_CASE("MenuModel 动态构建条目（Tab 右键菜单预留，M1-3）", "[m
 
 TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
     const MenuModel m = BuildMainMenu(MainMenuState{});
-    // 菜单森林：主菜单 + 文件/编辑/搜索/视图 + 编码/重载/转存 = 8
-    REQUIRE(m.menuCount() == 8);
+    // 菜单森林：主菜单 + 文件/编辑/搜索/视图 + 编码/重载/转存/语言 = 9
+    REQUIRE(m.menuCount() == 9);
     REQUIRE(m.itemCount(0) == 7);  // 文件▸/编辑▸/搜索▸/──/视图▸/──/退出
 
     CHECK(m.item(0, 0).kind == MenuItem::Kind::Submenu);
@@ -137,9 +139,9 @@ TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
     CHECK(m.item(0, 6).command == Command::Quit);
     CHECK(m.item(0, 6).enabled);
 
-    // 文件菜单：五项 + 分隔线 + 编码▸
+    // 文件菜单：五项 + 分隔线 + 编码▸ + 语言▸（代码着色 T3）
     const int file = m.item(0, 0).submenu;
-    REQUIRE(m.itemCount(file) == 7);
+    REQUIRE(m.itemCount(file) == 8);
     CHECK(m.item(file, 0).text == L"新建");
     CHECK(m.item(file, 0).shortcut == L"Ctrl+N");
     CHECK(m.item(file, 0).command == Command::NewDocument);
@@ -153,13 +155,17 @@ TEST_CASE("主菜单结构（E1）默认无文档状态", "[menu][mainmenu]") {
     CHECK(m.item(file, 5).kind == MenuItem::Kind::Separator);
     CHECK(m.item(file, 6).kind == MenuItem::Kind::Submenu);
     CHECK(m.item(file, 6).text == L"编码");
+    CHECK(m.item(file, 7).kind == MenuItem::Kind::Submenu);
+    CHECK(m.item(file, 7).text == L"语言");
 
-    // 无文档：文档相关项置灰（M2 接状态源后翻转）
+    // 无文档：文档相关项置灰（M2 接状态源后翻转）；语言组同样级联置灰
     CHECK(m.item(file, 0).enabled);  // 新建
     CHECK(m.item(file, 1).enabled);  // 打开…
     CHECK_FALSE(m.item(file, 2).enabled);  // 保存
     CHECK_FALSE(m.item(file, 3).enabled);  // 另存为…
     CHECK_FALSE(m.item(file, 4).enabled);  // 关闭标签页
+    CHECK(m.item(file, 6).enabled);        // 编码组父级（本身可达，子组内置灰）
+    CHECK_FALSE(m.item(file, 7).enabled);  // 语言组：无活动文档整组禁用
 
     // 编码三级级联
     const int enc = m.item(file, 6).submenu;
@@ -315,6 +321,169 @@ TEST_CASE("编辑组插入编号使能四组合交叉与命令名", "[menu][main
     // 命令名（调试日志/自动化输出）
     CHECK(CommandName(Command::InsertNumbering) == L"InsertNumbering");
     CHECK(CommandName(Command::ToggleAutoIndent) == L"ToggleAutoIndent");
+}
+
+// ---------------------------------------------------------------------------
+// 语言子菜单（代码着色 T3，TC-006）：结构（21 语言 + 自动/纯文本）、勾选态
+// 四象限、无活动文档置灰、命令枚举与注册表对应关系
+// ---------------------------------------------------------------------------
+
+namespace {
+// 语言子菜单 id（从主菜单模型取：文件▸语言▸）
+int LanguageMenuOf(const MenuModel& m) {
+    const int file = m.item(0, 0).submenu;
+    REQUIRE(m.item(file, 7).kind == MenuItem::Kind::Submenu);
+    REQUIRE(m.item(file, 7).text == L"语言");
+    return m.item(file, 7).submenu;
+}
+}  // namespace
+
+TEST_CASE("语言子菜单结构：21 语言项 + 分隔线 + 自动/纯文本（TC-006）", "[menu][mainmenu]") {
+    MainMenuState s;
+    s.hasActiveDocument = true;
+    const MenuModel m = BuildMainMenu(s);
+    const int lang = LanguageMenuOf(m);
+
+    // 21 语言（core 注册表顺序）+ 分隔线 + 「自动」「纯文本」= 24 行
+    REQUIRE(m.itemCount(lang) == 24);
+    for (std::size_t i = 0; i < core::languageCount(); ++i) {
+        const core::LanguageEntry* entry = core::languageAt(i);
+        INFO("language index " << i);
+        REQUIRE(entry != nullptr);
+        const MenuItem& it = m.item(lang, static_cast<int>(i));
+        // 语言项与注册表逐项对应：显示名 + 命令（commands.h 语言命令组按
+        // 下标与注册表一一对应，mainmenu 构建依赖该约定）
+        CHECK(it.kind == MenuItem::Kind::Action);
+        CHECK(it.text == entry->displayName);
+        CHECK(it.command == static_cast<Command>(static_cast<int>(Command::SelectLanguageC) +
+                                                static_cast<int>(i)));
+        CHECK(it.shortcut.empty());  // 菜单唯一入口，无快捷键
+        CHECK(it.enabled);           // 叶子不承载 enabled（父级级联置灰语义）
+        CHECK_FALSE(it.checked);     // 默认状态（无生效语言）无勾选
+    }
+    CHECK(m.item(lang, 21).kind == MenuItem::Kind::Separator);
+    CHECK(m.item(lang, 22).text == L"自动");
+    CHECK(m.item(lang, 22).command == Command::SelectLanguageAuto);
+    CHECK(m.item(lang, 23).text == L"纯文本");
+    CHECK(m.item(lang, 23).command == Command::SelectLanguagePlainText);
+    // 21 个语言命令互不相同且均可定位（路由唯一键）
+    for (std::size_t i = 0; i < core::languageCount(); ++i) {
+        CHECK(m.findCommand(static_cast<Command>(
+                  static_cast<int>(Command::SelectLanguageC) + static_cast<int>(i)))
+                  .has_value());
+    }
+}
+
+TEST_CASE("语言子菜单勾选态四象限（TC-006）", "[menu][mainmenu]") {
+    // 象限 1：自动模式 + 生效语言为空（未命名/未知扩展名/纯文本渲染）——
+    // 勾「自动」，无语言项勾选，「纯文本」不勾
+    {
+        MainMenuState s;
+        s.hasActiveDocument = true;
+        const MenuModel m = BuildMainMenu(s);
+        const int lang = LanguageMenuOf(m);
+        CHECK(m.item(lang, 22).checked);          // 自动
+        CHECK_FALSE(m.item(lang, 23).checked);    // 纯文本
+        for (int i = 0; i < 21; ++i) {
+            INFO("language index " << i);
+            CHECK_FALSE(m.item(lang, i).checked);
+        }
+    }
+    // 象限 2：自动模式 + 自动识别出语言（打开 .cpp）——「自动」与「C++」
+    // 同时勾选（语言项勾选 = 当前生效语言，自动识别结果同样显示勾选）
+    {
+        const core::LanguageEntry* cpp = core::languageById("cpp");
+        REQUIRE(cpp != nullptr);
+        MainMenuState s;
+        s.hasActiveDocument = true;
+        s.effectiveLanguageId = cpp->id;
+        const MenuModel m = BuildMainMenu(s);
+        const int lang = LanguageMenuOf(m);
+        CHECK(m.item(lang, 22).checked);  // 仍为自动模式 → 勾「自动」
+        const int cppIndex = static_cast<int>(cpp - core::languageAt(0));
+        for (int i = 0; i < 21; ++i) {
+            INFO("language index " << i);
+            CHECK(m.item(lang, i).checked == (i == cppIndex));
+        }
+    }
+    // 象限 3：手动指定语言（.py 手动切 JSON）——勾该语言项，「自动」不勾
+    {
+        const core::LanguageEntry* json = core::languageById("json");
+        REQUIRE(json != nullptr);
+        MainMenuState s;
+        s.hasActiveDocument = true;
+        s.effectiveLanguageId = json->id;
+        s.manualLanguage = true;
+        const MenuModel m = BuildMainMenu(s);
+        const int lang = LanguageMenuOf(m);
+        CHECK_FALSE(m.item(lang, 22).checked);  // 手动模式 → 不勾「自动」
+        CHECK_FALSE(m.item(lang, 23).checked);
+        const int jsonIndex = static_cast<int>(json - core::languageAt(0));
+        for (int i = 0; i < 21; ++i) {
+            INFO("language index " << i);
+            CHECK(m.item(lang, i).checked == (i == jsonIndex));
+        }
+    }
+    // 象限 4：手动指定「纯文本」——勾「纯文本」，无语言项、不勾「自动」
+    {
+        MainMenuState s;
+        s.hasActiveDocument = true;
+        s.effectiveLanguageId = {};
+        s.manualLanguage = true;
+        const MenuModel m = BuildMainMenu(s);
+        const int lang = LanguageMenuOf(m);
+        CHECK_FALSE(m.item(lang, 22).checked);
+        CHECK(m.item(lang, 23).checked);
+        for (int i = 0; i < 21; ++i) {
+            INFO("language index " << i);
+            CHECK_FALSE(m.item(lang, i).checked);
+        }
+    }
+}
+
+TEST_CASE("语言组无活动文档置灰、有文档可用（级联整组不可达）", "[menu][mainmenu]") {
+    // 无文档：语言子菜单父级条目置灰（与编码组同款语义：叶子不单独置灰，
+    // 父级置灰即整组不可达）
+    {
+        const MenuModel m = BuildMainMenu(MainMenuState{});
+        const int file = m.item(0, 0).submenu;
+        CHECK(m.item(file, 7).kind == MenuItem::Kind::Submenu);
+        CHECK_FALSE(m.item(file, 7).enabled);
+    }
+    // 有活动文档（含未命名）：语言组可用
+    {
+        MainMenuState s;
+        s.hasActiveDocument = true;
+        const MenuModel m = BuildMainMenu(s);
+        const int file = m.item(0, 0).submenu;
+        CHECK(m.item(file, 7).enabled);
+    }
+}
+
+TEST_CASE("语言命令枚举与 CommandName/辅助函数一致性（轻量）", "[menu][mainmenu]") {
+    // 命令名（调试日志/自动化输出）
+    CHECK(CommandName(Command::SelectLanguageAuto) == L"SelectLanguageAuto");
+    CHECK(CommandName(Command::SelectLanguagePlainText) == L"SelectLanguagePlainText");
+    CHECK(CommandName(Command::SelectLanguageC) == L"SelectLanguageC");
+    CHECK(CommandName(Command::SelectLanguageYaml) == L"SelectLanguageYaml");
+    // 辅助函数：语言命令区间判定 + 注册表下标映射（main.cpp 路由依赖）
+    CHECK(isSelectLanguageCommand(Command::SelectLanguageAuto));
+    CHECK(isSelectLanguageCommand(Command::SelectLanguageYaml));
+    CHECK_FALSE(isSelectLanguageCommand(Command::Quit));
+    CHECK_FALSE(isSelectLanguageCommand(Command::NewDocument));
+    CHECK_FALSE(isSelectLanguageCommand(static_cast<Command>(
+        static_cast<int>(Command::SelectLanguageYaml) + 1)));  // 组末之后
+    CHECK(selectLanguageIndex(Command::SelectLanguageAuto) == -1);
+    CHECK(selectLanguageIndex(Command::SelectLanguagePlainText) == -1);
+    CHECK(selectLanguageIndex(Command::NewDocument) == -1);
+    CHECK(selectLanguageIndex(Command::SelectLanguageC) == 0);
+    CHECK(selectLanguageIndex(Command::SelectLanguageYaml) == 20);
+    // 与注册表条目数一致（枚举组连续排布约定的钉子：commands.h 21 项语言
+    // 命令 ↔ core::languageCount()）
+    CHECK(selectLanguageIndex(static_cast<Command>(
+              static_cast<int>(Command::SelectLanguageC) +
+              static_cast<int>(core::languageCount()) - 1)) ==
+          static_cast<int>(core::languageCount()) - 1);
 }
 
 // ---------------------------------------------------------------------------

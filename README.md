@@ -163,6 +163,7 @@ docs/                   # 需求文档 / 测试用例 / 决策项 / 审查记录
 | 依赖 | 版本 / 快照 | 来源 | 许可 | 用途 |
 |------|------------|------|------|------|
 | Scintilla | 5.6.9（version.txt=569） | Notepad++ GitHub 仓库稀疏检出，2026-11-10 master 快照（commit `61e17dde`） | Scintilla 历史许可（见 `vendor/scintilla/License.txt`） | 编辑组件（静态链接，排除 DLL 入口） |
+| Lexilla | 5.4.5（version.txt=545，tag `rel-5-4-5`） | ScintillaOrg/lexilla | Scintilla 历史许可（见 `vendor/lexilla/License.txt`） | 词法器库（静态链接，精选子集：lexlib 完整 + lexers 14 文件 15 词法器；不含上游 src/Lexilla.cxx，按名创建由 `src/editor/lexercatalogue.*` 项目侧复刻；INI 由 "props" 词法器承载，Go 由 cpp 词法器注入关键词表承载） |
 | WIL | commit `abb1bd35` | microsoft/wil | MIT | Win32 RAII 头文件库（header-only） |
 | Catch2 | v3.8.1 | catchorg/Catch2 | BSL-1.0 | 单元测试框架 |
 | PCRE2 | 10.45 | pcre2project/pcre2 | BSD-3-Clause | 正则查找替换（UTF 模式） |

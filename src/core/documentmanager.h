@@ -134,6 +134,10 @@ public:
     /// 另存为：成功后更新 url（displayName 随之）并清脏。遮蔽语义（DEC-008）：
     /// 目标路径同时是其他已打开文档的 url 时，写盘后按刚写出的编码从磁盘强制
     /// 重读并重载该文档（防止其内存旧内容再次保存时覆盖磁盘新内容）。
+    /// 代码着色（T2）：url 变化经 setUrl 的 onMetadataChanged 链传播，生效
+    /// 语言是按 url 的计算属性（syntax::effectiveLanguage）——自动模式下
+    /// 调用方（编辑器装配层）收到通知即按新扩展名重新识别，本层无需主动
+    /// 动作；手动指定语言不随 url 变化清除
     /// 入口路径统一 make_preferred 归一（正斜杠来源与理由同 openPath）
     SaveAsResult saveAs(Document* doc, const std::filesystem::path& path);
 
@@ -187,7 +191,7 @@ public:
     MulticastEvent<Document*> documentClosed;     ///< 文档移除后、销毁前发出（可读 uid 清草稿）
     MulticastEvent<Document*> documentModifiedChanged; ///< 某文档脏↔干净翻转
     MulticastEvent<Document*> documentContentChanged;  ///< 某文档内容变化（草稿防抖/编辑器同步）
-    MulticastEvent<Document*> documentMetadataChanged; ///< 某文档元数据变化（url/显示名/编码/换行/BOM/光标）
+    MulticastEvent<Document*> documentMetadataChanged; ///< 某文档元数据变化（url/显示名/编码/换行/BOM/语言/光标）
 
 private:
     /// reloadWithEncoding / reloadFromDisk 共用实现（forced = nullopt 即自动

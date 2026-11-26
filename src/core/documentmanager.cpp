@@ -292,9 +292,11 @@ std::expected<void, StorageError> DocumentManager::rename(Document* doc,
     if (!moved)
         return std::unexpected(moved.error()); // 失败透传（目标占用/源缺失/权限等）
 
-    // 仅更新 url：displayName 随之，setUrl 触发 onMetadataChanged → 上层自动
-    // 刷新 Tab/标题/状态栏/会话记忆。不动内容/编码/换行/BOM/光标，不
-    // markSaved——磁盘旧内容随文件改名，内存修改仍脏，随后 save 写入新路径
+    /// 仅更新 url：displayName 随之，setUrl 触发 onMetadataChanged → 上层自动
+    /// 刷新 Tab/标题/状态栏/会话记忆（代码着色：生效语言按 url 计算属性，
+    /// 换扩展名时调用方经同一通知链自动重识别——与 saveAs 同语义）。不动
+    /// 内容/编码/换行/BOM/光标/手动语言，不
+    /// markSaved——磁盘旧内容随文件改名，内存修改仍脏，随后 save 写入新路径
     doc->setUrl(newPath);
     return {};
 }

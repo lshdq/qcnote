@@ -13,12 +13,14 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/documentmanager.h"
 #include "core/draftcachemanager.h"
 #include "core/inifile.h"
 #include "core/sessionmanager.h"
+#include "core/syntax.h"
 #include "test_core_common.h"
 
 using namespace core;
@@ -28,8 +30,11 @@ namespace {
 // —— 磁盘状态 mock：url → 归一化内容哈希（不在表 = 缺失/不可读）——
 using DiskMap = std::map<std::filesystem::path, std::string>;
 
-DiskHashQuery diskQuery(const DiskMap& map) {
-    return [&map](const std::filesystem::path& url) -> std::optional<std::string> {
+// map 按值传入并 move 进闭包：调用方传临时 DiskMap（如 diskQuery({})）也安全。
+// （原 [&map] 引用捕获对临时对象构成 use-after-scope UB——T2 新增用例改变
+// 栈布局后该既有缺陷由偶发崩溃显性化，ASan 定位后根治）
+DiskHashQuery diskQuery(DiskMap map) {
+    return [map = std::move(map)](const std::filesystem::path& url) -> std::optional<std::string> {
         const auto it = map.find(url);
         if (it == map.end())
             return std::nullopt;
@@ -1259,4 +1264,158 @@ TEST_CASE("TC-U27：restoreUntitledDraft 未命名带位置插入（M4-B 新增�
     const SessionData data = SessionManager::buildSessionData(mgr);
     REQUIRE(data.documents.size() == mgr.documentCount());
     REQUIRE(data.documents[0].uid == u0->uid());
+}
+
+// ===========================================================================
+// 代码着色 T2：会话 language 键（DEC-004：仅手动指定写盘；TC-007/008/009/010）
+// ===========================================================================
+
+TEST_CASE("语法着色：会话 language 键构建与往返（手动/自动/plaintext）",
+          "[session][syntax]") {
+    testutil::TempDir tmp(L"lang");
+    testutil::writeBytes(tmp.file(L"a.py"), "x = 1\n");
+    testutil::writeBytes(tmp.file(L"b.txt"), "BBB");
+    const std::filesystem::path ini = tmp.file(L"qcnote.ini");
+
+    DocumentManager mgr;
+    REQUIRE(mgr.openPaths({tmp.file(L"a.py"), tmp.file(L"b.txt")}).empty());
+    Document* untitled = mgr.newDocument();
+    // a.py 手动指定 JSON（TC-007 前置）；b.txt/未命名 保持自动模式
+    mgr.documentAt(0)->setLanguage("json");
+    // 未命名文档手动指定 Python（TC-010：uid 条目携带 language）
+    untitled->setLanguage("python");
+
+    const SessionData data = SessionManager::buildSessionData(mgr);
+    REQUIRE(data.documents.size() == 3);
+    SECTION("TC-007：手动语言随条目构建（文件与未命名均记）") {
+        REQUIRE(data.documents[0].language.has_value());
+        REQUIRE(*data.documents[0].language == "json");
+        REQUIRE(data.documents[2].uid == untitled->uid());
+        REQUIRE(data.documents[2].language.has_value());
+        REQUIRE(*data.documents[2].language == "python");
+    }
+    SECTION("TC-008：自动模式条目 language 为空（不落盘语义的数据态）") {
+        REQUIRE_FALSE(data.documents[1].language.has_value());
+    }
+
+    REQUIRE(SessionManager::persistNow(ini, data));
+    SECTION("TC-007：持久化往返完整恢复手动语言") {
+        const SessionData parsed = SessionManager::parseSession(ini);
+        REQUIRE(parsed == data); // == 比较含 language 键（往返零损失）
+        REQUIRE(parsed.documents[0].language == std::optional<std::string>("json"));
+        REQUIRE(parsed.documents[2].language == std::optional<std::string>("python"));
+    }
+    SECTION("TC-008：自动模式文档无 language 键（文件级断言）") {
+        auto raw = IniFile::read(ini);
+        REQUIRE(raw.has_value());
+        // 手动指定文档写 N\language（编号 1 基：1\language）
+        REQUIRE(raw->value("documents", "1/language") == "json");
+        REQUIRE(raw->value("documents", "3/language") == "python");
+        // 自动模式（b.txt，编号 2）无 language 键：旧版读侧忽略，前向兼容
+        REQUIRE(raw->value("documents", "2/language") == std::nullopt);
+    }
+    SECTION("手动「纯文本」保留值同样落盘往返") {
+        DocumentManager mgr2;
+        REQUIRE(mgr2.openPaths({tmp.file(L"a.py")}).empty());
+        mgr2.documentAt(0)->setLanguage(core::kPlainTextLanguageId);
+        const SessionData d2 = SessionManager::buildSessionData(mgr2);
+        REQUIRE(*d2.documents[0].language == "plaintext");
+        const std::filesystem::path ini2 = tmp.file(L"plain.ini");
+        REQUIRE(SessionManager::persistNow(ini2, d2));
+        const SessionData parsed2 = SessionManager::parseSession(ini2);
+        REQUIRE(parsed2.documents[0].language == std::optional<std::string>("plaintext"));
+    }
+}
+
+TEST_CASE("语法着色：会话 language 键容错（旧会话无键/非法 id）", "[session][syntax]") {
+    testutil::TempDir tmp(L"lang-legacy");
+    const std::filesystem::path ini = tmp.file(L"qcnote.ini");
+
+    SECTION("TC-009：旧版会话（无 language 键）零影响") {
+        testutil::writeBytes(ini,
+            "[documents]\r\n"
+            "size=1\r\n"
+            "1\\url=C:/t/a.py\r\n"
+            "1\\cursor=3\r\n"
+            "1\\encoding=utf8\r\n");
+        const SessionData parsed = SessionManager::parseSession(ini);
+        REQUIRE(parsed.documents.size() == 1);
+        REQUIRE(parsed.documents[0].url == std::filesystem::path(L"C:/t/a.py"));
+        REQUIRE_FALSE(parsed.documents[0].language.has_value()); // 无键 → 自动识别
+        REQUIRE(parsed.documents[0].encoding == TextEncoding::Utf8);
+    }
+    SECTION("TC-009：非法 language id 丢弃（回退自动识别；与 encoding 容错一致）") {
+        testutil::writeBytes(ini,
+            "[documents]\r\n"
+            "size=3\r\n"
+            "1\\url=C:/t/a.py\r\n"
+            "1\\language=Python\r\n"       // 非法：id 约定小写（精确匹配）
+            "2\\url=C:/t/b.json\r\n"
+            "2\\language=no-such-lang\r\n" // 非法：不在注册表
+            "3\\uid=UID9\r\n"
+            "3\\language=\r\n");           // 空值丢弃
+        const SessionData parsed = SessionManager::parseSession(ini);
+        REQUIRE(parsed.documents.size() == 3);
+        REQUIRE_FALSE(parsed.documents[0].language.has_value());
+        REQUIRE_FALSE(parsed.documents[1].language.has_value());
+        REQUIRE_FALSE(parsed.documents[2].language.has_value());
+    }
+    SECTION("合法 id 与 plaintext 保留值均可恢复") {
+        testutil::writeBytes(ini,
+            "[documents]\r\n"
+            "size=2\r\n"
+            "1\\url=C:/t/a.py\r\n"
+            "1\\language=markdown\r\n"
+            "2\\uid=UID7\r\n"
+            "2\\language=plaintext\r\n");
+        const SessionData parsed = SessionManager::parseSession(ini);
+        REQUIRE(parsed.documents.size() == 2);
+        REQUIRE(parsed.documents[0].language == std::optional<std::string>("markdown"));
+        REQUIRE(parsed.documents[1].language == std::optional<std::string>("plaintext"));
+    }
+}
+
+TEST_CASE("语法着色：applySessionLanguage 恢复接线便捷函数", "[session][syntax]") {
+    testutil::TempDir tmp(L"lang-apply");
+    testutil::writeBytes(tmp.file(L"a.py"), "x = 1\n");
+
+    DocumentManager mgr;
+    REQUIRE(mgr.openPaths({tmp.file(L"a.py")}).empty());
+    Document* doc = mgr.documentAt(0);
+
+    SECTION("无 language 条目：no-op 返回 false（自动识别）") {
+        SessionDocumentEntry entry;
+        entry.url = tmp.file(L"a.py");
+        REQUIRE_FALSE(SessionManager::applySessionLanguage(doc, entry));
+        REQUIRE_FALSE(doc->manualLanguage().has_value());
+    }
+    SECTION("有 language：应用并返回 true（metadata 通知链传播）") {
+        int metadataEvents = 0;
+        mgr.documentMetadataChanged.subscribe([&](Document*) { ++metadataEvents; });
+        SessionDocumentEntry entry;
+        entry.url = tmp.file(L"a.py");
+        entry.language = "json";
+        REQUIRE(SessionManager::applySessionLanguage(doc, entry));
+        REQUIRE(*doc->manualLanguage() == "json");
+        REQUIRE(metadataEvents == 1); // 经 DocumentManager 多播转发
+    }
+    SECTION("幂等：已是相同手动语言不重复应用") {
+        doc->setLanguage("json");
+        SessionDocumentEntry entry;
+        entry.language = "json";
+        REQUIRE_FALSE(SessionManager::applySessionLanguage(doc, entry));
+        REQUIRE(*doc->manualLanguage() == "json");
+    }
+    SECTION("空文档指针防御：no-op") {
+        SessionDocumentEntry entry;
+        entry.language = "json";
+        REQUIRE_FALSE(SessionManager::applySessionLanguage(nullptr, entry));
+    }
+    SECTION("覆盖既有手动语言（换语言后再应用）") {
+        doc->setLanguage("json");
+        SessionDocumentEntry entry;
+        entry.language = "python";
+        REQUIRE(SessionManager::applySessionLanguage(doc, entry));
+        REQUIRE(*doc->manualLanguage() == "python");
+    }
 }

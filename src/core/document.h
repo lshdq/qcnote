@@ -4,7 +4,7 @@
 // 纯逻辑操作（保存/编码转换/草稿），M2-B 的 Scintilla 同步策略由接线层决定
 // （Scintilla SC_CP_UTF8 下字节流与本层内容零转换直通）。
 // modified 是与基线（上次加载/保存内容）比较的计算属性：仅反映内容差异，
-// 编码/换行/BOM 元数据变化不置脏；内容回到基线自动清脏（修复撤回到原样仍提示
+// 编码/换行/BOM/语言元数据变化不置脏；内容回到基线自动清脏（修复撤回到原样仍提示
 // 未保存的缺陷——旧版基线比较语义，保持）。
 // uid 为构造时生成的不可变 GUID 字符串（CoCreateGuid，无大括号形式），作草稿
 // 缓存条目主键（旧 DEC-002：无 URL 未命名文档、另存为后 URL 变化，uid 稳定）。
@@ -15,7 +15,9 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "core/encoding.h"
 #include "core/textutil.h"
@@ -37,6 +39,18 @@ public:
     TextEncoding encoding() const;
     void setEncoding(TextEncoding encoding);        ///< 新建文档默认 Utf8
     bool hasBom() const;                            ///< 上次以 UTF-8 读/写是否带 BOM
+
+    // —— 语言元数据（代码着色 T2；纯元数据，不参与 modified 判定）——
+    /// 手动指定语言 id（空 = 自动模式；kPlainTextLanguageId = 强制纯文本；
+    /// 其余为语言注册表 id，见 core/syntax.h）。自动识别结果不入本字段——
+    /// 生效语言每次按「手动优先 → 扩展名」计算（syntax::effectiveLanguage）
+    const std::optional<std::string>& manualLanguage() const;
+    /// 手动指定语言（id 不在本层校验；合法性由 syntax::isValidLanguageId
+    /// 与调用方保证）。同值短路不通知
+    void setLanguage(std::string_view languageId);
+    /// 清除手动指定回自动模式（菜单「自动」项）。已是自动模式时短路不通知
+    void clearLanguage();
+
     /// 光标位置：Scintilla 字节偏移（SC_CP_UTF8 下与本文档 UTF-8 内容字节流一致；
     /// 状态栏字符列显示经 textutil 字节↔字符换算）。负值钳为 0；同值不通知。
     /// 返回 true = 位置实际变化（已通知），false = 同值短路——SCN_UPDATEUI 每
@@ -73,7 +87,7 @@ public:
     // —— 变更回调（单订阅；由持有者 DocumentManager 接线转发，见 documentmanager.h）——
     std::function<void()> onContentChanged;    ///< 内容值变化
     std::function<void()> onModifiedChanged;   ///< 脏↔干净翻转（对齐旧 modifiedChanged）
-    std::function<void()> onMetadataChanged;   ///< url/displayName/lineEnding/encoding/hasBom/cursorPosition 变化
+    std::function<void()> onMetadataChanged;   ///< url/displayName/lineEnding/encoding/hasBom/language/cursorPosition 变化
 
 private:
     /// 仅加载路径（applyLoadedState）可写：hasBom 是磁盘事实记录，外部不直接改
@@ -89,6 +103,7 @@ private:
     LineEnding m_lineEnding = LineEnding::Lf;
     TextEncoding m_encoding = TextEncoding::Utf8;
     bool m_hasBom = false;                   ///< 上次 UTF-8 读/写是否带 BOM（GBK 保存不清除）
+    std::optional<std::string> m_manualLanguage; ///< 手动语言 id（空 = 自动；纯元数据）
     int m_cursorPosition = 0;                ///< 字节偏移
     mutable std::size_t m_charCount = 0;     ///< charCount() 惰性缓存（码点数）
     mutable bool m_charCountValid = false;   ///< 缓存有效标志（内容变更即失效）

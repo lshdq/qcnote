@@ -44,6 +44,10 @@
 
 #include "core/document.h"
 
+namespace core {
+struct LanguageEntry;  // core/syntax.h 语言注册表条目（本头仅指针引用）
+}
+
 namespace editor {
 
 // —— 尺寸/配置 token（逻辑单位；字体 pt 由 Scintilla 按 DPI 自换算）——
@@ -98,6 +102,18 @@ public:
     // 覆盖语义清空），光标取 doc->cursorPosition 钳制到新长度
     void reloadFromDocument(core::Document* doc);
 
+    // —— 语言着色装配（代码着色 T3）——
+    // 按文档当前生效语言（core::effectiveLanguageForColoring：手动优先 +
+    // 扩展名识别 + 16MB 阈值【DEC-005】）装配/卸载该文档实例的词法器：
+    //   有语言 → CreateLexerByName → SCI_SETILEXER → 按注册表关键词分组
+    //   SCI_SETKEYWORDS（空组跳过）→ 按样式槽映射表逐槽 SCI_STYLESETFORE
+    //   （core::SyntaxToken → ui::SyntaxTokenColor 取当前主题色）→ 全文重着色；
+    //   无语言（纯文本/超阈值/未命名）→ 卸词法器并恢复默认单色渲染。
+    // 幂等：语言未变化时零开销短路（metadata 事件高频触发的防御）。
+    // 组装层接线：onMetadataChanged（url/displayName/手动语言变化）→ 本方法；
+    // 打开/重载路径的装配在 loadFromDocument 尾部统一完成（force 重着色）
+    void setLanguage(core::Document* doc);
+
     void markSaved(core::Document* doc);  // 保存成功：SCI_SETSAVEPOINT（辅助语义）
 
     // 本次 Document 内容变化是否源自编辑器回写（组装层防回灌判定）
@@ -150,6 +166,10 @@ private:
         core::Document* doc = nullptr;
         HWND hwnd = nullptr;
         bool loading = false;  // 程序化装载期间抑制 SCN_MODIFIED 回写
+        // 上次装配的生效语言（nullptr = 纯文本/未装配；注册表为静态数组，
+        // 指针稳定可作身份比较）。语言未变时 setLanguage 零开销短路（metadata
+        // 事件每次光标移动都触发，实际重装配仅语言翻转时发生）
+        const core::LanguageEntry* lastLanguage = nullptr;
         // 上次 SCN_UPDATEUI 采样的主选区端点（-1 = 未采样）。光标位置不变而
         // 选区端点变化（如查找匹配末端恰落在当前光标处）时，metadata 链不会
         // 触发，需凭此差值直连一次状态栏刷新（F3b 保底，见 handleNotify）
@@ -168,6 +188,18 @@ private:
     void updateLineNumberWidth(HWND sci) const;
     // 主题相关配色（configure 与 retheme 共用；字体/策略等与主题无关的项不重设）
     static void applyThemeColors(HWND sci);
+    // 语言着色装配核心（代码着色 T3）：计算生效语言并按需装配/卸载（含
+    // lastLanguage 变化检测）；force = 装载/重载路径（文本已整体替换，样式
+    // 须重算——有词法时无条件全文重着色）
+    void applyLanguage(Entry& e, bool force);
+    // 词法器装配（applyLanguage 的「有语言」分支，Change 检测已由调用方完成）：
+    // 全槽位复位默认单色（applyThemeColors——清上一语言的残留槽位色）→
+    // SETILEXER → 关键词分组注入 → 样式槽映射着色 → 全文 Colourise
+    static void assembleLexer(HWND sci, const core::LanguageEntry& lang);
+    // 样式槽映射表逐槽着色（SETILEXER 后与 retheme 重放着色共用：词法器与
+    // 关键词不动，只重设颜色；映射表外槽位不设色——applyThemeColors 的
+    // STYLECLEARALL 已使其落默认样式）
+    static void applyLexerStyleColors(HWND sci, const core::LanguageEntry& lang);
     // 回车自动缩进（SCN_CHARADDED '\n' 后调用）：为每个光标所在新行行首插入
     // 上一行前导空白并推进选区；幂等（Scintilla NewLine 对多光标在全部插入
     // 完成后逐个发 SCN_CHARADDED，重放通知时各行已补齐即跳过）

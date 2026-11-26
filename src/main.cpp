@@ -85,6 +85,7 @@
 #include "core/encoding.h"
 #include "core/localstorage.h"
 #include "core/sessionmanager.h"
+#include "core/syntax.h"
 #include "core/textutil.h"
 #include "editor/multicursorcontroller.h"
 #include "editor/scintillaedit.h"
@@ -396,6 +397,20 @@ void RefreshMenuState() {
     g_menuState.wordWrap = g_wordWrap;
     g_menuState.lineNumbers = g_lineNumbers;
     g_menuState.autoIndent = g_autoIndent;
+    // 语言（代码着色 T3）：生效语言 id（语言项勾选 = 当前生效语言，自动识别
+    // 结果同样显示勾选——TC-006）+ 是否手动指定（「自动」/「纯文本」勾选判定）；
+    // 勾选态用身份判定 effectiveLanguage（不受 16MB 阈值影响，与着色装配分离）
+    if (doc) {
+        if (const core::LanguageEntry* lang = core::effectiveLanguage(*doc)) {
+            g_menuState.effectiveLanguageId = lang->id;
+        } else {
+            g_menuState.effectiveLanguageId = {};
+        }
+        g_menuState.manualLanguage = doc->manualLanguage().has_value();
+    } else {
+        g_menuState.effectiveLanguageId = {};
+        g_menuState.manualLanguage = false;
+    }
     // 编辑▸插入编号使能条件之一：活动编辑器选区数 ≥ 2（多光标态）；无文档
     //（欢迎页）为 false。弹出前 RefreshMenuState 全量刷新（OpenMainMenu 唯一
     // 生产调用点，勾选/置灰实时），多光标增删后无需额外事件驱动
@@ -457,6 +472,12 @@ void RefreshStatusBar() {
             d.encoding += L" BOM";
         }
         d.lineEnding = core::lineEndingDisplayName(doc->lineEnding());
+        // 语言名（代码着色 T3）：有语言显示 displayName，纯文本显示「纯文本」
+        if (const core::LanguageEntry* lang = core::effectiveLanguage(*doc)) {
+            d.language = lang->displayName;
+        } else {
+            d.language = L"纯文本";
+        }
         if (!doc->url().empty()) d.path = doc->url().wstring();
     }
     g_statusBar.update(d);
@@ -561,6 +582,10 @@ void OnDocumentContentChanged(core::Document* doc) {
 void OnDocumentMetadataChanged(core::Document* doc) {
     const int idx = IndexOfDocument(doc);
     if (idx >= 0) g_tabs.setDisplayName(idx, doc->displayName());
+    // url/displayName/手动语言变化 → 重算生效语言并重装配编辑器词法器（代码
+    // 着色 T3：另存为换扩展名自动重识别、菜单手动切换统一走本接线；光标移动
+    // 等高频 metadata 事件经 EditorHost 侧 lastLanguage 短路，零冗余装配）
+    g_editors.setLanguage(doc);
     // url 空↔非空翻转（未命名→另存为/重命名取消回退）：右键菜单新项可用性同步
     if (idx >= 0) g_tabs.setHasPath(idx, !doc->url().empty());
     if (doc == g_docManager.activeDocument()) {
@@ -1238,6 +1263,29 @@ void LogStubCommand(ui::Command cmd) {
     OutputDebugStringW(log.c_str());
 }
 
+// 语言命令执行（代码着色 T3）：活动文档手动指定/清除语言。「自动」=
+// clearLanguage（按扩展名重新识别）；「纯文本」与语言项 = setLanguage（对应
+// id；纯文本为 kPlainTextLanguageId 保留值）。生效语言计算、编辑器重装配
+//（onMetadataChanged → EditorHost::setLanguage）、状态栏/菜单勾选刷新、会话
+// N\language 键记忆（500ms 防抖）全部经 setLanguage 触发的 metadata 通知链
+// 完成——本函数只改文档元数据
+void DoSelectLanguage(ui::Command cmd) {
+    core::Document* doc = g_docManager.activeDocument();
+    if (!doc) return;
+    if (cmd == ui::Command::SelectLanguageAuto) {
+        doc->clearLanguage();  // 回自动模式（会话不再记录手动语言）
+        return;
+    }
+    if (cmd == ui::Command::SelectLanguagePlainText) {
+        doc->setLanguage(core::kPlainTextLanguageId);  // 强制不着色（手动指定）
+        return;
+    }
+    if (const core::LanguageEntry* entry = core::languageAt(
+            static_cast<std::size_t>(ui::selectLanguageIndex(cmd)))) {
+        doc->setLanguage(entry->id);
+    }
+}
+
 // 命令路由（菜单/工具栏/快捷键统一入口）
 void RouteCommand(ui::Command cmd) {
     g_lastRouted = cmd;  // 供自动化验证断言
@@ -1254,6 +1302,13 @@ void RouteCommand(ui::Command cmd) {
 
     // 模态期间防御性拒绝（正常路径：模态循环已使本函数不可达）
     if (UiLocked() && cmd != ui::Command::Quit) return;
+
+    // 语言命令组（代码着色 T3）：统一入口先于 switch（23 项命令经
+    // DoSelectLanguage 按注册表下标分发；菜单「语言」子菜单唯一入口）
+    if (ui::isSelectLanguageCommand(cmd)) {
+        DoSelectLanguage(cmd);
+        return;
+    }
 
     switch (cmd) {
     case ui::Command::NewDocument:
@@ -4356,6 +4411,23 @@ core::Document* ApplyDraftRestorePlan(const core::DraftRestorePlan& plan) {
     return doc;
 }
 
+/// 草稿恢复后的手动语言恢复（代码着色 T3 接线，T2 接线点）：草稿条目本身
+/// 不含语言，按计划条目的 uid（草稿主键，文件与未命名条目均携带）在会话
+/// 文档条目中找同 uid 者取 N\language 应用（恢复重建的未命名文档 uid 为新
+/// 生成值，不能按 doc->uid() 匹配——两侧旧 uid 在 plan.entry 与会话条目对齐）。
+/// 文件条目会话侧 uid 为空（不落盘）→ 不命中，其语言已由 openPath 循环经
+/// URL 条目应用，无重复路径；无键/未命中零动作（自动识别语义）
+void ApplyDraftPlanLanguage(const core::DraftRestorePlan& plan, core::Document* doc,
+                            const core::SessionData& session) {
+    if (!doc || plan.entry.uid.empty()) return;
+    for (const auto& entry : session.documents) {
+        if (!entry.uid.empty() && entry.uid == plan.entry.uid) {
+            core::SessionManager::applySessionLanguage(doc, entry);
+            return;
+        }
+    }
+}
+
 /// 草稿冲突汇总对话框（DEC-006 单框汇总；标题/文案按 M4-B 需求）。
 /// @return 1=恢复 2=丢弃 0=未决（Esc——条目保留在缓存目录，下次启动再问）
 int ShowDraftConflictDialog(const std::vector<core::DraftConflict>& conflicts) {
@@ -4444,7 +4516,7 @@ void RestoreAtStartup(HWND hwnd) {
     }
     g_editors.setAutoIndent(g_autoIndent);  // 仅落标志：SCN_CHARADDED 处理时读取
 
-    // —— 1) 文档按序打开 + 光标恢复 ——
+    // —— 1) 文档按序打开 + 光标恢复 + 手动语言恢复 ——
     core::Document* lastSuccess = nullptr;
     for (const auto& entry : session.documents) {
         if (entry.url.empty()) continue;  // 未命名占位（由草稿恢复按位重建）
@@ -4454,6 +4526,10 @@ void RestoreAtStartup(HWND hwnd) {
         // 光标：钳上界（Document 只钳负值）；编辑器经 reloadFromDocument 同步
         doc->setCursorPosition(std::min(entry.cursor,
                                         static_cast<int>(doc->content().size())));
+        // 会话手动语言恢复（代码着色 T3，T2 接线点：applySessionLanguage 内部
+        // 同值短路；无键/自动模式零动作，旧会话前向兼容【DEC-004】）。置于
+        // reloadFromDocument 之前：重装文本后的统一重着色直接按最终语言执行
+        core::SessionManager::applySessionLanguage(doc, entry);
         g_editors.reloadFromDocument(doc);
         lastSuccess = doc;
     }
@@ -4498,7 +4574,10 @@ void RestoreAtStartup(HWND hwnd) {
         core::DraftCacheManager::restore(g_paths.draftsDir, session, &DiskHashOf);
     std::vector<core::Document*> applied;  // 与 restored 计划一一对应（失败为空）
     for (const auto& plan : outcome.restored) {
-        applied.push_back(ApplyDraftRestorePlan(plan));
+        core::Document* doc = ApplyDraftRestorePlan(plan);
+        applied.push_back(doc);
+        // 未命名条目的手动语言随草稿计划按旧 uid 匹配会话条目恢复（T3 接线）
+        ApplyDraftPlanLanguage(plan, doc, session);
     }
     if (!outcome.conflicts.empty()) {
         const int choice = ShowDraftConflictDialog(outcome.conflicts);
@@ -4510,6 +4589,7 @@ void RestoreAtStartup(HWND hwnd) {
             core::Document* firstConflictApplied = nullptr;
             for (const auto& plan : resolution.plans) {
                 core::Document* doc = ApplyDraftRestorePlan(plan);
+                ApplyDraftPlanLanguage(plan, doc, session);
                 if (doc && !firstConflictApplied) firstConflictApplied = doc;
             }
             // 冲突恢复是用户显式交互决策：空场景激活首个恢复文档（DEC-006）
@@ -4580,10 +4660,23 @@ void WriteSelftestDump() {
         core::Document* doc = docs[i];
         if (doc == active) activeIndex = static_cast<int>(i);
         char editorHwnd[32] = "null";
+        std::string language = "plaintext";  // 无语言（纯文本/未命名）
+        std::string lexer;                    // Scintilla 词法器名（空 = 未装配）
         if (HWND sci = g_editors.windowForTest(doc)) {
             snprintf(editorHwnd, sizeof(editorHwnd), "\"0x%llX\"",
                      static_cast<unsigned long long>(
                          reinterpret_cast<ULONG_PTR>(sci)));
+            // 代码着色 T3 测试钩子：dump 暴露每文档语言 id 与实际装配的词法
+            // 器名（SCI_GETLEXERLANGUAGE 无词法器返回空串），供 headless
+            // selftest/e2e 直接断言装配结果（TC-007/012；样式色经 editor HWND
+            // 发 SCI_STYLEGETFORE 断言，见审查记录 T3 轮钩子说明）
+            char lexerBuf[32] = {0};
+            SendMessageW(sci, SCI_GETLEXERLANGUAGE, 0,
+                         reinterpret_cast<LPARAM>(lexerBuf));
+            lexer = lexerBuf;
+        }
+        if (const core::LanguageEntry* lang = core::effectiveLanguage(*doc)) {
+            language = std::string(lang->id);
         }
         json += "    {\"name\": \"" + JsonEscape(core::wideToUtf8(doc->displayName())) +
                 "\", \"url\": \"" + JsonEscape(core::wideToUtf8(doc->url().wstring())) +
@@ -4591,7 +4684,9 @@ void WriteSelftestDump() {
                 "\", \"cursor\": " + std::to_string(doc->cursorPosition()) +
                 ", \"modified\": " + (doc->modified() ? "true" : "false") +
                 ", \"editor\": " + editorHwnd +
-                ", \"content\": \"" + JsonEscape(doc->content()) + "\"}";
+                ", \"language\": \"" + JsonEscape(language) +
+                "\", \"lexer\": \"" + JsonEscape(lexer) +
+                "\", \"content\": \"" + JsonEscape(doc->content()) + "\"}";
         if (i + 1 < docs.size()) json += ",";
         json += "\n";
     }
@@ -5011,7 +5106,21 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case 2: CycleTab(+1); break;                                 // = Ctrl+Tab
         case 3: RouteCommand(ui::Command::CloseTab); break;         // = Ctrl+W
         case 4: RouteCommand(ui::Command::ToggleDarkTheme); break;  // = 菜单「深色主题」
-        default: break;
+        // 代码着色 T3：5=语言▸自动、6=语言▸纯文本（与菜单同一 RouteCommand
+        // 路径）；100+i（i=0..20）=语言项 i（core 注册表/菜单顺序，如
+        // 100=C、103=Java、106=Python、120=YAML）——headless 无法驱动真实
+        // 键盘/菜单交互，语言切换 e2e（TC-003/004/005/007/010/013/016）经
+        // 此钩子走等价命令路径
+        case 5: RouteCommand(ui::Command::SelectLanguageAuto); break;
+        case 6: RouteCommand(ui::Command::SelectLanguagePlainText); break;
+        default:
+            if (static_cast<int>(wParam) >= 100 &&
+                static_cast<int>(wParam) < 100 + static_cast<int>(core::languageCount())) {
+                RouteCommand(static_cast<ui::Command>(
+                    static_cast<int>(ui::Command::SelectLanguageC) +
+                    (static_cast<int>(wParam) - 100)));
+            }
+            break;
         }
         return 0;
     case WM_COPYDATA: {

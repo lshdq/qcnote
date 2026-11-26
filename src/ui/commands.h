@@ -45,6 +45,36 @@ enum class Command : int {
     RenameFile,            // 文件重命名…（有路径的标签）
     OpenContainingFolder,  // 打开所在文件夹（有路径的标签）
 
+    // —— 语言（代码着色 T3）——
+    // 「自动」「纯文本」+ 21 个语言命令（菜单唯一入口，无快捷键）。
+    // 语言命令顺序与 core/syntax.h 注册表（languageAt 下标）一一对应：
+    // SelectLanguageC = languageAt(0) … SelectLanguageYaml = languageAt(20)；
+    // mainmenu.cpp 构建（displayName→命令）与 main.cpp 路由（命令→注册表
+    // 下标）均依赖该对应，新增语言须同步注册表与本组枚举
+    SelectLanguageAuto,        // 语言▸自动（清除手动指定，按扩展名识别）
+    SelectLanguagePlainText,   // 语言▸纯文本（强制不着色）
+    SelectLanguageC,           // 语言▸C
+    SelectLanguageCpp,         // 语言▸C++
+    SelectLanguageCSharp,      // 语言▸C#
+    SelectLanguageJava,        // 语言▸Java
+    SelectLanguageJavaScript,  // 语言▸JavaScript
+    SelectLanguageTypeScript,  // 语言▸TypeScript
+    SelectLanguagePython,      // 语言▸Python
+    SelectLanguageGo,          // 语言▸Go
+    SelectLanguageRust,        // 语言▸Rust
+    SelectLanguageLua,         // 语言▸Lua
+    SelectLanguageJson,        // 语言▸JSON
+    SelectLanguageMarkdown,    // 语言▸Markdown
+    SelectLanguageHtml,        // 语言▸HTML
+    SelectLanguageXml,         // 语言▸XML
+    SelectLanguageCss,         // 语言▸CSS
+    SelectLanguageSql,         // 语言▸SQL
+    SelectLanguageBash,        // 语言▸Bash
+    SelectLanguagePowerShell,  // 语言▸PowerShell
+    SelectLanguageBatch,       // 语言▸Batch
+    SelectLanguageIni,         // 语言▸INI
+    SelectLanguageYaml,        // 语言▸YAML
+
     // —— 应用 ——
     Quit,  // 退出（C4 热退出，M2 接草稿 flush）
 };
@@ -77,9 +107,51 @@ inline const wchar_t* CommandName(Command c) {
     case Command::CloseOtherTabs: return L"CloseOtherTabs";
     case Command::RenameFile: return L"RenameFile";
     case Command::OpenContainingFolder: return L"OpenContainingFolder";
+    case Command::SelectLanguageAuto: return L"SelectLanguageAuto";
+    case Command::SelectLanguagePlainText: return L"SelectLanguagePlainText";
+    case Command::SelectLanguageC: return L"SelectLanguageC";
+    case Command::SelectLanguageCpp: return L"SelectLanguageCpp";
+    case Command::SelectLanguageCSharp: return L"SelectLanguageCSharp";
+    case Command::SelectLanguageJava: return L"SelectLanguageJava";
+    case Command::SelectLanguageJavaScript: return L"SelectLanguageJavaScript";
+    case Command::SelectLanguageTypeScript: return L"SelectLanguageTypeScript";
+    case Command::SelectLanguagePython: return L"SelectLanguagePython";
+    case Command::SelectLanguageGo: return L"SelectLanguageGo";
+    case Command::SelectLanguageRust: return L"SelectLanguageRust";
+    case Command::SelectLanguageLua: return L"SelectLanguageLua";
+    case Command::SelectLanguageJson: return L"SelectLanguageJson";
+    case Command::SelectLanguageMarkdown: return L"SelectLanguageMarkdown";
+    case Command::SelectLanguageHtml: return L"SelectLanguageHtml";
+    case Command::SelectLanguageXml: return L"SelectLanguageXml";
+    case Command::SelectLanguageCss: return L"SelectLanguageCss";
+    case Command::SelectLanguageSql: return L"SelectLanguageSql";
+    case Command::SelectLanguageBash: return L"SelectLanguageBash";
+    case Command::SelectLanguagePowerShell: return L"SelectLanguagePowerShell";
+    case Command::SelectLanguageBatch: return L"SelectLanguageBatch";
+    case Command::SelectLanguageIni: return L"SelectLanguageIni";
+    case Command::SelectLanguageYaml: return L"SelectLanguageYaml";
     case Command::Quit: return L"Quit";
     default: return L"<unknown>";
     }
+}
+
+// —— 语言命令辅助（代码着色 T3；main.cpp 路由 / mainmenu.cpp 构建 /
+//     menu 单测共用；依赖上方枚举组连续排布的约定）——
+
+/// 是否语言命令组（SelectLanguageAuto..SelectLanguageYaml 共 23 项：
+/// 自动 + 纯文本 + 21 语言项）
+inline constexpr bool isSelectLanguageCommand(Command c) {
+    const int v = static_cast<int>(c);
+    const int first = static_cast<int>(Command::SelectLanguageAuto);
+    return v >= first && v < first + 23;
+}
+
+/// 语言命令 → core 注册表下标（0..20，与 languageAt 对应）；「自动」/
+/// 「纯文本」或非语言命令返回 -1
+inline constexpr int selectLanguageIndex(Command c) {
+    const int v = static_cast<int>(c);
+    const int first = static_cast<int>(Command::SelectLanguageC);
+    return v >= first && v < first + 21 ? v - first : -1;
 }
 
 }  // namespace ui

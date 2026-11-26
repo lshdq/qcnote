@@ -361,6 +361,15 @@ TEST_CASE("状态栏字段文本（有文档）", "[ui][statusbar]") {
     CHECK(StatusTotalText(d) == L"共 123 字符");
     CHECK(StatusEncodingText(d) == L"UTF-8");
     CHECK(StatusLineEndingText(d) == L"LF");
+    // 代码着色（TC-003/005/011 状态栏层）：语言名显示。字段内容由 main 组装层
+    // 注入（有语言 = displayName，纯文本/未命名 = L"纯文本"），纯函数只做
+    // hasDoc 门控原样返回
+    d.language = L"Python";
+    CHECK(StatusLanguageText(d) == L"Python");
+    d.language = L"纯文本";
+    CHECK(StatusLanguageText(d) == L"纯文本");
+    d.language = L"JSON";
+    CHECK(StatusLanguageText(d) == L"JSON");
 }
 
 TEST_CASE("状态栏字段文本（无文档/边界）", "[ui][statusbar]") {
@@ -370,6 +379,16 @@ TEST_CASE("状态栏字段文本（无文档/边界）", "[ui][statusbar]") {
     CHECK(StatusTotalText(d).empty());
     CHECK(StatusEncodingText(d).empty());
     CHECK(StatusLineEndingText(d).empty());
+    // 无文档：语言段隐藏（字段非空也不显示——有文档恒显示语言名的语义
+    // 由 main 组装层保证，TC-011 状态栏层）
+    StatusData g;
+    g.hasDoc = false;
+    g.language = L"Python";
+    CHECK(StatusLanguageText(g).empty());
+    // 有文档但字段为空：同样隐藏（空 = 隐藏约定）
+    StatusData h;
+    h.hasDoc = true;
+    CHECK(StatusLanguageText(h).empty());
     // 有选区/多光标/带 BOM/CRLF
     StatusData e;
     e.hasDoc = true;
@@ -426,6 +445,7 @@ TEST_CASE("StatusData 等值比较覆盖全部字段（update 等值跳过谓词
     d = base; d.encoding = L"GBK";   CHECK(base != d);
     d = base; d.lineEnding = L"CRLF";CHECK(base != d);
     d = base; d.path = L"D:\\b.txt"; CHECK(base != d);
+    d = base; d.language = L"Python"; CHECK(base != d);  // 代码着色 T3：language 字段入等值判定（差分失效依赖）
     // 默认构造的两实例相等（等值跳过在无文档/初始态同样成立）
     CHECK(StatusData{} == StatusData{});
 }
